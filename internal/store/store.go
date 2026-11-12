@@ -74,10 +74,13 @@ func (s *Store) SetPasswordHash(ctx context.Context, userID int64, hash string) 
 
 // UpsertOIDCUser finds the user for a successful OIDC login and updates it,
 // or creates it. Matching order: oidc_subject, then directory_id (if given),
-// then email (if given, case-insensitive) among users that have no
-// oidc_subject yet (e.g. created by a directory sync). The matched user gets
-// oidc_subject, email (lower case), name, directory_id (if given) and
-// last_login_at=now updated. Never matches or modifies local admin accounts.
+// then email (if given, case-insensitive). The matched user gets
+// oidc_subject (taken over if it changed), email (lower case, if given),
+// name (if given), directory_id (if given) and last_login_at=now updated.
+// Local admin accounts are never matched or modified (they have no e-mail).
+// Must not fail on unique constraints when another row already holds the
+// e-mail/directory id: the first match wins and conflicting values are
+// cleared from the other row.
 func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) {
 	return nil, errNotImplemented
 }
@@ -243,7 +246,9 @@ func (s *Store) ListIncidentsBetween(ctx context.Context, from, to time.Time) ([
 // ===================================================================== maintenance
 
 // CreateMaintenance inserts m with its Services (only IDs are used). ID,
-// CreatedAt and UpdatedAt are set on m.
+// CreatedAt and UpdatedAt are set on m. notified_start/notified_end are
+// initialised to true when the window already started/ended at creation time,
+// so that no "started"/"completed" e-mails are sent for past windows.
 func (s *Store) CreateMaintenance(ctx context.Context, m *Maintenance) error {
 	return errNotImplemented
 }
