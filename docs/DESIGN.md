@@ -69,11 +69,19 @@ installer/             Inno Setup script → StatusPageSetup.exe
   updates. **Maintenance windows** have a start/end and affected services;
   their state (scheduled/in progress/completed/cancelled) is derived from time.
 * **Notifications**: e-mail only. Web handlers enqueue one row per recipient
-  in the `notifications` outbox table; a worker delivers them with retries.
+  in the `notifications` outbox table; a worker delivers them and retries a
+  failed delivery after 1, 5, 15 and 60 minutes before marking it failed.
+  Sent and failed e-mails are deleted after 90 days.
   Recipients = users with an e-mail who are members of a group assigned to an
   affected service. Sent on: incident created/updated (if "notify" ticked),
   maintenance scheduled/changed/cancelled (if ticked) and started/completed
   (if the maintenance has notify enabled).
+* **Web UI**: server-rendered `html/template` pages in one layout, one
+  stylesheet (`static/style.css`, its class vocabulary is documented at the
+  top and checked by a test), light and dark mode via `prefers-color-scheme`.
+  `static/app.js` only adds delete confirmations and field toggling; pages
+  stay usable without JavaScript. Flash messages: success, info, warning
+  (done, but e.g. the e-mails could not be queued), error.
 * **Times** are stored as unix seconds (UTC) and displayed/entered in the
   configured time zone.
 * **Security**: sessions in DB (cookie holds a random token, DB stores its

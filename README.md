@@ -3,6 +3,8 @@
 A small, self-hosted status page for internal IT services. One executable,
 no runtime dependencies, installed on Windows with a normal setup wizard.
 
+![Status page](docs/screenshots/status.png)
+
 - **Status page** showing every service as *operational*, *maintenance*,
   *degraded*, *partial outage* or *major outage*, plus open incidents,
   upcoming maintenance and a history page. JSON at `/api/status`.
@@ -18,7 +20,7 @@ no runtime dependencies, installed on Windows with a normal setup wizard.
   service. With Microsoft Entra ID, group members can optionally be synced
   hourly, so people are notified even if they never signed in.
 - **Roles per group:** *Viewer* (every signed-in user), *Editor* (posts
-  incidents and maintenance windows) and *Admin* (configuration).
+  incidents and maintenance windows) and *Administrator* (configuration).
 - **Storage:** built-in SQLite or PostgreSQL.
 - All configuration is done in the web interface by administrators.
 
@@ -29,6 +31,7 @@ only notification channel.
 
 - [Quick start](#quick-start)
 - [First-run setup](#first-run-setup)
+- [Using the status page](#using-the-status-page)
 - [Configuration](#configuration)
 - [PostgreSQL](#postgresql)
 - [Data directory, backup and upgrade](#data-directory-backup-and-upgrade)
@@ -110,16 +113,74 @@ also configure the database on the command line first, e.g.
    `statuspage setup`: choose SQLite or PostgreSQL. The tables are created
    immediately.
 2. **Local administrator** – user name and password (at least 10
-   characters). This account always has the Admin role. It is meant for the
-   initial configuration and as a break-glass login when single sign-on is
-   unavailable.
+   characters), plus site name, base URL and time zone. This account always
+   has the Administrator role. It is meant for the initial configuration and
+   as a break-glass login when single sign-on is unavailable.
 
-Opening `/setup` from a computer other than the server itself requires the
-setup token from `<data directory>/setup-token.txt`. The token is no longer
-needed once the administrator account exists.
+Opening `/setup` from a computer other than the server itself, or through a
+reverse proxy (a request with an `X-Forwarded-For`, `Forwarded` or
+`X-Real-IP` header), requires the setup token from
+`<data directory>/setup-token.txt`. The browser remembers a correct token for
+an hour, so it is entered only once. When the administrator account has been
+created the token file is deleted and `/setup` is closed.
 
-Afterwards sign in at `/login` with the local administrator and continue with
+The wizard then signs you in as the local administrator and continues with
 **Admin → Settings**.
+
+## Using the status page
+
+- **Status page** (`/`): overall status, open incidents, maintenance in
+  progress and upcoming, every service with its status and a 90-day history
+  bar, and the incidents of the last 7 days. It refreshes itself every
+  minute. **History** (`/history`) lists incidents and maintenance per month;
+  each incident and maintenance window has its own page.
+- **Editors** use **Manage** (`/manage`): *Report incident* (title, impact per
+  affected service, status, message), then post updates on the incident's
+  page until it is *Resolved*; *Schedule maintenance* (title, description,
+  start and end, affected services). Maintenance windows can be edited or
+  cancelled until they are over and ended early while they are in progress.
+  With *Send e-mail notifications* ticked, the members of the groups assigned
+  to the affected services are e-mailed (see
+  [Services and notifications](#services-and-notifications)).
+  Administrators can also delete incidents and maintenance windows that were
+  created by mistake.
+- **Your account** (click your name in the header) shows your role, your
+  groups from the identity provider and the services you receive e-mails
+  about. The local administrator changes its password there.
+
+| | |
+|---|---|
+| ![Report incident](docs/screenshots/report-incident.png) | ![Incident page](docs/screenshots/incident.png) |
+| ![Dark mode](docs/screenshots/status-dark.png) | ![Mobile](docs/screenshots/mobile.png) |
+
+### JSON API
+
+`GET /api/status` returns the current status (it needs a signed-in session
+when public access is off):
+
+```json
+{
+  "status": "major_outage",
+  "status_label": "Major system outage",
+  "updated_at": "2026-11-12T23:26:09Z",
+  "services": [
+    { "id": 5, "name": "VPN", "category": "Infrastructure", "status": "major_outage", "status_label": "Major outage" }
+  ],
+  "incidents": [
+    { "id": 1, "title": "VPN connections dropping", "status": "identified", "impact": "major_outage",
+      "started_at": "2026-11-12T22:35:42Z", "url": "https://status.example.com/incidents/1" }
+  ],
+  "maintenances": [
+    { "id": 1, "title": "ERP kernel upgrade", "state": "scheduled",
+      "starts_at": "2026-11-14T23:00:00Z", "ends_at": "2026-11-15T02:00:00Z", "url": "https://status.example.com/maintenance/1" }
+  ]
+}
+```
+
+`status` is one of `operational`, `maintenance`, `degraded`,
+`partial_outage`, `major_outage`. Only open incidents (`status`
+`investigating`, `identified` or `monitoring`) and maintenance in progress or
+upcoming (`state` `in_progress` or `scheduled`) are listed. Times are UTC (RFC 3339); the URLs use the configured base URL.
 
 ## Configuration
 
@@ -150,7 +211,10 @@ In **Admin → Settings** enable OpenID Connect and enter the **issuer URL**,
 `openid profile email`, the **groups claim** to `groups` (the ID token claim
 that lists the user's groups). At every sign-in the user's group memberships
 are replaced by the groups in that claim; unknown groups are created
-automatically.
+automatically. The user's e-mail address is taken from the `email` claim (or
+`preferred_username`/`upn` if they contain an address); an address the
+provider marks with `email_verified: false` is ignored, so such users get no
+notification e-mails.
 
 #### Microsoft Entra ID
 
@@ -220,17 +284,19 @@ page. If the provider needs an extra scope for groups, add it to the scopes.
 
 Roles are given to identity provider groups, not to individual users:
 
-| Role   | Can                                                                 |
-|--------|---------------------------------------------------------------------|
-| Viewer | see the status pages (every signed-in user)                         |
-| Editor | additionally create and update incidents and maintenance windows (`/manage`) |
-| Admin  | additionally change settings, services, groups and see users and notifications |
+| Role          | Can                                                                 |
+|---------------|---------------------------------------------------------------------|
+| Viewer        | see the status pages (every signed-in user)                         |
+| Editor        | additionally create and update incidents and maintenance windows (`/manage`) |
+| Administrator | additionally change settings, services and groups, see users and notifications, delete incidents and maintenance windows |
 
 A user's role is the highest role of their groups. Groups appear in the list
 after a member has signed in (or after a directory sync); you can also add a
 group in advance by its ID as it appears in the groups claim (Entra ID object
 ID, Keycloak group name). **Admin → Users** lists the known users (signed in
 or synced from the directory) with their groups and resulting role.
+
+![Group settings](docs/screenshots/admin-group.png)
 
 ### Services and notifications
 
@@ -240,11 +306,14 @@ category and sort order) and choose the **groups to notify** for each service
 incident or a maintenance window and ticks *notify*, every member of the
 groups assigned to the affected services who has an e-mail address receives
 an e-mail. Maintenance windows with notifications enabled also send an e-mail
-when they start and when they are completed.
+when they are cancelled, when they start and when they are completed. Users see on their account page which services they are notified
+about.
 
-E-mails are queued and retried if the mail server is unavailable;
-**Admin → Notifications** shows the recent e-mails with their delivery
-status and errors.
+E-mails are queued in the database and delivered in the background. A failed
+delivery is retried after 1 minute, 5 minutes, 15 minutes and 1 hour; after
+that the e-mail is marked as *failed*. **Admin → Notifications** shows the
+latest e-mails with their delivery status and errors. Sent and failed e-mails
+are deleted after 90 days.
 
 ### E-mail (SMTP)
 
@@ -363,8 +432,10 @@ Example: `echo 'new-long-password' | statuspage reset-password -username admin -
   address. Only expose the HTTP port to the proxy.
 - **Setup token.** Until the local administrator exists, `/setup` can only be
   used from the server itself or with the token from `setup-token.txt`.
-  Finish the setup before publishing the page through a reverse proxy that
-  runs on the same server (its requests come from localhost).
+  Requests with proxy headers (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`)
+  always need the token; a reverse proxy on the same server that sends none
+  of them looks like a local request, so finish the setup before publishing
+  the page through it.
 - **Local administrator.** Use a long password and keep it for emergencies;
   daily work should use single sign-on. Reset it with
   `statuspage reset-password`.

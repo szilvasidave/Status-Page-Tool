@@ -1,11 +1,9 @@
-{{define "head"}}<link rel="stylesheet" href="/static/manage.css">{{end}}
-
 {{define "content"}}
-{{template "manage-subnav" "incident"}}
 {{with .Data}}
+<a class="back-link" href="/manage">← Manage</a>
 <h1>Report incident</h1>
-{{template "manage-errors" .Errors}}
-<form method="post" action="/manage/incidents" class="form manage-form">
+<form method="post" action="/manage/incidents" class="form">
+  {{template "error-list" .Errors}}
   {{template "csrf" $}}
   <div class="field">
     <label for="title">Title</label>
@@ -16,7 +14,7 @@
   <fieldset>
     <legend>Affected services</legend>
     {{- if .Groups}}
-    <p class="small muted">Choose the impact on every service that is affected.</p>
+    <p class="help">Choose the impact on every service that is affected.</p>
     {{template "manage-impact-table" .Groups}}
     {{- else}}
     {{template "manage-no-services" $}}
@@ -47,7 +45,7 @@
     <span class="help">What is happening and what users should expect. Shown on the status page and in the e-mail.</span>
   </div>
 
-  {{template "manage-notify" (dict "Page" $ "Checked" .Notify "Help" "E-mail members of the groups assigned to the affected services.")}}
+  {{template "manage-notify" (dict "Page" $ "Checked" .Notify "Help" "E-mail the members of the groups assigned to the affected services.")}}
 
   <div class="form-actions">
     <button type="submit" class="btn-primary">Report incident</button>

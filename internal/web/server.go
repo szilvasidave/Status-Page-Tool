@@ -242,7 +242,8 @@ func (s *Server) loadTemplates() error {
 // Page is the data passed to every template.
 type Page struct {
 	Title     string
-	Nav       string // active navigation item: status, history, manage, admin, account
+	Nav       string // active navigation item: status, history, manage, admin, account, login, setup
+	SubNav    string // active admin section: settings, services, groups, users, notifications
 	Settings  *store.Settings
 	Identity  *auth.Identity
 	CSRF      string
@@ -314,6 +315,9 @@ func (s *Server) newPage(w http.ResponseWriter, r *http.Request, title string, d
 	}
 	p.Settings = s.settings(r)
 	p.Nav = navFor(r.URL.Path)
+	if p.Nav == "admin" {
+		p.SubNav, _, _ = strings.Cut(strings.TrimPrefix(r.URL.Path, "/admin/"), "/")
+	}
 	return p
 }
 
@@ -346,6 +350,10 @@ func navFor(p string) string {
 		return "admin"
 	case strings.HasPrefix(p, "/account"):
 		return "account"
+	case p == "/login", strings.HasPrefix(p, "/auth/"):
+		return "login"
+	case p == "/setup":
+		return "setup"
 	}
 	return ""
 }

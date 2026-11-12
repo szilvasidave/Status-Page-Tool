@@ -50,7 +50,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, d.Next, http.StatusSeeOther)
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		s.Log.Warn("failed local login", "user", d.Username, "ip", auth.ClientIP(r))
-		d.Error = "Invalid username or password."
+		d.Error = "Invalid user name or password."
 		s.renderStatus(w, r, http.StatusUnauthorized, "login", "Sign in", d)
 	case errors.Is(err, auth.ErrTooManyAttempts):
 		d.Error = "Too many failed attempts. Please wait a few minutes and try again."

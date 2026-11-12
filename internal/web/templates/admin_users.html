@@ -1,29 +1,25 @@
-{{define "head"}}{{template "admin-head"}}{{end}}
 {{define "content"}}
-{{template "admin-subnav" "users"}}
-<div class="toolbar"><h1>Users</h1></div>
-<p class="muted">Users and their groups come from the identity provider: users appear here when they sign in for the
+<h1>Users</h1>
+<p class="lead">Users and their groups come from the identity provider: users appear here when they sign in for the
   first time or when the directory sync finds them as group members. Roles are assigned to
   <a href="/admin/groups">groups</a>.</p>
-<div class="card">
-  <div class="table-wrap">
-    <table class="table">
-      <thead>
-        <tr><th scope="col">Name</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">Groups</th><th scope="col">Sign-in</th><th scope="col">Last sign-in</th></tr>
-      </thead>
-      <tbody>
-        {{range .Data}}
-        <tr>
-          <td>{{.DisplayName}}{{with .Username}}<div class="small muted mono">{{.}}</div>{{end}}</td>
-          <td class="admin-cell-wrap">{{with .Email}}{{.}}{{else}}<span class="muted">–</span>{{end}}</td>
-          <td>{{if gt .Role 1}}<span class="badge">{{.Role.Label}}</span>{{else}}<span class="muted">{{.Role.Label}}</span>{{end}}</td>
-          <td class="admin-cell-wrap">{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g.Name}}{{else}}<span class="muted">–</span>{{end}}</td>
-          <td class="small">{{.SignIn}}</td>
-          <td class="nowrap">{{with .LastLoginAt}}<time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}<span class="muted">never</span>{{end}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
+<div class="card table-wrap" tabindex="0" role="region" aria-label="Users">
+  <table class="table">
+    <thead>
+      <tr><th scope="col">Name</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">Groups</th><th scope="col">Sign-in</th><th scope="col">Last sign-in</th></tr>
+    </thead>
+    <tbody>
+      {{- range .Data}}
+      <tr>
+        <td>{{.DisplayName}}{{with .Username}}<div class="small muted mono">{{.}}</div>{{end}}</td>
+        <td class="cell-wrap">{{with .Email}}{{.}}{{else}}<span class="muted">–</span>{{end}}</td>
+        <td>{{if gt .Role 1}}<span class="badge">{{.Role.Label}}</span>{{else}}<span class="muted">{{.Role.Label}}</span>{{end}}</td>
+        <td class="cell-wrap">{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g.Name}}{{else}}<span class="muted">–</span>{{end}}</td>
+        <td>{{.SignIn}}</td>
+        <td class="nowrap">{{with .LastLoginAt}}<time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}<span class="muted">never</span>{{end}}</td>
+      </tr>
+      {{- end}}
+    </tbody>
+  </table>
 </div>
 {{end}}

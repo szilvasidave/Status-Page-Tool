@@ -9,3 +9,28 @@
 
 {{/* Maintenance state badge. Usage: {{template "maintenance-badge" .}} with a store.MaintenanceState. */}}
 {{define "maintenance-badge"}}<span class="badge maintenance-{{.}}">{{.Label}}</span>{{end}}
+
+{{/* Error message below a form field (mark the input with aria-invalid="true").
+     Usage: {{template "field-error" .Errors.<field>}} */}}
+{{define "field-error"}}{{with .}}<span class="field-error">{{.}}</span>{{end}}{{end}}
+
+{{/* First element of a form with field errors. Usage: {{template "error-summary" .Errors}} with a map. */}}
+{{define "error-summary"}}{{if .}}<div class="flash flash-error" role="alert">Please correct the highlighted {{if eq (len .) 1}}field{{else}}fields{{end}} below.</div>{{end}}{{end}}
+
+{{/* First element of a form without field errors. Usage: {{template "error-list" .Errors}} with a []string. */}}
+{{define "error-list"}}
+{{- if .}}
+<div class="flash flash-error" role="alert">
+  {{- if eq (len .) 1}}{{index . 0}}
+  {{- else}}
+  <strong>Please correct the following:</strong>
+  <ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+  {{- end}}
+</div>
+{{- end}}
+{{- end}}
+
+{{/* Shown where notifications matter while e-mail (SMTP) is not configured.
+     Usage: {{if not .Settings.SMTPConfigured}}{{template "email-off" $}}{{end}} with the *Page. */}}
+{{define "email-off"}}<p class="flash flash-warning">E-mail is not configured, so no notifications are sent.
+  {{- if .IsAdmin}} <a href="/admin/settings#email">Set up e-mail</a> in the settings.{{else}} An administrator can set it up in the settings.{{end}}</p>{{end}}

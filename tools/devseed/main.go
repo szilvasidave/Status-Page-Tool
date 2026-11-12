@@ -3,19 +3,33 @@
 //
 //	go run ./tools/devseed -data /tmp/sp -sample
 //	go run ./cmd/statuspage -data /tmp/sp -listen :8081
+//
+// -session EMAIL signs in an existing single sign-on user (e.g. a sample
+// user) and prints the session cookie, to view the UI as viewer or editor
+// without an identity provider:
+//
+//	go run ./tools/devseed -data /tmp/sp -session carol@example.com
+//	sp_session=…   (set this cookie for the server's host)
+//
+// Sample users: alice@example.com (Editor), bob@example.com and
+// carol@example.com (Viewer); the local admin is Administrator.
 package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
 	"github.com/szilvasidave/status-page-tool/internal/db"
+	"github.com/szilvasidave/status-page-tool/internal/secret"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
@@ -28,6 +42,7 @@ func main() {
 	user := flag.String("admin-user", "admin", "local admin username")
 	pass := flag.String("admin-pass", "admin-password", "local admin password")
 	sample := flag.Bool("sample", false, "insert sample services, groups, users, incidents and maintenance")
+	session := flag.String("session", "", "create a session for the user with this e-mail and print the cookie")
 	flag.Parse()
 	if *dataDir == "" {
 		log.Fatal("-data is required")
@@ -64,6 +79,9 @@ func main() {
 		must(err)
 	}
 	os.Remove(fmt.Sprintf("%s/%s", *dataDir, config.SetupTokenFile))
+	if *session != "" {
+		defer printSession(ctx, st, *session) // after the sample data (if any) exists
+	}
 
 	if !*sample {
 		return
@@ -116,7 +134,7 @@ func main() {
 		sub, email, name string
 		groups           []store.GroupRef
 	}{
-		{"sub-alice", "alice@example.com", "Alice Admin-Ops", []store.GroupRef{{ExternalID: "it-operations"}, {ExternalID: "all-staff"}}},
+		{"sub-alice", "alice@example.com", "Alice Operator", []store.GroupRef{{ExternalID: "it-operations"}, {ExternalID: "all-staff"}}},
 		{"sub-bob", "bob@example.com", "Bob Buyer", []store.GroupRef{{ExternalID: "erp-users"}, {ExternalID: "all-staff"}}},
 		{"sub-carol", "carol@example.com", "Carol Clerk", []store.GroupRef{{ExternalID: "all-staff"}}},
 	}
@@ -187,6 +205,26 @@ func main() {
 	maint("ERP kernel upgrade", "The ERP system will be unavailable while the kernel is upgraded.", now.Add(2*day).Truncate(time.Hour), now.Add(2*day+3*time.Hour).Truncate(time.Hour), erp)
 	maint("File server patching", "Monthly security updates for the file servers.", ago(6*day), ago(6*day-2*time.Hour), files)
 	fmt.Println("sample data created")
+}
+
+// printSession creates a session for the user with the given e-mail address
+// and prints the cookie. Like internal/auth, the database stores the SHA-256
+// of the cookie token.
+func printSession(ctx context.Context, st *store.Store, email string) {
+	users, err := st.ListUsers(ctx)
+	must(err)
+	for _, u := range users {
+		if !strings.EqualFold(u.Email, email) {
+			continue
+		}
+		token := secret.RandomToken(32)
+		sum := sha256.Sum256([]byte(token))
+		now := time.Now()
+		must(st.CreateSession(ctx, &store.Session{ID: hex.EncodeToString(sum[:]), UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(auth.SessionLifetime)}))
+		fmt.Printf("%s=%s\n", auth.SessionCookie, token)
+		return
+	}
+	log.Fatalf("no user with e-mail %q", email)
 }
 
 func must(err error) {

@@ -1,36 +1,30 @@
-{{define "head"}}{{template "admin-head"}}{{end}}
 {{define "content"}}
-{{template "admin-subnav" "services"}}
 <div class="toolbar">
   <h1>Services</h1>
   <a class="btn btn-primary" href="/admin/services/new">Add service</a>
 </div>
-<p class="muted">The status of a service is derived from open incidents and maintenance windows. Members of the
+<p class="lead">The status of a service is derived from open incidents and maintenance windows. Members of the
   groups to notify receive an e-mail when an incident or maintenance affects the service.</p>
-{{$rows := .Data}}
-<div class="card">
-  <div class="table-wrap">
-    <table class="table">
-      <thead>
-        <tr><th scope="col">Name</th><th scope="col">Category</th><th scope="col">Order</th><th scope="col">Status</th><th scope="col">Groups to notify</th></tr>
-      </thead>
-      <tbody>
-        {{range $rows}}
-        <tr>
-          <td><a href="/admin/services/{{.ID}}">{{.Name}}</a>{{with .Description}}<div class="small muted">{{.}}</div>{{end}}</td>
-          <td>{{with .Category}}{{.}}{{else}}<span class="muted">–</span>{{end}}</td>
-          <td>{{.SortOrder}}</td>
-          <td>{{template "status-pill" .Status}}</td>
-          <td class="admin-cell-wrap">{{with .GroupNames}}{{join . ", "}}{{else}}<span class="muted">none</span>{{end}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
-  {{if not $rows}}
-  <div class="empty-state">
-    <p>No services yet. Add the services whose status you want to show, e.g. “E-mail”, “VPN” or “ERP”.</p>
-  </div>
-  {{end}}
+{{- if .Data}}
+<div class="card table-wrap" tabindex="0" role="region" aria-label="Services">
+  <table class="table">
+    <thead>
+      <tr><th scope="col">Name</th><th scope="col">Category</th><th scope="col">Order</th><th scope="col">Status</th><th scope="col">Groups to notify</th></tr>
+    </thead>
+    <tbody>
+      {{- range .Data}}
+      <tr>
+        <td><div><a href="/admin/services/{{.ID}}">{{.Name}}</a></div>{{with .Description}}<div class="small muted">{{.}}</div>{{end}}</td>
+        <td>{{with .Category}}{{.}}{{else}}<span class="muted">–</span>{{end}}</td>
+        <td>{{.SortOrder}}</td>
+        <td>{{template "status-pill" .Status}}</td>
+        <td class="cell-wrap">{{with .GroupNames}}{{join . ", "}}{{else}}<span class="muted">none</span>{{end}}</td>
+      </tr>
+      {{- end}}
+    </tbody>
+  </table>
 </div>
+{{- else}}
+<p class="notice">No services yet. Add the services whose status you want to show, e.g. “E-mail”, “VPN” or “ERP”.</p>
+{{- end}}
 {{end}}

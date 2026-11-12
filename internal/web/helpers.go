@@ -18,9 +18,12 @@ import (
 
 // Flash is a one-time message shown on the next rendered page.
 type Flash struct {
-	Kind    string // success, error, info
+	Kind    string // success, info, warning (done, but with a problem), error
 	Message string
 }
+
+// flashKinds are the allowed flash kinds (also CSS classes flash-<kind>).
+var flashKinds = map[string]bool{"success": true, "info": true, "warning": true, "error": true}
 
 const flashCookie = "sp_flash"
 
@@ -41,7 +44,7 @@ func (s *Server) popFlash(w http.ResponseWriter, r *http.Request) *Flash {
 		return nil
 	}
 	kind, msg, ok := strings.Cut(string(b), "|")
-	if !ok || (kind != "success" && kind != "error" && kind != "info") {
+	if !ok || !flashKinds[kind] {
 		return nil
 	}
 	return &Flash{Kind: kind, Message: msg}

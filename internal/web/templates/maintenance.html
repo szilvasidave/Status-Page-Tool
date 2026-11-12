@@ -1,11 +1,11 @@
 {{define "content"}}
 {{with .Data}}{{$state := .State $.Now}}
-<p class="public-back small"><a href="/history">← History</a></p>
-<div class="toolbar public-title">
+<a class="back-link" href="/history">← History</a>
+<div class="toolbar">
   <h1>{{.Title}}</h1>
-  {{if $.IsEditor}}<a class="btn btn-primary" href="/manage/maintenance/{{.ID}}">Edit</a>{{end}}
+  {{if $.IsEditor}}<a class="btn" href="/manage/maintenance/{{.ID}}">Manage maintenance</a>{{end}}
 </div>
-<div class="row public-tags">
+<div class="row meta-row">
   <span class="badge badge-muted">Maintenance</span>
   {{template "maintenance-badge" $state}}
   {{if eq $state "scheduled"}}<span class="small muted">starts {{ago .StartsAt}}</span>{{end}}
@@ -24,7 +24,7 @@
     <section class="card" aria-labelledby="window">
       <div class="card-header"><h2 id="window">Window</h2></div>
       <div class="card-body">
-        <dl class="public-facts">
+        <dl class="facts">
           <div><dt>Starts</dt><dd><time datetime="{{isoTime .StartsAt}}">{{fmtTime .StartsAt}}</time></dd></div>
           <div><dt>Ends</dt><dd><time datetime="{{isoTime .EndsAt}}">{{fmtTime .EndsAt}}</time></dd></div>
           <div><dt>Duration</dt><dd>{{duration .StartsAt .EndsAt}}</dd></div>

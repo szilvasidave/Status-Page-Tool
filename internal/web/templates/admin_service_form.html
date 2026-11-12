@@ -1,72 +1,67 @@
-{{define "head"}}{{template "admin-head"}}{{end}}
 {{define "content"}}
-{{template "admin-subnav" "services"}}
 {{with .Data}}
-<div class="toolbar">
-  <h1>{{if .IsNew}}New service{{else}}Edit service{{end}}</h1>
-  <a class="btn" href="/admin/services">Back to services</a>
-</div>
-{{template "admin-error-summary" .Errors}}
+<a class="back-link" href="/admin/services">← Services</a>
+<h1>{{if .IsNew}}New service{{else}}Edit service{{end}}</h1>
 
 <form method="post" action="{{if .IsNew}}/admin/services{{else}}/admin/services/{{.Service.ID}}{{end}}" class="form">
+  {{template "error-summary" .Errors}}
   {{template "csrf" $}}
   <div class="field">
     <label for="name">Name</label>
     <input id="name" name="name" type="text" value="{{.Service.Name}}" required maxlength="100"{{if .Errors.name}} aria-invalid="true"{{end}}>
-    {{template "admin-field-error" .Errors.name}}
+    {{template "field-error" .Errors.name}}
   </div>
   <div class="field">
-    <label for="description">Description</label>
+    <label for="description">Description <span class="muted">(optional)</span></label>
     <input id="description" name="description" type="text" value="{{.Service.Description}}" maxlength="300">
-    <span class="help">Optional, shown below the name on the status page.</span>
+    <span class="help">Shown below the name on the status page.</span>
   </div>
   <div class="field-row">
     <div class="field">
-      <label for="category">Category</label>
+      <label for="category">Category <span class="muted">(optional)</span></label>
       <input id="category" name="category" type="text" list="categories" value="{{.Service.Category}}" maxlength="100" autocomplete="off"{{if .Errors.category}} aria-invalid="true"{{end}}>
       <datalist id="categories">{{range .Categories}}<option value="{{.}}">{{end}}</datalist>
-      <span class="help">Optional heading to group services on the status page.</span>
-      {{template "admin-field-error" .Errors.category}}
+      <span class="help">Heading to group services on the status page.</span>
+      {{template "field-error" .Errors.category}}
     </div>
     <div class="field">
       <label for="sort_order">Sort order</label>
       <input id="sort_order" name="sort_order" type="number" step="1" value="{{.SortOrder}}"{{if .Errors.sort_order}} aria-invalid="true"{{end}}>
       <span class="help">Lower numbers are shown first within a category.</span>
-      {{template "admin-field-error" .Errors.sort_order}}
+      {{template "field-error" .Errors.sort_order}}
     </div>
   </div>
-  <div class="field">
-    <span class="label" id="groups-label">Groups to notify</span>
-    {{if .Groups}}
-    <div class="checkbox-list" role="group" aria-labelledby="groups-label">
-      {{$ids := .Service.GroupIDs}}
-      {{range .Groups}}
+  <fieldset aria-describedby="groups-help">
+    <legend>Groups to notify</legend>
+    {{- if .Groups}}
+    <div class="checkbox-list">
+      {{- $ids := .Service.GroupIDs}}
+      {{- range .Groups}}
       <label class="checkbox"><input type="checkbox" name="groups" value="{{.ID}}"{{if containsID $ids .ID}} checked{{end}}>
         <span>{{.DisplayName}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
-      {{end}}
+      {{- end}}
     </div>
-    {{else}}
+    {{- else}}
     <p class="notice">There are no groups yet.</p>
-    {{end}}
-    <span class="help">Members of these groups are e-mailed about incidents and maintenance of this service. Groups appear
-      automatically after their members sign in, or can be added on the <a href="/admin/groups">Groups</a> page.</span>
-  </div>
+    {{- end}}
+    <p class="help" id="groups-help">Members of these groups are e-mailed about incidents and maintenance of this service. Groups appear
+      automatically after their members sign in, or can be added on the <a href="/admin/groups">Groups</a> page.</p>
+  </fieldset>
   <div class="form-actions">
     <button type="submit" class="btn-primary">{{if .IsNew}}Create service{{else}}Save service{{end}}</button>
     <a class="btn" href="/admin/services">Cancel</a>
   </div>
 </form>
 
-{{if not .IsNew}}
-<hr>
-<section>
-  <h2>Delete service</h2>
+{{- if not .IsNew}}
+<section class="danger-zone" aria-labelledby="delete-service">
+  <h2 id="delete-service">Delete service</h2>
   <p class="muted">Incidents and maintenance windows are kept but lose their link to this service.</p>
   <form method="post" action="/admin/services/{{.Service.ID}}/delete" data-confirm="Delete the service “{{.Service.Name}}”? Incidents and maintenance windows are kept but lose their link to this service.">
     {{template "csrf" $}}
     <button type="submit" class="btn-danger">Delete service</button>
   </form>
 </section>
-{{end}}
+{{- end}}
 {{end}}
 {{end}}

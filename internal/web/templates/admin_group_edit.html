@@ -1,55 +1,53 @@
-{{define "head"}}{{template "admin-head"}}{{end}}
 {{define "content"}}
-{{template "admin-subnav" "groups"}}
 {{with .Data}}
-<div class="toolbar">
-  <h1>{{.Group.DisplayName}}</h1>
-  <a class="btn" href="/admin/groups">Back to groups</a>
+<a class="back-link" href="/admin/groups">← Groups</a>
+<h1>{{.Group.DisplayName}}</h1>
+
+<div class="card card-body">
+  <dl class="facts">
+    <div><dt>Group ID</dt><dd><code>{{.Group.ExternalID}}</code></dd></div>
+    <div><dt>Members</dt><dd>{{.Group.MemberCount}}</dd></div>
+    <div><dt>Last synchronised</dt><dd>{{with .Group.LastSyncedAt}}<time datetime="{{isoTime .}}">{{fmtTime .}}</time>{{else}}<span class="muted">never</span>{{end}}</dd></div>
+    <div><dt>Added</dt><dd><time datetime="{{isoTime .Group.CreatedAt}}">{{fmtDate .Group.CreatedAt}}</time></dd></div>
+  </dl>
 </div>
 
-<dl class="admin-meta card card-body">
-  <div><dt>Group ID</dt><dd><code>{{.Group.ExternalID}}</code></dd></div>
-  <div><dt>Members</dt><dd>{{.Group.MemberCount}}</dd></div>
-  <div><dt>Last synchronised</dt><dd>{{with .Group.LastSyncedAt}}<time datetime="{{isoTime .}}">{{fmtTime .}}</time>{{else}}<span class="muted">never</span>{{end}}</dd></div>
-  <div><dt>Added</dt><dd><time datetime="{{isoTime .Group.CreatedAt}}">{{fmtDate .Group.CreatedAt}}</time></dd></div>
-</dl>
-
-{{template "admin-error-summary" .Errors}}
 <form method="post" action="/admin/groups/{{.Group.ID}}" class="form">
+  {{template "error-summary" .Errors}}
   {{template "csrf" $}}
   <div class="field">
     <label for="name">Display name</label>
-    <input id="name" name="name" type="text" value="{{.Group.Name}}" maxlength="200" placeholder="{{.Group.ExternalID}}"{{if .Errors.name}} aria-invalid="true"{{end}}>
-    <span class="help">Shown in the admin pages. Empty shows the group ID. A directory sync replaces it with the name from the directory.</span>
-    {{template "admin-field-error" .Errors.name}}
+    <input id="name" name="name" type="text" value="{{.Group.Name}}" maxlength="200" placeholder="{{.Group.ExternalID}}"{{if .Errors.name}} aria-invalid="true"{{end}} aria-describedby="name-help">
+    <span class="help" id="name-help">Shown in the admin pages. Empty shows the group ID. A directory sync replaces it with the name from the directory.</span>
+    {{template "field-error" .Errors.name}}
   </div>
 
   <fieldset>
     <legend>Role</legend>
-    <label class="checkbox admin-role-option"><input type="radio" name="role" value="viewer"{{if eq .Role "viewer"}} checked{{end}}>
-      <span><strong>Viewer</strong> <span class="small muted">– no special role: members can see the status pages.</span></span></label>
-    <label class="checkbox admin-role-option"><input type="radio" name="role" value="editor"{{if eq .Role "editor"}} checked{{end}}>
-      <span><strong>Editor</strong> <span class="small muted">– can also post incidents and maintenance windows.</span></span></label>
-    <label class="checkbox admin-role-option"><input type="radio" name="role" value="admin"{{if eq .Role "admin"}} checked{{end}}>
-      <span><strong>Admin</strong> <span class="small muted">– can also change settings, services and groups.</span></span></label>
-    {{template "admin-field-error" .Errors.role}}
+    <label class="checkbox"><input type="radio" name="role" value="viewer"{{if eq .Role "viewer"}} checked{{end}}>
+      <span><strong>Viewer</strong> <span class="muted">– no special role: members can see the status pages.</span></span></label>
+    <label class="checkbox"><input type="radio" name="role" value="editor"{{if eq .Role "editor"}} checked{{end}}>
+      <span><strong>Editor</strong> <span class="muted">– can also post incidents and maintenance windows.</span></span></label>
+    <label class="checkbox"><input type="radio" name="role" value="admin"{{if eq .Role "admin"}} checked{{end}}>
+      <span><strong>Administrator</strong> <span class="muted">– can also change settings, services and groups.</span></span></label>
+    {{template "field-error" .Errors.role}}
   </fieldset>
 
-  <div class="field">
-    <span class="label" id="services-label">Services this group is notified about</span>
-    {{if .Services}}
-    <div class="checkbox-list" role="group" aria-labelledby="services-label">
-      {{$ids := .Group.ServiceIDs}}
-      {{range .Services}}
+  <fieldset aria-describedby="services-help">
+    <legend>Services this group is notified about</legend>
+    {{- if .Services}}
+    <div class="checkbox-list">
+      {{- $ids := .Group.ServiceIDs}}
+      {{- range .Services}}
       <label class="checkbox"><input type="checkbox" name="services" value="{{.ID}}"{{if containsID $ids .ID}} checked{{end}}>
         <span>{{.Name}}{{with .Category}} <span class="small muted">· {{.}}</span>{{end}}</span></label>
-      {{end}}
+      {{- end}}
     </div>
-    {{else}}
+    {{- else}}
     <p class="notice">There are no services yet. <a href="/admin/services/new">Add a service</a>.</p>
-    {{end}}
-    <span class="help">Members with an e-mail address receive notifications about incidents and maintenance of these services.</span>
-  </div>
+    {{- end}}
+    <p class="help" id="services-help">Members with an e-mail address receive notifications about incidents and maintenance of these services.</p>
+  </fieldset>
 
   <div class="form-actions">
     <button type="submit" class="btn-primary">Save group</button>
@@ -59,30 +57,28 @@
 
 <section>
   <h2>Members</h2>
-  {{if .Members}}
-  <div class="card">
-    <div class="table-wrap">
-      <table class="table">
-        <thead><tr><th scope="col">Name</th><th scope="col">E-mail</th><th scope="col">Last sign-in</th></tr></thead>
-        <tbody>
-          {{range .Members}}
-          <tr>
-            <td>{{.DisplayName}}</td>
-            <td class="admin-cell-wrap">{{with .Email}}{{.}}{{else}}<span class="muted">none</span>{{end}}</td>
-            <td>{{with .LastLoginAt}}<time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}<span class="muted">never</span>{{end}}</td>
-          </tr>
-          {{end}}
-        </tbody>
-      </table>
-    </div>
+  {{- if .Members}}
+  <div class="card table-wrap" tabindex="0" role="region" aria-label="Members">
+    <table class="table">
+      <thead><tr><th scope="col">Name</th><th scope="col">E-mail</th><th scope="col">Last sign-in</th></tr></thead>
+      <tbody>
+        {{- range .Members}}
+        <tr>
+          <td>{{.DisplayName}}</td>
+          <td class="cell-wrap">{{with .Email}}{{.}}{{else}}<span class="muted">none</span>{{end}}</td>
+          <td class="nowrap">{{with .LastLoginAt}}<time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}<span class="muted">never</span>{{end}}</td>
+        </tr>
+        {{- end}}
+      </tbody>
+    </table>
   </div>
-  {{else}}
+  {{- else}}
   <p class="notice">No known members yet. Members are recorded when they sign in with single sign-on, or by the directory sync if it is enabled.</p>
-  {{end}}
+  {{- end}}
 </section>
 
-<section>
-  <h2>Delete group</h2>
+<section class="danger-zone" aria-labelledby="delete-group">
+  <h2 id="delete-group">Delete group</h2>
   <p class="muted">Removes the role and the service assignments of this group. If members still have the group in their
     sign-in claim, it is created again (without a role) at their next sign-in.</p>
   <form method="post" action="/admin/groups/{{.Group.ID}}/delete" data-confirm="Delete the group “{{.Group.DisplayName}}”? Its role and service assignments are removed.">

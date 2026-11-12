@@ -1,18 +1,19 @@
-{{define "head"}}{{template "admin-head"}}{{end}}
 {{define "content"}}
 {{with .Data}}
 <div class="setup-card">
   {{template "setup-steps" 1}}
   <h1>Welcome to Status Page</h1>
-  <p class="muted">Choose where the status page stores its data. The tables are created right away.</p>
+  <p class="lead">Choose where the status page stores its data. The tables are created right away.</p>
 
   {{with .Success}}<div class="flash flash-success" role="status">{{.}}</div>{{end}}
   {{with .Error}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
 
-  <form method="post" action="/setup" class="form card card-body setup-db">
+  <form method="post" action="/setup" class="form">
     {{template "csrf" $}}
+    <fieldset class="box">
+    <legend>Database</legend>
     <div class="field">
-      <label for="driver">Database</label>
+      <label for="driver">Database type</label>
       <select id="driver" name="driver" data-show-when="postgres" data-target="#pg-fields">
         <option value="sqlite"{{if eq .Driver "sqlite"}} selected{{end}}>SQLite (built in)</option>
         <option value="postgres"{{if eq .Driver "postgres"}} selected{{end}}>PostgreSQL</option>
@@ -22,7 +23,7 @@
     </div>
 
     <div id="pg-fields"{{if ne .Driver "postgres"}} hidden{{end}}>
-      <p class="small muted">The database must already exist and the user must be allowed to create tables in it
+      <p class="help">The database must already exist and the user must be allowed to create tables in it
         (being the owner of the database is enough).</p>
       <div class="field-row">
         <div class="field">
@@ -62,15 +63,16 @@
 
     <div id="sqlite-fields">
       <div class="field">
-        <label for="sqlite_path">Database file <span class="muted small">(optional)</span></label>
-        <input id="sqlite_path" name="sqlite_path" type="text" value="{{.SQLitePath}}" placeholder="{{.DefaultSQLitePath}}" spellcheck="false">
-        <span class="help">Leave empty to use <code>{{.DefaultSQLitePath}}</code>. Relative paths are relative to the data folder.</span>
+        <label for="sqlite_path">Database file <span class="muted">(optional)</span></label>
+        <input id="sqlite_path" name="sqlite_path" type="text" value="{{.SQLitePath}}" spellcheck="false" aria-describedby="sqlite_path_help">
+        <span class="help" id="sqlite_path_help">Leave empty to use <code>{{.DefaultSQLitePath}}</code>. Relative paths are relative to the data folder.</span>
       </div>
     </div>
+    </fieldset>
 
     {{template "setup-token-field" (dict "Ask" .AskToken "File" .TokenFile "Error" "")}}
 
-    <p class="small muted">The server keeps listening on port {{.Port}}. The port can be changed later with the
+    <p class="help">The server keeps listening on port {{.Port}}. The port can be changed later with the
       <code class="nowrap">"listen"</code> setting in <code class="nowrap">config.json</code> in the data folder.</p>
 
     <div class="form-actions">

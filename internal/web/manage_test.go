@@ -166,7 +166,7 @@ func TestManageDashboard(t *testing.T) {
 
 	r := e.get("/manage")
 	manageStatus(t, r, http.StatusOK)
-	mustContain(t, r.Body, `class="subnav"`, `href="/manage/incidents/new"`, `href="/manage/maintenance/new"`,
+	mustContain(t, r.Body, `href="/manage/incidents/new"`, `href="/manage/maintenance/new"`,
 		"No open incidents", "No maintenance is in progress or scheduled", "No incidents have been resolved recently")
 
 	ctx := context.Background()
@@ -207,8 +207,8 @@ func TestManageIncidentCreate(t *testing.T) {
 	mustContain(t, r.Body, `name="`+manageImpactField(erp)+`"`, `name="`+manageImpactField(vpn)+`"`,
 		"Business applications", "Infrastructure", "Not affected", "Degraded performance", "Major outage",
 		`<option value="investigating" selected>`, `name="notify" value="on" checked`,
-		"E-mail members of the groups assigned to the affected services",
-		"E-mail is not configured, so no notifications will be sent")
+		"E-mail the members of the groups assigned to the affected services",
+		"E-mail is not configured, so no notifications are sent")
 	if strings.Contains(r.Body, `value="resolved"`) {
 		t.Error("a new incident can be created as resolved")
 	}
@@ -420,7 +420,7 @@ func TestManageIncidentUpdate(t *testing.T) {
 	// Rename.
 	r = e.post(path+"/title", url.Values{"title": {"  "}})
 	manageStatus(t, r, http.StatusUnprocessableEntity)
-	mustContain(t, r.Body, "Please enter a title.", "<details class=\"manage-rename\" open>")
+	mustContain(t, r.Body, "Please enter a title.", "<details class=\"disclosure\" open>")
 	r = e.post(path+"/title", url.Values{"title": {"ERP is slow"}})
 	mustContain(t, manageFollow(t, e, r, path).Body, "The title has been changed.", "ERP is slow")
 	if got, _ := e.Store.GetIncident(ctx, inc.ID); got.Title != "ERP is slow" {

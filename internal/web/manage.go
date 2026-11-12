@@ -235,11 +235,12 @@ func (s *Server) manageNotify(r *http.Request, event string, fn func(context.Con
 }
 
 // manageDone redirects to target with a flash message made of msg and the
-// optional notification note.
+// optional notification note. The change itself was saved, so a failure to
+// queue the e-mails (warn) is a warning, not an error.
 func (s *Server) manageDone(w http.ResponseWriter, r *http.Request, target, msg, note string, warn bool) {
 	kind := "success"
 	if warn {
-		kind = "error"
+		kind = "warning"
 	}
 	if note != "" {
 		msg += " " + note
