@@ -1,0 +1,77 @@
+{{define "head"}}<link rel="stylesheet" href="/static/manage.css">{{end}}
+
+{{define "content"}}
+{{template "manage-subnav" "overview"}}
+{{with .Data}}
+<div class="toolbar manage-toolbar">
+  <h1>Manage</h1>
+  <a class="btn btn-primary" href="/manage/incidents/new">Report incident</a>
+  <a class="btn btn-primary" href="/manage/maintenance/new">Schedule maintenance</a>
+</div>
+
+<section aria-labelledby="open-incidents">
+  <h2 id="open-incidents">Open incidents</h2>
+  {{- if .Open}}
+  <ul class="card card-list">
+    {{- range .Open}}
+    <li>
+      <div class="row">
+        <a class="manage-item-title" href="/manage/incidents/{{.ID}}">{{.Title}}</a>
+        {{template "incident-badge" .Status}}
+        <span class="spacer"></span>
+        {{template "status-pill" .Impact}}
+      </div>
+      <div class="small muted">
+        {{- with .Services}}{{.}} · {{end -}}
+        Last update <time datetime="{{isoTime .LastUpdate}}" title="{{fmtTime .LastUpdate}}">{{ago .LastUpdate}}</time>
+      </div>
+    </li>
+    {{- end}}
+  </ul>
+  {{- else}}
+  <div class="card"><div class="card-body muted">No open incidents. Everything is running normally.</div></div>
+  {{- end}}
+</section>
+
+<section aria-labelledby="current-maintenance">
+  <h2 id="current-maintenance">Maintenance in progress and upcoming</h2>
+  {{- if .Maintenance}}
+  <ul class="card card-list">
+    {{- range .Maintenance}}
+    <li>
+      <div class="row">
+        <a class="manage-item-title" href="/manage/maintenance/{{.ID}}">{{.Title}}</a>
+        {{template "maintenance-badge" .State}}
+        <span class="spacer"></span>
+        <span class="small muted nowrap">{{if eq .State "in_progress"}}ends {{ago .EndsAt}}{{else}}starts {{ago .StartsAt}}{{end}}</span>
+      </div>
+      <div class="small muted">{{with .Services}}{{.}} · {{end}}{{.Window}}</div>
+    </li>
+    {{- end}}
+  </ul>
+  {{- else}}
+  <div class="card"><div class="card-body muted">No maintenance is in progress or scheduled.</div></div>
+  {{- end}}
+</section>
+
+<section aria-labelledby="resolved-incidents">
+  <h2 id="resolved-incidents">Recently resolved incidents</h2>
+  {{- if .Resolved}}
+  <ul class="card card-list">
+    {{- range .Resolved}}
+    <li>
+      <div class="row">
+        <a class="manage-item-title" href="/manage/incidents/{{.ID}}">{{.Title}}</a>
+        <span class="spacer"></span>
+        <span class="small muted nowrap">Resolved <time datetime="{{isoTime .ResolvedAt}}">{{fmtTime .ResolvedAt}}</time></span>
+      </div>
+      <div class="small muted">{{with .Services}}{{.}} · {{end}}Lasted {{duration .StartedAt .ResolvedAt}}</div>
+    </li>
+    {{- end}}
+  </ul>
+  {{- else}}
+  <div class="card"><div class="card-body muted">No incidents have been resolved recently.</div></div>
+  {{- end}}
+</section>
+{{end}}
+{{end}}

@@ -1,0 +1,58 @@
+{{define "head"}}<link rel="stylesheet" href="/static/manage.css">{{end}}
+
+{{define "content"}}
+{{template "manage-subnav" "incident"}}
+{{with .Data}}
+<h1>Report incident</h1>
+{{template "manage-errors" .Errors}}
+<form method="post" action="/manage/incidents" class="form manage-form">
+  {{template "csrf" $}}
+  <div class="field">
+    <label for="title">Title</label>
+    <input id="title" name="title" type="text" maxlength="200" required value="{{.Title}}" placeholder="e.g. E-mail delivery delayed">
+    <span class="help">A short summary, shown on the status page and in the e-mail subject.</span>
+  </div>
+
+  <fieldset>
+    <legend>Affected services</legend>
+    {{- if .Groups}}
+    <p class="small muted">Choose the impact on every service that is affected.</p>
+    {{template "manage-impact-table" .Groups}}
+    {{- else}}
+    {{template "manage-no-services" $}}
+    {{- end}}
+  </fieldset>
+
+  <div class="field-row">
+    <div class="field">
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        {{- range incidentStatuses}}
+        {{- if ne . "resolved"}}
+        <option value="{{.}}"{{if eq . $.Data.Status}} selected{{end}}>{{.Label}}</option>
+        {{- end}}
+        {{- end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="started_at">Started at <span class="muted">(optional)</span></label>
+      <input id="started_at" name="started_at" type="datetime-local" value="{{.StartedAt}}">
+      <span class="help">Leave empty if it started just now. Time zone: {{tz}}.</span>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="message">Message</label>
+    <textarea id="message" name="message" rows="5" required>{{.Message}}</textarea>
+    <span class="help">What is happening and what users should expect. Shown on the status page and in the e-mail.</span>
+  </div>
+
+  {{template "manage-notify" (dict "Page" $ "Checked" .Notify "Help" "E-mail members of the groups assigned to the affected services.")}}
+
+  <div class="form-actions">
+    <button type="submit" class="btn-primary">Report incident</button>
+    <a class="btn" href="/manage">Cancel</a>
+  </div>
+</form>
+{{end}}
+{{end}}

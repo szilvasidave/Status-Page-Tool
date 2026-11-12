@@ -1,0 +1,97 @@
+{{define "head"}}<link rel="stylesheet" href="/static/manage.css">{{end}}
+
+{{define "content"}}
+{{template "manage-subnav" ""}}
+{{- $inc := .Data.Incident}}
+{{- $f := .Data.Update}}
+<div class="toolbar">
+  <h1>{{$inc.Title}}</h1>
+  <a class="btn btn-small" href="/incidents/{{$inc.ID}}">View on status page</a>
+</div>
+<div class="row manage-meta">
+  {{template "incident-badge" $inc.Status}}
+  {{- if not $inc.Resolved}}
+  {{template "status-pill" $inc.Impact}}
+  {{- end}}
+  <span class="small muted">
+    Started <time datetime="{{isoTime $inc.StartedAt}}">{{fmtTime $inc.StartedAt}}</time>
+    {{- if $inc.ResolvedAt}} · resolved <time datetime="{{isoTime $inc.ResolvedAt}}">{{fmtTime $inc.ResolvedAt}}</time> after {{duration $inc.StartedAt $inc.ResolvedAt}}
+    {{- else}} · ongoing for {{duration $inc.StartedAt nil}}{{end}}
+  </span>
+</div>
+
+<details class="manage-rename"{{if .Data.RenameError}} open{{end}}>
+  <summary>Rename incident</summary>
+  {{- with .Data.RenameError}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
+  <form method="post" action="/manage/incidents/{{$inc.ID}}/title" class="form row">
+    {{template "csrf" $}}
+    <input name="title" type="text" maxlength="200" required value="{{.Data.RenameTitle}}" aria-label="New title" class="manage-grow">
+    <button type="submit">Save title</button>
+  </form>
+</details>
+
+<section class="card" aria-labelledby="post-update">
+  <div class="card-header"><h2 id="post-update">Post an update</h2></div>
+  <div class="card-body">
+    {{template "manage-errors" $f.Errors}}
+    <form method="post" action="/manage/incidents/{{$inc.ID}}/updates" class="form manage-form">
+      {{template "csrf" $}}
+      <div class="field">
+        <label for="status">Status</label>
+        <select id="status" name="status" class="manage-status-select">
+          {{- range incidentStatuses}}
+          <option value="{{.}}"{{if eq . $f.Status}} selected{{end}}>{{.Label}}</option>
+          {{- end}}
+        </select>
+        <span class="help">Choose “Resolved” when the problem is fixed.</span>
+      </div>
+      <div class="field">
+        <label for="message">Message</label>
+        <textarea id="message" name="message" rows="4" required>{{$f.Message}}</textarea>
+      </div>
+      <fieldset>
+        <legend>Affected services</legend>
+        {{- if $f.Groups}}
+        <p class="small muted">Adjust the impact if it has changed. The impact is kept in the history when the incident is resolved.</p>
+        {{template "manage-impact-table" $f.Groups}}
+        {{- else}}
+        {{template "manage-no-services" $}}
+        {{- end}}
+      </fieldset>
+      {{template "manage-notify" (dict "Page" $ "Checked" $f.Notify "Help" "E-mail members of the groups assigned to the affected services.")}}
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">Post update</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section class="card" aria-labelledby="timeline">
+  <div class="card-header"><h2 id="timeline">Updates</h2></div>
+  <div class="card-body">
+    {{- if $inc.Updates}}
+    <ol class="timeline">
+      {{- range $inc.Updates}}
+      <li class="timeline-item">
+        <span class="timeline-status">{{.Status.Label}}</span>
+        <div class="timeline-body">{{nl2br .Message}}</div>
+        <div class="timeline-meta"><time datetime="{{isoTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time>{{with .AuthorName}} · {{.}}{{end}}</div>
+      </li>
+      {{- end}}
+    </ol>
+    {{- else}}
+    <p class="muted">No updates have been posted yet.</p>
+    {{- end}}
+  </div>
+</section>
+
+{{- if $.IsAdmin}}
+<section class="manage-danger" aria-label="Delete incident">
+  <form method="post" action="/manage/incidents/{{$inc.ID}}/delete" class="inline" data-confirm="Delete this incident with all its updates? It disappears from the status page and the history. This cannot be undone.">
+    {{template "csrf" $}}
+    <button type="submit" class="btn-danger">Delete incident</button>
+  </form>
+  <span class="small muted">Only for incidents that were reported by mistake. Resolve real incidents instead.</span>
+</section>
+{{- end}}
+{{end}}

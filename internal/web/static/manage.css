@@ -1,0 +1,51 @@
+/* Editor area (/manage). Additions to style.css for the incident and
+ * maintenance forms; everything else uses the shared vocabulary. */
+
+.manage-item-title { font-weight: 600; }
+@media (max-width: 520px) { .manage-toolbar h1 { flex-basis: 100%; } }
+.manage-meta { margin: -8px 0 12px; }
+.manage-form { max-width: 720px; }
+.manage-form fieldset .small.muted { margin: 0 0 10px; }
+.manage-tz { margin: -10px 0 18px; }
+.manage-error-list { margin: 6px 0 0; padding-left: 20px; }
+.manage-grow { flex: 1; min-width: 12rem; }
+.manage-back { margin-top: 16px; }
+
+/* Rename form on the incident page. */
+.manage-rename { margin-bottom: 20px; }
+.manage-rename summary { cursor: pointer; color: var(--link); font-size: .9rem; width: max-content; }
+.manage-rename[open] summary { margin-bottom: 10px; }
+.manage-rename .form { max-width: 720px; }
+
+/* Delete / end / cancel buttons below the forms. */
+.manage-danger { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+
+/* Impact table: one row per service with an impact select. Rows of affected
+ * services are highlighted in the colour of the selected impact. */
+.manage-impacts-card { margin-bottom: 14px; }
+.manage-impacts td { vertical-align: middle; padding-top: 6px; padding-bottom: 6px; }
+.manage-impacts label { display: block; }
+.manage-impact-cell { width: 15rem; }
+.manage-impacts select { padding-top: 6px; padding-bottom: 6px; }
+.manage-impacts tr.manage-category th { padding-top: 8px; padding-bottom: 8px; }
+.manage-impacts tbody + tbody tr.manage-category th { border-top: 1px solid var(--border); }
+.manage-impacts tr:has(option[value="degraded"]:checked) { --status: var(--st-degraded); }
+.manage-impacts tr:has(option[value="partial_outage"]:checked) { --status: var(--st-partial_outage); }
+.manage-impacts tr:has(option[value="major_outage"]:checked) { --status: var(--st-major_outage); }
+.manage-impacts tr:has(option:not([value=""]):checked) td { background: color-mix(in srgb, var(--status) 10%, var(--surface)); }
+.manage-impacts tr:has(option:not([value=""]):checked) td:first-child { box-shadow: inset 4px 0 0 var(--status); font-weight: 600; }
+.manage-impacts tr:has(option:not([value=""]):checked) select { border-color: var(--status); }
+/* Narrow screens: the select goes below the service name. */
+@media (max-width: 520px) {
+  .manage-form fieldset { padding-left: 12px; padding-right: 12px; }
+  .manage-impacts, .manage-impacts tbody, .manage-impacts tr, .manage-impacts th, .manage-impacts td { display: block; width: auto; }
+  .manage-impacts td { border-bottom: 0; padding: 10px 12px 4px; }
+  .manage-impacts td.manage-impact-cell { width: auto; padding: 0 12px 10px; border-bottom: 1px solid var(--border); }
+  .manage-impacts tbody:last-child tr:last-child td.manage-impact-cell { border-bottom: 0; }
+  .manage-impacts tr:has(option:not([value=""]):checked) td.manage-impact-cell { box-shadow: inset 4px 0 0 var(--status); }
+}
+
+/* Service checkboxes of the maintenance form. */
+.manage-service-list { max-height: 360px; }
+.manage-check-category { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); margin: 10px 0 2px; }
+.manage-check-category:first-child { margin-top: 2px; }
