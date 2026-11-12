@@ -347,8 +347,9 @@ statuspage service install|uninstall|start|stop|restart|status [-data DIR]
     administrator or root rights). The service runs "statuspage run -data DIR".
 
 statuspage reset-password -username NAME [-data DIR]
-    Set a new password for a local administrator account. The password is
-    read from standard input (asked twice, hidden, in a terminal).
+    Set a new password for a local administrator account and sign out all
+    its sessions. The password is read from standard input (asked twice,
+    hidden, in a terminal).
 
 statuspage version
 ```
@@ -395,6 +396,10 @@ set with `-ldflags "-X main.version=1.2.3"`.
 PostgreSQL tests run when `STATUSPAGE_TEST_PG_DSN` is set, e.g.
 `postgres://statuspage:statuspage@localhost:5432/statuspage_test?sslmode=disable`
 (the tests drop and recreate the `public` schema of that database).
+The end-to-end tests in `internal/e2e` run the whole application like a
+browser (setup wizard, single sign-on against a mock OpenID provider, e-mails
+to a fake SMTP server, restart) with SQLite and, if set, PostgreSQL, and
+smoke-test the command line tool.
 
 GitHub Actions (`.github/workflows/build.yml`) runs the tests, builds binaries
 for Windows, Linux (amd64, arm64) and macOS (arm64) and the installer, and

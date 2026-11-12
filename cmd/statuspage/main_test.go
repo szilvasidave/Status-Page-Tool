@@ -2,13 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
+	"github.com/szilvasidave/status-page-tool/internal/db"
+	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
 func runCLI(t *testing.T, args ...string) (code int, stdout, stderr string) {
@@ -171,5 +177,62 @@ func TestReadPasswordLine(t *testing.T) {
 	}
 	if _, err := readPasswordLine(strings.NewReader("")); err == nil {
 		t.Error("expected an error for empty input")
+	}
+}
+
+// TestResetPassword checks that reset-password sets the new password and
+// signs out the existing sessions of the account (like a password change in
+// the web UI).
+func TestResetPassword(t *testing.T) {
+	dir := t.TempDir()
+	if code, _, errOut := runCLI(t, "setup", "-data", dir, "-db", "sqlite"); code != 0 {
+		t.Fatalf("setup: %s", errOut)
+	}
+	ctx := context.Background()
+	cfg, err := config.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _ := cfg.Key()
+	d, err := db.OpenConfig(ctx, cfg, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	st := store.New(d, key)
+	hash, _ := auth.HashPassword("old-password-1")
+	u, err := st.CreateLocalAdmin(ctx, "admin", "", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := &store.Session{ID: "session-hash", UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour)}
+	if err := st.CreateSession(ctx, sess); err != nil {
+		t.Fatal(err)
+	}
+
+	// The password is read from standard input.
+	in := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(in, []byte("new-password-2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	oldStdin := os.Stdin
+	os.Stdin = f
+	defer func() { os.Stdin = oldStdin }()
+
+	code, out, errOut := runCLI(t, "reset-password", "-username", "admin", "-data", dir)
+	if code != 0 || !strings.Contains(out, "was changed") {
+		t.Fatalf("reset-password: %d %q %q", code, out, errOut)
+	}
+	u, err = st.GetUserByUsername(ctx, "admin")
+	if err != nil || !auth.CheckPassword(u.PasswordHash, "new-password-2") {
+		t.Fatalf("the new password does not work: %v", err)
+	}
+	if _, err := st.GetSession(ctx, sess.ID, time.Now()); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the session survived the password reset: %v", err)
 	}
 }

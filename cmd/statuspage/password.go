@@ -22,8 +22,9 @@ import (
 
 const resetPasswordUsage = `statuspage reset-password -username NAME [-data DIR]
 
-Sets a new password for a local administrator account. The password is read
-from standard input (asked twice without echo when run in a terminal).`
+Sets a new password for a local administrator account and signs out all its
+sessions. The password is read from standard input (asked twice without echo
+when run in a terminal).`
 
 func cmdResetPassword(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("reset-password", resetPasswordUsage, stderr)
@@ -86,7 +87,12 @@ func cmdResetPassword(args []string, stdout, stderr io.Writer) error {
 	if err := st.SetPasswordHash(ctx, user.ID, hash); err != nil {
 		return fmt.Errorf("could not save the new password: %w", err)
 	}
-	fmt.Fprintf(stdout, "The password of %q was changed.\n", user.Username)
+	// Like a password change in the web UI: whoever knew the old password
+	// must not stay signed in.
+	if err := st.DeleteUserSessions(ctx, user.ID); err != nil {
+		return fmt.Errorf("the password was changed, but the existing sessions could not be signed out: %w", err)
+	}
+	fmt.Fprintf(stdout, "The password of %q was changed. All its sessions were signed out.\n", user.Username)
 	return nil
 }
 

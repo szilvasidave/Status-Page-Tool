@@ -28,6 +28,8 @@ internal/auth          sessions, CSRF, local admin login, OIDC login + group syn
 internal/notify        e-mail outbox, rendering, SMTP delivery (go-mail), maintenance start/end mails
 internal/directory     optional Microsoft Entra ID group member sync via Microsoft Graph
 internal/web           HTTP handlers + html/template templates + static assets (embedded)
+internal/e2e           end-to-end tests: the real app driven like a browser, plus the CLI
+internal/testutil      test helpers: mock OpenID provider (mockidp), fake SMTP server (fakesmtp)
 installer/             Inno Setup script → StatusPageSetup.exe
 ```
 
