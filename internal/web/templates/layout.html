@@ -1,0 +1,53 @@
+{{define "layout" -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Title}}{{.Title}} · {{end}}{{.SiteName}}</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<script src="/static/app.js" defer></script>
+{{block "head" .}}{{end}}
+</head>
+<body>
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>{{.SiteName}}</a>
+    {{- if not .SetupMode}}
+    <nav class="site-nav" aria-label="Main">
+      <a href="/"{{if eq .Nav "status"}} aria-current="page"{{end}}>Status</a>
+      <a href="/history"{{if eq .Nav "history"}} aria-current="page"{{end}}>History</a>
+      {{- if .IsEditor}}
+      <a href="/manage"{{if eq .Nav "manage"}} aria-current="page"{{end}}>Manage</a>
+      {{- end}}
+      {{- if .IsAdmin}}
+      <a href="/admin/settings"{{if eq .Nav "admin"}} aria-current="page"{{end}}>Admin</a>
+      {{- end}}
+    </nav>
+    <div class="user-menu">
+      {{- with .User}}
+      <a href="/account" class="user-name"{{if eq $.Nav "account"}} aria-current="page"{{end}}>{{.DisplayName}}</a>
+      <form method="post" action="/logout" class="inline">{{template "csrf" $}}<button type="submit" class="btn-link">Sign out</button></form>
+      {{- else}}
+      <a href="/login" class="btn btn-small">Sign in</a>
+      {{- end}}
+    </div>
+    {{- end}}
+  </div>
+</header>
+<main class="container main">
+  {{- with .Flash}}
+  <div class="flash flash-{{.Kind}}" role="status">{{.Message}}</div>
+  {{- end}}
+  {{template "content" .}}
+</main>
+<footer class="site-footer">
+  <div class="container">
+    <span>Times shown in {{tz}}</span>
+    <span class="muted">Status Page{{with .Version}} {{.}}{{end}}</span>
+  </div>
+</footer>
+</body>
+</html>
+{{- end}}

@@ -1,0 +1,10 @@
+/dist/
+/data/
+*.exe
+*.db
+*.db-shm
+*.db-wal
+/statuspage
+/coverage.out
+node_modules/
+test-results/

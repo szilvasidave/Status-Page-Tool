@@ -1,0 +1,11 @@
+{{/* Hidden CSRF input for POST forms. Usage: {{template "csrf" $}} where $ is the *Page. */}}
+{{define "csrf"}}<input type="hidden" name="csrf_token" value="{{.CSRF}}">{{end}}
+
+{{/* Status pill. Usage: {{template "status-pill" .Status}} with a store.Status. */}}
+{{define "status-pill"}}<span class="pill status-{{.}}"><span class="dot" aria-hidden="true"></span>{{statusLabel .}}</span>{{end}}
+
+{{/* Incident status badge. Usage: {{template "incident-badge" .Status}} with a store.IncidentStatus. */}}
+{{define "incident-badge"}}<span class="badge incident-{{.}}">{{.Label}}</span>{{end}}
+
+{{/* Maintenance state badge. Usage: {{template "maintenance-badge" .}} with a store.MaintenanceState. */}}
+{{define "maintenance-badge"}}<span class="badge maintenance-{{.}}">{{.Label}}</span>{{end}}
