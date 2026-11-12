@@ -4,6 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>{{if .Title}}{{.Title}} · {{end}}{{.SiteName}}</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
@@ -11,6 +12,7 @@
 {{block "head" .}}{{end}}
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 <header class="site-header">
   <div class="container header-inner">
     <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>{{.SiteName}}</a>
@@ -36,7 +38,7 @@
     {{- end}}
   </div>
 </header>
-<main class="container main">
+<main class="container main" id="main">
   {{- with .Flash}}
   <div class="flash flash-{{.Kind}}" role="status">{{.Message}}</div>
   {{- end}}

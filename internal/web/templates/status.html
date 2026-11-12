@@ -1,0 +1,120 @@
+{{define "head"}}<meta http-equiv="refresh" content="60">{{end}}
+
+{{define "content"}}
+{{with .Data}}
+<div class="banner status-{{.Overall}}">
+  {{template "public-status-icon" .Overall}}
+  <h1 class="banner-title">{{overallLabel .Overall}}</h1>
+  <span class="small banner-updated">Updated <time datetime="{{isoTime .Updated}}">{{fmtClock .Updated}}</time></span>
+</div>
+
+{{if .Incidents}}
+<section aria-labelledby="active-incidents">
+  <h2 id="active-incidents" class="section-title">Active incidents</h2>
+  {{range .Incidents}}
+  <article class="card public-incident status-{{.Impact}}">
+    <div class="card-header">
+      <h3><a href="/incidents/{{.ID}}">{{.Title}}</a></h3>
+      {{template "status-pill" .Impact}}
+      {{template "incident-badge" .Status}}
+    </div>
+    <div class="card-body">
+      {{with .Updates}}{{with index . 0}}
+      <div class="public-update">
+        <p><strong>{{.Status.Label}}</strong> – {{nl2br .Message}}</p>
+        <p class="small muted"><time datetime="{{isoTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time> · {{ago .CreatedAt}}</p>
+      </div>
+      {{end}}{{end}}
+      {{template "public-impacts" .Services}}
+    </div>
+  </article>
+  {{end}}
+</section>
+{{end}}
+
+{{if .Maintenances}}
+<section aria-labelledby="maintenance">
+  <h2 id="maintenance" class="section-title">Maintenance</h2>
+  {{range .Maintenances}}{{$state := .State $.Now}}
+  <article class="card public-maintenance{{if eq $state "in_progress"}} status-maintenance{{end}}">
+    <div class="card-header">
+      <h3><a href="/maintenance/{{.ID}}">{{.Title}}</a></h3>
+      {{template "maintenance-badge" $state}}
+    </div>
+    <div class="card-body">
+      <p class="public-window">
+        {{template "public-window" .}}
+        <span class="muted">· {{if eq $state "in_progress"}}ends {{ago .EndsAt}}{{else}}starts {{ago .StartsAt}}{{end}}</span>
+      </p>
+      {{with .Services}}<p class="small muted public-affected">Affected: {{template "public-service-names" .}}</p>{{end}}
+    </div>
+  </article>
+  {{end}}
+</section>
+{{end}}
+
+<section aria-labelledby="services">
+  <h2 id="services" class="section-title">Services</h2>
+  {{if .HasServices}}
+  <div class="card public-services">
+    {{range .Groups}}
+    <div class="public-group">
+      {{with .Category}}<h3 class="public-group-title">{{.}}</h3>{{end}}
+      <ul class="public-service-list">
+        {{range .Services}}
+        <li class="public-service">
+          <div class="public-service-head">
+            <strong class="public-service-title">{{.Service.Name}}</strong>
+            {{template "status-pill" .Status}}
+          </div>
+          {{with .Service.Description}}<p class="public-service-desc">{{.}}</p>{{end}}
+          <div class="history-bar" role="img" aria-label="{{.Summary}}">
+            {{- range .Days}}<span class="day {{.Class}}" title="{{.Title}}"></span>{{end -}}
+          </div>
+        </li>
+        {{end}}
+      </ul>
+    </div>
+    {{end}}
+    <div class="history-legend">
+      <span><span class="legend-90">90 days ago</span><span class="legend-60">60 days ago</span><span class="legend-30">30 days ago</span></span>
+      <span>Today</span>
+    </div>
+  </div>
+  {{else}}
+  <div class="card">
+    <div class="empty-state">
+      <p>No services have been set up yet.</p>
+      {{if $.IsAdmin}}<a class="btn btn-primary" href="/admin/services/new">Add a service</a>{{end}}
+    </div>
+  </div>
+  {{end}}
+</section>
+
+<section aria-labelledby="recent">
+  <div class="toolbar">
+    <h2 id="recent" class="section-title">Recent incidents <span class="muted small">last 7 days</span></h2>
+    <a class="small" href="/history">View history →</a>
+  </div>
+  {{if .Recent}}
+  <ul class="card card-list">
+    {{range .Recent}}
+    <li class="public-entry">
+      <div class="public-entry-head">
+        <a class="public-entry-title" href="/incidents/{{.ID}}">{{.Title}}</a>
+        {{template "incident-badge" .Status}}
+      </div>
+      <p class="small muted">
+        <time datetime="{{isoTime .StartedAt}}">{{fmtTime .StartedAt}}</time> ·
+        {{if .ResolvedAt}}resolved after {{duration .StartedAt .ResolvedAt}}{{else}}ongoing{{end}}
+        {{- with .Services}} · {{range $i, $s := .}}{{if $i}}, {{end}}{{$s.ServiceName}}{{end}}{{end}}
+      </p>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="notice">No incidents reported.</p>
+  {{end}}
+</section>
+{{end}}
+{{end}}

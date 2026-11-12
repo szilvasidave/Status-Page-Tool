@@ -1,0 +1,58 @@
+{{define "content"}}
+{{with .Data}}
+<p class="public-back small"><a href="/history">← History</a></p>
+<div class="toolbar public-title">
+  <h1>{{.Title}}</h1>
+  {{if $.IsEditor}}<a class="btn btn-primary" href="/manage/incidents/{{.ID}}">Manage incident</a>{{end}}
+</div>
+<div class="row public-tags">
+  {{template "incident-badge" .Status}}
+  {{$impact := .Impact}}{{if ne $impact "operational"}}{{template "status-pill" $impact}}{{end}}
+</div>
+
+<div class="public-detail">
+  <section class="card public-detail-main" aria-labelledby="updates">
+    <div class="card-header"><h2 id="updates">Updates</h2></div>
+    <div class="card-body">
+      {{if .Updates}}
+      <ol class="timeline">
+        {{range .Updates}}
+        <li class="timeline-item" data-status="{{.Status}}">
+          <span class="timeline-status">{{.Status.Label}}</span>
+          <div class="timeline-body">{{nl2br .Message}}</div>
+          <div class="timeline-meta">
+            <time datetime="{{isoTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time> · {{ago .CreatedAt}}
+            {{- if $.IsEditor}}{{with .AuthorName}} · by {{.}}{{end}}{{end}}
+          </div>
+        </li>
+        {{end}}
+      </ol>
+      {{else}}
+      <p class="muted">No updates have been posted yet.</p>
+      {{end}}
+    </div>
+  </section>
+
+  <aside class="public-detail-side">
+    <section class="card" aria-labelledby="details">
+      <div class="card-header"><h2 id="details">Details</h2></div>
+      <div class="card-body">
+        <dl class="public-facts">
+          <div><dt>Started</dt><dd><time datetime="{{isoTime .StartedAt}}">{{fmtTime .StartedAt}}</time></dd></div>
+          {{with .ResolvedAt}}
+          <div><dt>Resolved</dt><dd><time datetime="{{isoTime .}}">{{fmtTime .}}</time></dd></div>
+          {{end}}
+          <div><dt>Duration</dt><dd>{{duration .StartedAt .ResolvedAt}}{{if not .ResolvedAt}} (ongoing){{end}}</dd></div>
+        </dl>
+      </div>
+    </section>
+    <section class="card" aria-labelledby="affected">
+      <div class="card-header"><h2 id="affected">Affected services</h2></div>
+      <div class="card-body">
+        {{if .Services}}{{template "public-impacts" .Services}}{{else}}<p class="muted small">No services are listed for this incident.</p>{{end}}
+      </div>
+    </section>
+  </aside>
+</div>
+{{end}}
+{{end}}

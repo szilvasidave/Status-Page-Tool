@@ -1,0 +1,47 @@
+{{define "content"}}
+{{with .Data}}{{$state := .State $.Now}}
+<p class="public-back small"><a href="/history">← History</a></p>
+<div class="toolbar public-title">
+  <h1>{{.Title}}</h1>
+  {{if $.IsEditor}}<a class="btn btn-primary" href="/manage/maintenance/{{.ID}}">Edit</a>{{end}}
+</div>
+<div class="row public-tags">
+  <span class="badge badge-muted">Maintenance</span>
+  {{template "maintenance-badge" $state}}
+  {{if eq $state "scheduled"}}<span class="small muted">starts {{ago .StartsAt}}</span>{{end}}
+  {{if eq $state "in_progress"}}<span class="small muted">ends {{ago .EndsAt}}</span>{{end}}
+</div>
+
+<div class="public-detail">
+  <section class="card public-detail-main" aria-labelledby="description">
+    <div class="card-header"><h2 id="description">Description</h2></div>
+    <div class="card-body">
+      {{if .Description}}<p class="public-text">{{nl2br .Description}}</p>{{else}}<p class="muted">No description.</p>{{end}}
+    </div>
+  </section>
+
+  <aside class="public-detail-side">
+    <section class="card" aria-labelledby="window">
+      <div class="card-header"><h2 id="window">Window</h2></div>
+      <div class="card-body">
+        <dl class="public-facts">
+          <div><dt>Starts</dt><dd><time datetime="{{isoTime .StartsAt}}">{{fmtTime .StartsAt}}</time></dd></div>
+          <div><dt>Ends</dt><dd><time datetime="{{isoTime .EndsAt}}">{{fmtTime .EndsAt}}</time></dd></div>
+          <div><dt>Duration</dt><dd>{{duration .StartsAt .EndsAt}}</dd></div>
+        </dl>
+      </div>
+    </section>
+    <section class="card" aria-labelledby="affected">
+      <div class="card-header"><h2 id="affected">Affected services</h2></div>
+      <div class="card-body">
+        {{if .Services}}
+        <ul class="public-impacts">
+          {{range .Services}}<li><span class="public-impacts-name">{{.Name}}</span></li>{{end}}
+        </ul>
+        {{else}}<p class="muted small">No services are listed for this maintenance.</p>{{end}}
+      </div>
+    </section>
+  </aside>
+</div>
+{{end}}
+{{end}}

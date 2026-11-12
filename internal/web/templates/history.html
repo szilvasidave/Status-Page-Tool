@@ -1,0 +1,54 @@
+{{define "content"}}
+{{with .Data}}
+<div class="toolbar">
+  <h1>History</h1>
+</div>
+<p class="muted public-lead">Incidents and maintenance from <time datetime="{{isoTime .From}}">{{fmtDate .From}}</time> to <time datetime="{{isoTime .Last}}">{{fmtDate .Last}}</time>.</p>
+
+{{range .Months}}
+<section class="public-month" aria-label="{{.Label}}">
+  <h2 class="section-title">{{.Label}}</h2>
+  <ul class="card card-list">
+    {{range .Entries}}
+    {{with .Incident}}
+    <li class="public-entry">
+      <div class="public-entry-head">
+        <a class="public-entry-title" href="/incidents/{{.ID}}">{{.Title}}</a>
+        {{$impact := .Impact}}{{if ne $impact "operational"}}{{template "status-pill" $impact}}{{end}}
+        {{template "incident-badge" .Status}}
+      </div>
+      <p class="small muted">
+        <time datetime="{{isoTime .StartedAt}}">{{fmtTime .StartedAt}}</time> ·
+        {{if .ResolvedAt}}lasted {{duration .StartedAt .ResolvedAt}}{{else}}ongoing{{end}}
+      </p>
+      {{with .Services}}<p class="small public-affected"><span class="muted">Affected:</span> {{range $i, $s := .}}{{if $i}}, {{end}}{{$s.ServiceName}}{{end}}</p>{{end}}
+    </li>
+    {{end}}
+    {{with .Maintenance}}
+    <li class="public-entry">
+      <div class="public-entry-head">
+        <a class="public-entry-title" href="/maintenance/{{.ID}}">{{.Title}}</a>
+        <span class="badge badge-muted">Maintenance</span>
+        {{template "maintenance-badge" (.State $.Now)}}
+      </div>
+      <p class="small muted">{{template "public-window" .}} · {{duration .StartsAt .EndsAt}}</p>
+      {{with .Services}}<p class="small public-affected"><span class="muted">Affected:</span> {{template "public-service-names" .}}</p>{{end}}
+    </li>
+    {{end}}
+    {{end}}
+  </ul>
+</section>
+{{else}}
+<div class="card">
+  <div class="empty-state">
+    <p>No incidents reported in this period.</p>
+  </div>
+</div>
+{{end}}
+
+<nav class="public-pager" aria-label="History pages">
+  <a class="btn" href="{{.OlderURL}}" rel="prev">← Older</a>
+  {{with .NewerURL}}<a class="btn" href="{{.}}" rel="next">Newer →</a>{{end}}
+</nav>
+{{end}}
+{{end}}

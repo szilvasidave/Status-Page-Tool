@@ -1,0 +1,26 @@
+{{/* Partials of the public status pages (status, history, incident, maintenance). */}}
+
+{{/* Round status icon for the overall banner. Usage: {{template "public-status-icon" .Overall}} with a store.Status. */}}
+{{define "public-status-icon"}}<span class="public-status-icon" aria-hidden="true">
+  {{- if eq . "operational"}}<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+  {{- else if eq . "maintenance"}}<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+  {{- else}}<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M12 6.5v7"/><path d="M12 17.5h.01"/></svg>
+  {{- end}}</span>{{end}}
+
+{{/* Affected services with their impact. Usage: {{template "public-impacts" .Services}} with []store.ServiceImpact. */}}
+{{define "public-impacts"}}{{if .}}<ul class="public-impacts">
+  {{- range .}}
+  <li><span class="public-impacts-name">{{.ServiceName}}</span>{{template "status-pill" .Impact}}</li>
+  {{- end}}
+</ul>{{end}}{{end}}
+
+{{/* Comma separated service names. Usage: {{template "public-service-names" .Services}} with []store.ServiceRef. */}}
+{{define "public-service-names"}}{{range $i, $s := .}}{{if $i}}, {{end}}{{$s.Name}}{{end}}{{end}}
+
+{{/* Maintenance window, e.g. "14 Nov 2026, 22:00 – 23:30". Usage: {{template "public-window" .}} with a store.Maintenance. */}}
+{{define "public-window"}}
+  {{- if eq (fmtDate .StartsAt) (fmtDate .EndsAt) -}}
+  <time datetime="{{isoTime .StartsAt}}">{{fmtDate .StartsAt}}, {{fmtClock .StartsAt}}</time> – <time datetime="{{isoTime .EndsAt}}">{{fmtClock .EndsAt}}</time>
+  {{- else -}}
+  <time datetime="{{isoTime .StartsAt}}">{{fmtDate .StartsAt}}, {{fmtClock .StartsAt}}</time> – <time datetime="{{isoTime .EndsAt}}">{{fmtDate .EndsAt}}, {{fmtClock .EndsAt}}</time>
+  {{- end}}{{end}}
