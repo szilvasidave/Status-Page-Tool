@@ -18,7 +18,7 @@ import (
 )
 
 // adminFormErrors maps form field names to error messages. Templates show
-// them with {{template "admin-field-error" .Errors.<field>}}.
+// them with {{template "field-error" .Errors.<field>}}.
 type adminFormErrors map[string]string
 
 // add records msg for field unless the field already has an error.

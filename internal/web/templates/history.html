@@ -1,19 +1,17 @@
 {{define "content"}}
 {{with .Data}}
-<div class="toolbar">
-  <h1>History</h1>
-</div>
-<p class="muted public-lead">Incidents and maintenance from <time datetime="{{isoTime .From}}">{{fmtDate .From}}</time> to <time datetime="{{isoTime .Last}}">{{fmtDate .Last}}</time>.</p>
+<h1>History</h1>
+<p class="lead">Incidents and maintenance from <time datetime="{{isoTime .From}}">{{fmtDate .From}}</time> to <time datetime="{{isoTime .Last}}">{{fmtDate .Last}}</time>.</p>
 
 {{range .Months}}
 <section class="public-month" aria-label="{{.Label}}">
-  <h2 class="section-title">{{.Label}}</h2>
+  <h2>{{.Label}}</h2>
   <ul class="card card-list">
     {{range .Entries}}
     {{with .Incident}}
-    <li class="public-entry">
-      <div class="public-entry-head">
-        <a class="public-entry-title" href="/incidents/{{.ID}}">{{.Title}}</a>
+    <li class="entry">
+      <div class="entry-head">
+        <a class="entry-title" href="/incidents/{{.ID}}">{{.Title}}</a>
         {{$impact := .Impact}}{{if ne $impact "operational"}}{{template "status-pill" $impact}}{{end}}
         {{template "incident-badge" .Status}}
       </div>
@@ -25,9 +23,9 @@
     </li>
     {{end}}
     {{with .Maintenance}}
-    <li class="public-entry">
-      <div class="public-entry-head">
-        <a class="public-entry-title" href="/maintenance/{{.ID}}">{{.Title}}</a>
+    <li class="entry">
+      <div class="entry-head">
+        <a class="entry-title" href="/maintenance/{{.ID}}">{{.Title}}</a>
         <span class="badge badge-muted">Maintenance</span>
         {{template "maintenance-badge" (.State $.Now)}}
       </div>
@@ -39,11 +37,7 @@
   </ul>
 </section>
 {{else}}
-<div class="card">
-  <div class="empty-state">
-    <p>No incidents reported in this period.</p>
-  </div>
-</div>
+<p class="notice">No incidents reported in this period.</p>
 {{end}}
 
 <nav class="public-pager" aria-label="History pages">

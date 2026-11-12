@@ -1,23 +1,5 @@
-{{/* Admin sub navigation. Usage: {{template "admin-subnav" "settings"}} with the active item
-     (settings, services, groups, users, notifications). */}}
-{{define "admin-subnav"}}
-<nav class="subnav" aria-label="Administration">
-  <a href="/admin/settings"{{if eq . "settings"}} aria-current="page"{{end}}>Settings</a>
-  <a href="/admin/services"{{if eq . "services"}} aria-current="page"{{end}}>Services</a>
-  <a href="/admin/groups"{{if eq . "groups"}} aria-current="page"{{end}}>Groups</a>
-  <a href="/admin/users"{{if eq . "users"}} aria-current="page"{{end}}>Users</a>
-  <a href="/admin/notifications"{{if eq . "notifications"}} aria-current="page"{{end}}>Notifications</a>
-</nav>
-{{end}}
-
-{{/* Stylesheet for admin and setup pages. Usage: {{define "head"}}{{template "admin-head"}}{{end}} */}}
-{{define "admin-head"}}<link rel="stylesheet" href="/static/admin.css">{{end}}
-
-{{/* Error message below a form field. Usage: {{template "admin-field-error" .Errors.<field>}} */}}
-{{define "admin-field-error"}}{{with .}}<span class="admin-field-error">{{.}}</span>{{end}}{{end}}
-
-{{/* Summary shown above a form with validation errors. Usage: {{template "admin-error-summary" .Errors}} */}}
-{{define "admin-error-summary"}}{{if .}}<div class="flash flash-error" role="alert">Please correct the highlighted {{if eq (len .) 1}}field{{else}}fields{{end}} below.</div>{{end}}{{end}}
+{{/* Partials of the admin pages and the setup wizard. The admin sub navigation
+     is part of layout.html. */}}
 
 {{/* <datalist id="timezones"> of common time zones. Usage: {{template "admin-tz-datalist" .Timezones}} */}}
 {{define "admin-tz-datalist"}}<datalist id="timezones">{{range .}}<option value="{{.}}">{{end}}</datalist>{{end}}
@@ -35,15 +17,15 @@
      Usage: {{template "setup-token-field" (dict "Ask" .AskToken "File" .TokenFile "Error" "message or empty")}} */}}
 {{define "setup-token-field"}}
 {{if .Ask}}
-<fieldset class="setup-token">
+<fieldset class="box">
   <legend>Setup token</legend>
-  <p class="small muted">You are opening the setup from another computer (or through a proxy). To prove that you
+  <p class="help">You are opening the setup from another computer (or through a proxy). To prove that you
     administer the server, enter the setup token from the file <code>{{.File}}</code> on the server. It is also
     written to the server log when the setup starts.</p>
   <div class="field">
-    <label for="setup_token">Setup token</label>
+    <label for="setup_token">Token</label>
     <input id="setup_token" name="setup_token" type="text" autocomplete="off" spellcheck="false" required{{if .Error}} aria-invalid="true"{{end}}>
-    {{template "admin-field-error" .Error}}
+    {{template "field-error" .Error}}
   </div>
 </fieldset>
 {{end}}

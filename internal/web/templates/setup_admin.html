@@ -1,65 +1,64 @@
-{{define "head"}}{{template "admin-head"}}{{end}}
 {{define "content"}}
 {{with .Data}}
 <div class="setup-card">
   {{template "setup-steps" 2}}
   <h1>Create the administrator</h1>
-  <p class="muted">This local account always has the Admin role. Use it to configure single sign-on, and keep it as a
+  <p class="lead">This local account always has the Administrator role. Use it to configure single sign-on, and keep it as a
     break-glass login for when single sign-on is unavailable.</p>
-  {{template "admin-error-summary" .Errors}}
 
-  <form method="post" action="/setup" class="form card card-body">
+  <form method="post" action="/setup" class="form">
+    {{template "error-summary" .Errors}}
     {{template "csrf" $}}
-    <fieldset>
+    <fieldset class="box">
       <legend>Administrator account</legend>
       <div class="field-row">
         <div class="field">
           <label for="username">User name</label>
           <input id="username" name="username" type="text" value="{{.Username}}" required maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false"{{if .Errors.username}} aria-invalid="true"{{end}}>
-          {{template "admin-field-error" .Errors.username}}
+          {{template "field-error" .Errors.username}}
         </div>
         <div class="field">
-          <label for="name">Display name <span class="muted small">(optional)</span></label>
+          <label for="name">Display name <span class="muted">(optional)</span></label>
           <input id="name" name="name" type="text" value="{{.Name}}" maxlength="100" placeholder="Administrator"{{if .Errors.name}} aria-invalid="true"{{end}}>
-          {{template "admin-field-error" .Errors.name}}
+          {{template "field-error" .Errors.name}}
         </div>
       </div>
       <div class="field-row">
         <div class="field">
           <label for="password">Password</label>
-          <input id="password" name="password" type="password" required minlength="{{.MinPassword}}" autocomplete="new-password"{{if .Errors.password}} aria-invalid="true"{{end}}>
-          <span class="help">At least {{.MinPassword}} characters.</span>
-          {{template "admin-field-error" .Errors.password}}
+          <input id="password" name="password" type="password" required minlength="{{.MinPassword}}" autocomplete="new-password"{{if .Errors.password}} aria-invalid="true"{{end}} aria-describedby="password-help">
+          <span class="help" id="password-help">At least {{.MinPassword}} characters.</span>
+          {{template "field-error" .Errors.password}}
         </div>
         <div class="field">
           <label for="password_confirm">Repeat password</label>
           <input id="password_confirm" name="password_confirm" type="password" required autocomplete="new-password"{{if .Errors.password_confirm}} aria-invalid="true"{{end}}>
-          {{template "admin-field-error" .Errors.password_confirm}}
+          {{template "field-error" .Errors.password_confirm}}
         </div>
       </div>
     </fieldset>
 
-    <fieldset>
+    <fieldset class="box">
       <legend>Status page</legend>
       <div class="field">
         <label for="site_name">Site name</label>
         <input id="site_name" name="site_name" type="text" value="{{.SiteName}}" required maxlength="100" placeholder="IT Status"{{if .Errors.site_name}} aria-invalid="true"{{end}}>
         <span class="help">Shown in the header and in e-mails.</span>
-        {{template "admin-field-error" .Errors.site_name}}
+        {{template "field-error" .Errors.site_name}}
       </div>
       <div class="field">
         <label for="base_url">Base URL</label>
         <input id="base_url" name="base_url" type="url" value="{{.BaseURL}}" placeholder="https://status.example.com"{{if .Errors.base_url}} aria-invalid="true"{{end}}>
         <span class="help">The address users open. Change it if users reach the page under another name, e.g. through a
           reverse proxy with HTTPS.</span>
-        {{template "admin-field-error" .Errors.base_url}}
+        {{template "field-error" .Errors.base_url}}
       </div>
       <div class="field">
         <label for="timezone">Time zone</label>
         <input id="timezone" name="timezone" type="text" list="timezones" value="{{.Timezone}}" autocomplete="off" spellcheck="false"{{if .Errors.timezone}} aria-invalid="true"{{end}}>
         {{template "admin-tz-datalist" .Timezones}}
         <span class="help">Times are shown and entered in this time zone, e.g. Europe/Berlin.</span>
-        {{template "admin-field-error" .Errors.timezone}}
+        {{template "field-error" .Errors.timezone}}
       </div>
       <div class="field">
         <label class="checkbox"><input type="checkbox" name="public_access"{{if .PublicAccess}} checked{{end}}> Anyone can view the status page without signing in</label>

@@ -287,7 +287,7 @@ func TestPublicMaintenancePage(t *testing.T) {
 
 	e.loginAs("editor@example.com", store.RoleEditor)
 	r = e.get(path)
-	mustContain(t, r.Body, fmt.Sprintf(`href="/manage/maintenance/%d"`, f.Upcoming.ID), ">Edit<")
+	mustContain(t, r.Body, fmt.Sprintf(`href="/manage/maintenance/%d"`, f.Upcoming.ID), ">Manage maintenance<")
 
 	for _, p := range []string{"/maintenance/99999", "/maintenance/x"} {
 		if r := e.get(p); r.Status != http.StatusNotFound {

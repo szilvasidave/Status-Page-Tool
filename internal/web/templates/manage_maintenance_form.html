@@ -1,19 +1,22 @@
-{{define "head"}}<link rel="stylesheet" href="/static/manage.css">{{end}}
-
 {{define "content"}}
 {{- with .Data}}
-{{- if .Maintenance}}{{template "manage-subnav" ""}}{{else}}{{template "manage-subnav" "maintenance"}}{{end}}
+<a class="back-link" href="/manage">← Manage</a>
 <div class="toolbar">
   <h1>{{.PageTitle}}</h1>
   {{- with .Maintenance}}
-  {{template "maintenance-badge" $.Data.State}}
-  <a class="btn btn-small" href="/maintenance/{{.ID}}">View on status page</a>
+  <a class="btn" href="/maintenance/{{.ID}}">View on status page</a>
   {{- end}}
 </div>
+{{- if .Maintenance}}
+<div class="row meta-row">
+  {{template "maintenance-badge" .State}}
+  {{- if .Editable}}<span class="small muted">{{.Window}}</span>{{end}}
+</div>
+{{- end}}
 
 {{- if .Editable}}
-{{template "manage-errors" .Errors}}
-<form method="post" action="{{with .Maintenance}}/manage/maintenance/{{.ID}}{{else}}/manage/maintenance{{end}}" class="form manage-form">
+<form method="post" action="{{with .Maintenance}}/manage/maintenance/{{.ID}}{{else}}/manage/maintenance{{end}}" class="form">
+  {{template "error-list" .Errors}}
   {{template "csrf" $}}
   <div class="field">
     <label for="title">Title</label>
@@ -28,13 +31,13 @@
     <div class="field">
       <label for="starts_at">Start</label>
       <input id="starts_at" name="starts_at" type="datetime-local" required value="{{.StartsAt}}">
+      <span class="help">Time zone: {{tz}}.</span>
     </div>
     <div class="field">
       <label for="ends_at">End</label>
       <input id="ends_at" name="ends_at" type="datetime-local" required value="{{.EndsAt}}">
     </div>
   </div>
-  <p class="help small muted manage-tz">Times are in the {{tz}} time zone.</p>
 
   <fieldset>
     <legend>Affected services</legend>
@@ -45,55 +48,59 @@
     {{- end}}
   </fieldset>
 
-  {{template "manage-notify" (dict "Page" $ "Checked" .Notify "Help" "E-mail the members of the assigned groups when the maintenance is scheduled, when it starts and when it is completed.")}}
+  {{template "manage-notify" (dict "Page" $ "Checked" .Notify "Help" "E-mail the members of the groups assigned to the affected services when the maintenance is scheduled, changed or cancelled, when it starts and when it is completed.")}}
 
   <div class="form-actions">
-    {{- if .Maintenance}}
-    <button type="submit" class="btn-primary">Save changes</button>
-    <a class="btn" href="/manage">Back to overview</a>
-    {{- else}}
-    <button type="submit" class="btn-primary">Schedule maintenance</button>
+    <button type="submit" class="btn-primary">{{if .Maintenance}}Save changes{{else}}Schedule maintenance{{end}}</button>
     <a class="btn" href="/manage">Cancel</a>
-    {{- end}}
   </div>
 </form>
 
 {{- else}}
 <p class="notice">This maintenance is {{if eq .State "cancelled"}}cancelled{{else}}completed{{end}} and can no longer be changed.</p>
 <div class="card">
-  <div class="card-body stack">
-    <div><div class="small muted">Window</div>{{.Window}}</div>
-    <div><div class="small muted">Affected services</div>{{with .Services}}{{.}}{{else}}–{{end}}</div>
-    {{- with .Description}}
-    <div><div class="small muted">Description</div>{{nl2br .}}</div>
-    {{- end}}
-    <div><div class="small muted">E-mail notifications</div>{{if .Notify}}On{{else}}Off{{end}}</div>
+  <div class="card-body">
+    <dl class="facts">
+      <div><dt>Window</dt><dd>{{.Window}}</dd></div>
+      <div><dt>Affected services</dt><dd>{{with .Services}}{{.}}{{else}}–{{end}}</dd></div>
+      <div><dt>E-mail notifications</dt><dd>{{if .Notify}}On{{else}}Off{{end}}</dd></div>
+      {{- with .Description}}
+      <div class="facts-wide"><dt>Description</dt><dd>{{nl2br .}}</dd></div>
+      {{- end}}
+    </dl>
   </div>
 </div>
-<p class="manage-back"><a href="/manage">← Back to overview</a></p>
 {{- end}}
 
 {{- with .Maintenance}}
-{{- if or $.Data.CanEnd $.Data.CanCancel $.IsAdmin}}
-<section class="manage-danger" aria-label="More actions">
-  {{- if $.Data.CanEnd}}
-  <form method="post" action="/manage/maintenance/{{.ID}}/end" class="inline" data-confirm="End this maintenance now?">
+{{- if $.Data.CanEnd}}
+<section class="danger-zone" aria-labelledby="end-maintenance">
+  <h2 id="end-maintenance">End maintenance</h2>
+  <p class="muted">Ends the maintenance now if the work was finished early.</p>
+  <form method="post" action="/manage/maintenance/{{.ID}}/end" data-confirm="End this maintenance now?">
     {{template "csrf" $}}
     <button type="submit">End now</button>
   </form>
-  {{- end}}
-  {{- if $.Data.CanCancel}}
-  <form method="post" action="/manage/maintenance/{{.ID}}/cancel" class="inline" data-confirm="Cancel this maintenance?{{if .Notify}} The members of the assigned groups will be notified.{{end}}">
+</section>
+{{- end}}
+{{- if $.Data.CanCancel}}
+<section class="danger-zone" aria-labelledby="cancel-maintenance">
+  <h2 id="cancel-maintenance">Cancel maintenance</h2>
+  <p class="muted">The maintenance stays in the history as cancelled.{{if .Notify}} The members of the assigned groups are notified.{{end}}</p>
+  <form method="post" action="/manage/maintenance/{{.ID}}/cancel" data-confirm="Cancel this maintenance?{{if .Notify}} The members of the assigned groups will be notified.{{end}}">
     {{template "csrf" $}}
     <button type="submit" class="btn-danger">Cancel maintenance</button>
   </form>
-  {{- end}}
-  {{- if $.IsAdmin}}
-  <form method="post" action="/manage/maintenance/{{.ID}}/delete" class="inline" data-confirm="Delete this maintenance? It disappears from the status page and the history. This cannot be undone.">
+</section>
+{{- end}}
+{{- if $.IsAdmin}}
+<section class="danger-zone" aria-labelledby="delete-maintenance">
+  <h2 id="delete-maintenance">Delete maintenance</h2>
+  <p class="muted">Only for maintenance that was scheduled by mistake. It disappears from the status page and the history.</p>
+  <form method="post" action="/manage/maintenance/{{.ID}}/delete" data-confirm="Delete this maintenance? It disappears from the status page and the history. This cannot be undone.">
     {{template "csrf" $}}
-    <button type="submit" class="btn-danger">Delete</button>
+    <button type="submit" class="btn-danger">Delete maintenance</button>
   </form>
-  {{- end}}
 </section>
 {{- end}}
 {{- end}}

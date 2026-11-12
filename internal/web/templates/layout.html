@@ -15,8 +15,8 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="site-header">
   <div class="container header-inner">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>{{.SiteName}}</a>
-    {{- if not .SetupMode}}
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">{{.SiteName}}</span></a>
+    {{- if not (or .SetupMode (eq .Nav "setup"))}}
     <nav class="site-nav" aria-label="Main">
       <a href="/"{{if eq .Nav "status"}} aria-current="page"{{end}}>Status</a>
       <a href="/history"{{if eq .Nav "history"}} aria-current="page"{{end}}>History</a>
@@ -28,10 +28,10 @@
       {{- end}}
     </nav>
     <div class="user-menu">
-      {{- with .User}}
-      <a href="/account" class="user-name"{{if eq $.Nav "account"}} aria-current="page"{{end}}>{{.DisplayName}}</a>
-      <form method="post" action="/logout" class="inline">{{template "csrf" $}}<button type="submit" class="btn-link">Sign out</button></form>
-      {{- else}}
+      {{- if .User}}
+      <a href="/account" class="user-name" title="Your account"{{if eq .Nav "account"}} aria-current="page"{{end}}>{{.User.DisplayName}}</a>
+      <form method="post" action="/logout" class="inline">{{template "csrf" .}}<button type="submit" class="btn-link">Sign out</button></form>
+      {{- else if ne .Nav "login"}}
       <a href="/login" class="btn btn-small">Sign in</a>
       {{- end}}
     </div>
@@ -39,15 +39,24 @@
   </div>
 </header>
 <main class="container main" id="main">
+  {{- if and (eq .Nav "admin") .IsAdmin}}
+  <nav class="subnav" aria-label="Administration">
+    <a href="/admin/settings"{{if eq .SubNav "settings"}} aria-current="page"{{end}}>Settings</a>
+    <a href="/admin/services"{{if eq .SubNav "services"}} aria-current="page"{{end}}>Services</a>
+    <a href="/admin/groups"{{if eq .SubNav "groups"}} aria-current="page"{{end}}>Groups</a>
+    <a href="/admin/users"{{if eq .SubNav "users"}} aria-current="page"{{end}}>Users</a>
+    <a href="/admin/notifications"{{if eq .SubNav "notifications"}} aria-current="page"{{end}}>Notifications</a>
+  </nav>
+  {{- end}}
   {{- with .Flash}}
-  <div class="flash flash-{{.Kind}}" role="status">{{.Message}}</div>
+  <div class="flash flash-{{.Kind}}" role="{{if or (eq .Kind "error") (eq .Kind "warning")}}alert{{else}}status{{end}}">{{.Message}}</div>
   {{- end}}
   {{template "content" .}}
 </main>
 <footer class="site-footer">
   <div class="container">
     <span>Times shown in {{tz}}</span>
-    <span class="muted">Status Page{{with .Version}} {{.}}{{end}}</span>
+    <span>Status Page{{with .Version}} {{.}}{{end}}</span>
   </div>
 </footer>
 </body>

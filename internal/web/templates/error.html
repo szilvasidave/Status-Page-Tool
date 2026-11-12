@@ -1,6 +1,6 @@
 {{define "content"}}
-<section class="empty-state">
-  <p class="error-code">{{.Data.Status}}</p>
+<section class="error-page">
+  <p class="error-code" aria-hidden="true">{{.Data.Status}}</p>
   <h1>{{.Data.Heading}}</h1>
   <p class="muted">{{.Data.Message}}</p>
   <p><a class="btn" href="/">Back to the status page</a></p>

@@ -1,6 +1,6 @@
 {{define "content"}}
 {{with .Data}}
-<section class="auth-card card">
+<section class="card auth-card">
   <div class="card-body">
     <h1>Sign in</h1>
     <p class="muted">Sign in to {{$.SiteName}}.</p>
@@ -8,25 +8,30 @@
 
     {{if .OIDCEnabled}}
     <a class="btn btn-primary btn-block" href="/auth/oidc/login?next={{.Next}}">{{.ButtonLabel}}</a>
-    {{end}}
-
-    <details class="local-login"{{if .ShowLocal}} open{{end}}>
-      <summary>{{if .OIDCEnabled}}Local administrator login{{else}}Administrator login{{end}}</summary>
-      <form method="post" action="/login" class="form">
-        {{template "csrf" $}}
-        <input type="hidden" name="next" value="{{.Next}}">
-        <div class="field">
-          <label for="username">Username</label>
-          <input id="username" name="username" type="text" autocomplete="username" value="{{.Username}}" required>
-        </div>
-        <div class="field">
-          <label for="password">Password</label>
-          <input id="password" name="password" type="password" autocomplete="current-password" required>
-        </div>
-        <div class="form-actions"><button type="submit" class="btn-primary">Sign in</button></div>
-      </form>
+    <details class="disclosure local-login"{{if .ShowLocal}} open{{end}}>
+      <summary>Sign in with the local administrator account</summary>
+      {{template "login-local-form" (dict "Page" $ "Data" .)}}
     </details>
+    {{else}}
+    {{template "login-local-form" (dict "Page" $ "Data" .)}}
+    {{end}}
   </div>
 </section>
 {{end}}
+{{end}}
+
+{{define "login-local-form"}}
+<form method="post" action="/login" class="form">
+  {{template "csrf" .Page}}
+  <input type="hidden" name="next" value="{{.Data.Next}}">
+  <div class="field">
+    <label for="username">User name</label>
+    <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" value="{{.Data.Username}}" required>
+  </div>
+  <div class="field">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+  </div>
+  <div class="form-actions"><button type="submit" class="btn-primary btn-block">Sign in</button></div>
+</form>
 {{end}}

@@ -1,8 +1,7 @@
 {{define "content"}}
 {{with .Data}}
-<div class="toolbar">
-  <h1>Your account</h1>
-</div>
+<div class="narrow">
+<h1>Your account</h1>
 
 <section class="card" aria-labelledby="account-profile">
   <div class="card-header"><h2 id="account-profile">Profile</h2></div>
@@ -23,8 +22,8 @@
 <section class="card" id="password" aria-labelledby="account-password">
   <div class="card-header"><h2 id="account-password">Change password</h2></div>
   <div class="card-body">
-    {{with .PasswordError}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
     <form method="post" action="/account/password" class="form">
+      {{with .PasswordError}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
       {{template "csrf" $}}
       <input type="text" name="username" value="{{.User.Username}}" autocomplete="username" hidden readonly>
       <div class="field">
@@ -42,7 +41,7 @@
           <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" minlength="{{.MinPasswordLength}}" required>
         </div>
       </div>
-      <p class="small muted">Changing the password signs this account out on all other devices.</p>
+      <p class="help">Changing the password signs this account out on all other devices.</p>
       <div class="form-actions"><button type="submit" class="btn-primary">Change password</button></div>
     </form>
   </div>
@@ -69,7 +68,7 @@
   <div class="card-header"><h2 id="account-notifications">Notifications</h2></div>
   <div class="card-body">
     {{- if not .User.Email}}
-    <p class="notice">Your account has no e-mail address, so you do not receive notification e-mails.</p>
+    <p class="muted">Your account has no e-mail address (the identity provider supplied none, or did not mark it as verified), so you do not receive notification e-mails.</p>
     {{- else if .Services}}
     <p>E-mails about incidents and maintenance of these services are sent to <strong>{{.User.Email}}</strong>:</p>
     <ul>
@@ -80,8 +79,12 @@
     {{- else}}
     <p class="muted">None of your groups is assigned to a service, so you do not receive notification e-mails.</p>
     {{- end}}
+    {{- if and .User.Email .Services (not $.Settings.SMTPConfigured)}}
+    {{template "email-off" $}}
+    {{- end}}
   </div>
 </section>
 {{- end}}
+</div>
 {{end}}
 {{end}}

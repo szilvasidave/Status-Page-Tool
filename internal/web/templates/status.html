@@ -10,7 +10,7 @@
 
 {{if .Incidents}}
 <section aria-labelledby="active-incidents">
-  <h2 id="active-incidents" class="section-title">Active incidents</h2>
+  <h2 id="active-incidents">Active incidents</h2>
   {{range .Incidents}}
   <article class="card public-incident status-{{.Impact}}">
     <div class="card-header">
@@ -34,7 +34,7 @@
 
 {{if .Maintenances}}
 <section aria-labelledby="maintenance">
-  <h2 id="maintenance" class="section-title">Maintenance</h2>
+  <h2 id="maintenance">Maintenance</h2>
   {{range .Maintenances}}{{$state := .State $.Now}}
   <article class="card public-maintenance{{if eq $state "in_progress"}} status-maintenance{{end}}">
     <div class="card-header">
@@ -54,7 +54,7 @@
 {{end}}
 
 <section aria-labelledby="services">
-  <h2 id="services" class="section-title">Services</h2>
+  <h2 id="services">Services</h2>
   {{if .HasServices}}
   <div class="card public-services">
     {{range .Groups}}
@@ -82,26 +82,21 @@
     </div>
   </div>
   {{else}}
-  <div class="card">
-    <div class="empty-state">
-      <p>No services have been set up yet.</p>
-      {{if $.IsAdmin}}<a class="btn btn-primary" href="/admin/services/new">Add a service</a>{{end}}
-    </div>
-  </div>
+  <p class="notice">No services have been set up yet.{{if $.IsAdmin}} <a href="/admin/services/new">Add a service</a>.{{end}}</p>
   {{end}}
 </section>
 
 <section aria-labelledby="recent">
   <div class="toolbar">
-    <h2 id="recent" class="section-title">Recent incidents <span class="muted small">last 7 days</span></h2>
-    <a class="small" href="/history">View history →</a>
+    <h2 id="recent">Recent incidents <span class="muted small">last 7 days</span></h2>
+    <a href="/history">View history →</a>
   </div>
   {{if .Recent}}
   <ul class="card card-list">
     {{range .Recent}}
-    <li class="public-entry">
-      <div class="public-entry-head">
-        <a class="public-entry-title" href="/incidents/{{.ID}}">{{.Title}}</a>
+    <li class="entry">
+      <div class="entry-head">
+        <a class="entry-title" href="/incidents/{{.ID}}">{{.Title}}</a>
         {{template "incident-badge" .Status}}
       </div>
       <p class="small muted">

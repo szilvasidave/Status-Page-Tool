@@ -1,14 +1,12 @@
-{{define "head"}}<link rel="stylesheet" href="/static/manage.css">{{end}}
-
 {{define "content"}}
-{{template "manage-subnav" ""}}
 {{- $inc := .Data.Incident}}
 {{- $f := .Data.Update}}
+<a class="back-link" href="/manage">← Manage</a>
 <div class="toolbar">
   <h1>{{$inc.Title}}</h1>
-  <a class="btn btn-small" href="/incidents/{{$inc.ID}}">View on status page</a>
+  <a class="btn" href="/incidents/{{$inc.ID}}">View on status page</a>
 </div>
-<div class="row manage-meta">
+<div class="row meta-row">
   {{template "incident-badge" $inc.Status}}
   {{- if not $inc.Resolved}}
   {{template "status-pill" $inc.Impact}}
@@ -20,25 +18,27 @@
   </span>
 </div>
 
-<details class="manage-rename"{{if .Data.RenameError}} open{{end}}>
+<details class="disclosure"{{if .Data.RenameError}} open{{end}}>
   <summary>Rename incident</summary>
-  {{- with .Data.RenameError}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
-  <form method="post" action="/manage/incidents/{{$inc.ID}}/title" class="form row">
+  <form method="post" action="/manage/incidents/{{$inc.ID}}/title" class="form">
+    {{- with .Data.RenameError}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
     {{template "csrf" $}}
-    <input name="title" type="text" maxlength="200" required value="{{.Data.RenameTitle}}" aria-label="New title" class="manage-grow">
-    <button type="submit">Save title</button>
+    <div class="row">
+      <input name="title" type="text" maxlength="200" required value="{{.Data.RenameTitle}}" aria-label="New title" class="grow"{{if .Data.RenameError}} aria-invalid="true"{{end}}>
+      <button type="submit">Save title</button>
+    </div>
   </form>
 </details>
 
 <section class="card" aria-labelledby="post-update">
   <div class="card-header"><h2 id="post-update">Post an update</h2></div>
   <div class="card-body">
-    {{template "manage-errors" $f.Errors}}
-    <form method="post" action="/manage/incidents/{{$inc.ID}}/updates" class="form manage-form">
+    <form method="post" action="/manage/incidents/{{$inc.ID}}/updates" class="form">
+      {{template "error-list" $f.Errors}}
       {{template "csrf" $}}
       <div class="field">
         <label for="status">Status</label>
-        <select id="status" name="status" class="manage-status-select">
+        <select id="status" name="status">
           {{- range incidentStatuses}}
           <option value="{{.}}"{{if eq . $f.Status}} selected{{end}}>{{.Label}}</option>
           {{- end}}
@@ -52,13 +52,13 @@
       <fieldset>
         <legend>Affected services</legend>
         {{- if $f.Groups}}
-        <p class="small muted">Adjust the impact if it has changed. The impact is kept in the history when the incident is resolved.</p>
+        <p class="help">Adjust the impact if it has changed. The impact is kept in the history when the incident is resolved.</p>
         {{template "manage-impact-table" $f.Groups}}
         {{- else}}
         {{template "manage-no-services" $}}
         {{- end}}
       </fieldset>
-      {{template "manage-notify" (dict "Page" $ "Checked" $f.Notify "Help" "E-mail members of the groups assigned to the affected services.")}}
+      {{template "manage-notify" (dict "Page" $ "Checked" $f.Notify "Help" "E-mail the members of the groups assigned to the affected services.")}}
       <div class="form-actions">
         <button type="submit" class="btn-primary">Post update</button>
       </div>
@@ -72,10 +72,10 @@
     {{- if $inc.Updates}}
     <ol class="timeline">
       {{- range $inc.Updates}}
-      <li class="timeline-item">
+      <li class="timeline-item" data-status="{{.Status}}">
         <span class="timeline-status">{{.Status.Label}}</span>
         <div class="timeline-body">{{nl2br .Message}}</div>
-        <div class="timeline-meta"><time datetime="{{isoTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time>{{with .AuthorName}} · {{.}}{{end}}</div>
+        <div class="timeline-meta"><time datetime="{{isoTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time>{{with .AuthorName}} · by {{.}}{{end}}</div>
       </li>
       {{- end}}
     </ol>
@@ -86,12 +86,13 @@
 </section>
 
 {{- if $.IsAdmin}}
-<section class="manage-danger" aria-label="Delete incident">
-  <form method="post" action="/manage/incidents/{{$inc.ID}}/delete" class="inline" data-confirm="Delete this incident with all its updates? It disappears from the status page and the history. This cannot be undone.">
+<section class="danger-zone" aria-labelledby="delete-incident">
+  <h2 id="delete-incident">Delete incident</h2>
+  <p class="muted">Only for incidents that were reported by mistake. Resolve real incidents instead.</p>
+  <form method="post" action="/manage/incidents/{{$inc.ID}}/delete" data-confirm="Delete this incident with all its updates? It disappears from the status page and the history. This cannot be undone.">
     {{template "csrf" $}}
     <button type="submit" class="btn-danger">Delete incident</button>
   </form>
-  <span class="small muted">Only for incidents that were reported by mistake. Resolve real incidents instead.</span>
 </section>
 {{- end}}
 {{end}}

@@ -1,9 +1,6 @@
-{{define "head"}}<link rel="stylesheet" href="/static/manage.css">{{end}}
-
 {{define "content"}}
-{{template "manage-subnav" "overview"}}
 {{with .Data}}
-<div class="toolbar manage-toolbar">
+<div class="toolbar">
   <h1>Manage</h1>
   <a class="btn btn-primary" href="/manage/incidents/new">Report incident</a>
   <a class="btn btn-primary" href="/manage/maintenance/new">Schedule maintenance</a>
@@ -14,22 +11,21 @@
   {{- if .Open}}
   <ul class="card card-list">
     {{- range .Open}}
-    <li>
-      <div class="row">
-        <a class="manage-item-title" href="/manage/incidents/{{.ID}}">{{.Title}}</a>
-        {{template "incident-badge" .Status}}
-        <span class="spacer"></span>
+    <li class="entry">
+      <div class="entry-head">
+        <a class="entry-title" href="/manage/incidents/{{.ID}}">{{.Title}}</a>
         {{template "status-pill" .Impact}}
+        {{template "incident-badge" .Status}}
       </div>
-      <div class="small muted">
+      <p class="small muted">
         {{- with .Services}}{{.}} · {{end -}}
-        Last update <time datetime="{{isoTime .LastUpdate}}" title="{{fmtTime .LastUpdate}}">{{ago .LastUpdate}}</time>
-      </div>
+        last update <time datetime="{{isoTime .LastUpdate}}" title="{{fmtTime .LastUpdate}}">{{ago .LastUpdate}}</time>
+      </p>
     </li>
     {{- end}}
   </ul>
   {{- else}}
-  <div class="card"><div class="card-body muted">No open incidents. Everything is running normally.</div></div>
+  <p class="notice">No open incidents. Everything is running normally.</p>
   {{- end}}
 </section>
 
@@ -38,19 +34,17 @@
   {{- if .Maintenance}}
   <ul class="card card-list">
     {{- range .Maintenance}}
-    <li>
-      <div class="row">
-        <a class="manage-item-title" href="/manage/maintenance/{{.ID}}">{{.Title}}</a>
+    <li class="entry">
+      <div class="entry-head">
+        <a class="entry-title" href="/manage/maintenance/{{.ID}}">{{.Title}}</a>
         {{template "maintenance-badge" .State}}
-        <span class="spacer"></span>
-        <span class="small muted nowrap">{{if eq .State "in_progress"}}ends {{ago .EndsAt}}{{else}}starts {{ago .StartsAt}}{{end}}</span>
       </div>
-      <div class="small muted">{{with .Services}}{{.}} · {{end}}{{.Window}}</div>
+      <p class="small muted">{{.Window}} · {{if eq .State "in_progress"}}ends {{ago .EndsAt}}{{else}}starts {{ago .StartsAt}}{{end}}{{with .Services}} · {{.}}{{end}}</p>
     </li>
     {{- end}}
   </ul>
   {{- else}}
-  <div class="card"><div class="card-body muted">No maintenance is in progress or scheduled.</div></div>
+  <p class="notice">No maintenance is in progress or scheduled.</p>
   {{- end}}
 </section>
 
@@ -59,18 +53,16 @@
   {{- if .Resolved}}
   <ul class="card card-list">
     {{- range .Resolved}}
-    <li>
-      <div class="row">
-        <a class="manage-item-title" href="/manage/incidents/{{.ID}}">{{.Title}}</a>
-        <span class="spacer"></span>
-        <span class="small muted nowrap">Resolved <time datetime="{{isoTime .ResolvedAt}}">{{fmtTime .ResolvedAt}}</time></span>
+    <li class="entry">
+      <div class="entry-head">
+        <a class="entry-title" href="/manage/incidents/{{.ID}}">{{.Title}}</a>
       </div>
-      <div class="small muted">{{with .Services}}{{.}} · {{end}}Lasted {{duration .StartedAt .ResolvedAt}}</div>
+      <p class="small muted">Resolved <time datetime="{{isoTime .ResolvedAt}}">{{fmtTime .ResolvedAt}}</time> after {{duration .StartedAt .ResolvedAt}}{{with .Services}} · {{.}}{{end}}</p>
     </li>
     {{- end}}
   </ul>
   {{- else}}
-  <div class="card"><div class="card-body muted">No incidents have been resolved recently.</div></div>
+  <p class="notice">No incidents have been resolved recently.</p>
   {{- end}}
 </section>
 {{end}}

@@ -1,33 +1,31 @@
-{{define "head"}}{{template "admin-head"}}{{end}}
 {{define "content"}}
-{{template "admin-subnav" "settings"}}
 {{with .Data}}
-<div class="toolbar"><h1>Settings</h1></div>
-{{template "admin-error-summary" .Errors}}
+<h1>Settings</h1>
 
 <form method="post" action="/admin/settings" class="form">
+  {{template "error-summary" .Errors}}
   {{template "csrf" $}}
 
-  <fieldset id="general">
+  <fieldset class="box" id="general">
     <legend>General</legend>
     <div class="field">
       <label for="site_name">Site name</label>
       <input id="site_name" name="site_name" type="text" value="{{.St.SiteName}}" required maxlength="100"{{if .Errors.site_name}} aria-invalid="true"{{end}}>
       <span class="help">Shown in the header and in e-mails.</span>
-      {{template "admin-field-error" .Errors.site_name}}
+      {{template "field-error" .Errors.site_name}}
     </div>
     <div class="field">
       <label for="base_url">Base URL</label>
       <input id="base_url" name="base_url" type="url" value="{{.St.BaseURL}}" placeholder="https://status.example.com"{{if .Errors.base_url}} aria-invalid="true"{{end}}>
       <span class="help">The address users open, without a trailing slash. Used for links in e-mails and for the single sign-on redirect URI – recommended.</span>
-      {{template "admin-field-error" .Errors.base_url}}
+      {{template "field-error" .Errors.base_url}}
     </div>
     <div class="field">
       <label for="timezone">Time zone</label>
       <input id="timezone" name="timezone" type="text" list="timezones" value="{{.St.Timezone}}" autocomplete="off" spellcheck="false"{{if .Errors.timezone}} aria-invalid="true"{{end}}>
       {{template "admin-tz-datalist" .Timezones}}
       <span class="help">Times are shown and entered in this time zone, e.g. Europe/Berlin or America/New_York.</span>
-      {{template "admin-field-error" .Errors.timezone}}
+      {{template "field-error" .Errors.timezone}}
     </div>
     <div class="field">
       <label class="checkbox"><input type="checkbox" name="public_access"{{if .St.PublicAccess}} checked{{end}}> Public access</label>
@@ -35,7 +33,7 @@
     </div>
   </fieldset>
 
-  <fieldset id="sso">
+  <fieldset class="box" id="sso">
     <legend>Single sign-on (OpenID Connect)</legend>
     <div class="field">
       <label class="checkbox"><input type="checkbox" name="oidc_enabled" data-show-when="on" data-target="#oidc-fields"{{if .St.OIDCEnabled}} checked{{end}}> Enable sign-in with OpenID Connect</label>
@@ -43,7 +41,7 @@
     </div>
     <div class="field">
       <span class="label">Redirect URI</span>
-      <code class="admin-code-box">{{.CallbackURL}}</code>
+      <code class="code-box">{{.CallbackURL}}</code>
       <span class="help">Register this redirect (callback) URI for the application at your identity provider.{{if not .St.BaseURL}} It is derived from the address of this page – set the base URL above so that it does not change.{{end}}</span>
     </div>
     <div id="oidc-fields"{{if not .St.OIDCEnabled}} hidden{{end}}>
@@ -51,19 +49,19 @@
         <label for="oidc_issuer">Issuer URL</label>
         <input id="oidc_issuer" name="oidc_issuer" type="url" value="{{.St.OIDCIssuer}}" placeholder="https://login.microsoftonline.com/<tenant ID>/v2.0" spellcheck="false"{{if .Errors.oidc_issuer}} aria-invalid="true"{{end}}>
         <span class="help">Entra ID: <code>https://login.microsoftonline.com/&lt;tenant ID&gt;/v2.0</code> · Keycloak: <code>https://keycloak.example.com/realms/&lt;realm&gt;</code></span>
-        {{template "admin-field-error" .Errors.oidc_issuer}}
+        {{template "field-error" .Errors.oidc_issuer}}
       </div>
       <div class="field-row">
         <div class="field">
           <label for="oidc_client_id">Client ID</label>
           <input id="oidc_client_id" name="oidc_client_id" type="text" value="{{.St.OIDCClientID}}" autocomplete="off" spellcheck="false"{{if .Errors.oidc_client_id}} aria-invalid="true"{{end}}>
-          {{template "admin-field-error" .Errors.oidc_client_id}}
+          {{template "field-error" .Errors.oidc_client_id}}
         </div>
         <div class="field">
           <label for="oidc_client_secret">Client secret</label>
           <input id="oidc_client_secret" name="oidc_client_secret" type="password" value="{{.St.OIDCClientSecret}}" autocomplete="new-password"{{if .HasOIDCSecret}} placeholder="•••••••• (stored)"{{end}}{{if .Errors.oidc_client_secret}} aria-invalid="true"{{end}}>
           <span class="help">{{if .HasOIDCSecret}}A secret is stored. Leave empty to keep it.{{else}}The secret value from the application registration.{{end}}</span>
-          {{template "admin-field-error" .Errors.oidc_client_secret}}
+          {{template "field-error" .Errors.oidc_client_secret}}
         </div>
       </div>
       <div class="field-row">
@@ -71,7 +69,7 @@
           <label for="oidc_scopes">Scopes</label>
           <input id="oidc_scopes" name="oidc_scopes" type="text" value="{{.St.OIDCScopes}}" spellcheck="false"{{if .Errors.oidc_scopes}} aria-invalid="true"{{end}}>
           <span class="help">Separated by spaces; default <code>openid profile email</code>.</span>
-          {{template "admin-field-error" .Errors.oidc_scopes}}
+          {{template "field-error" .Errors.oidc_scopes}}
         </div>
         <div class="field">
           <label for="oidc_groups_claim">Groups claim</label>
@@ -87,7 +85,7 @@
     </div>
   </fieldset>
 
-  <fieldset id="directory">
+  <fieldset class="box" id="directory">
     <legend>Directory sync (Microsoft Entra ID)</legend>
     <div class="field">
       <label class="checkbox"><input type="checkbox" name="directory_sync_enabled"{{if .St.DirectorySyncEnabled}} checked{{end}}{{if .Errors.directory_sync_enabled}} aria-invalid="true"{{end}}> Synchronise group members from Microsoft Entra ID</label>
@@ -95,7 +93,7 @@
         are notified even if they never signed in, and groups can be searched by name. Uses the single sign-on client ID and
         secret; the app registration needs the Microsoft Graph <em>application</em> permissions
         <strong>GroupMember.Read.All</strong> and <strong>User.ReadBasic.All</strong> with admin consent.</span>
-      {{template "admin-field-error" .Errors.directory_sync_enabled}}
+      {{template "field-error" .Errors.directory_sync_enabled}}
     </div>
     {{if .DirectoryEnabled}}
     <div class="field">
@@ -104,20 +102,20 @@
     {{end}}
   </fieldset>
 
-  <fieldset id="email">
+  <fieldset class="box" id="email">
     <legend>E-mail (SMTP)</legend>
-    <p class="small muted">Used for notifications. Leave the server empty to turn e-mail off.</p>
+    <p class="help">Used for notifications. Leave the server empty to turn e-mail off.</p>
     <div class="field-row">
       <div class="field">
         <label for="smtp_host">SMTP server</label>
         <input id="smtp_host" name="smtp_host" type="text" value="{{.St.SMTPHost}}" placeholder="smtp.example.com" spellcheck="false"{{if .Errors.smtp_host}} aria-invalid="true"{{end}}>
-        {{template "admin-field-error" .Errors.smtp_host}}
+        {{template "field-error" .Errors.smtp_host}}
       </div>
       <div class="field">
         <label for="smtp_port">Port</label>
         <input id="smtp_port" name="smtp_port" type="number" min="1" max="65535" value="{{.SMTPPort}}"{{if .Errors.smtp_port}} aria-invalid="true"{{end}}>
         <span class="help">Usually 587 for STARTTLS, 465 for TLS.</span>
-        {{template "admin-field-error" .Errors.smtp_port}}
+        {{template "field-error" .Errors.smtp_port}}
       </div>
     </div>
     <div class="field">
@@ -127,7 +125,7 @@
         <option value="tls"{{if eq .St.SMTPSecurity "tls"}} selected{{end}}>TLS</option>
         <option value="none"{{if eq .St.SMTPSecurity "none"}} selected{{end}}>None (unencrypted)</option>
       </select>
-      {{template "admin-field-error" .Errors.smtp_security}}
+      {{template "field-error" .Errors.smtp_security}}
     </div>
     <div class="field-row">
       <div class="field">
@@ -144,7 +142,7 @@
     <div class="field">
       <label for="smtp_from">Sender</label>
       <input id="smtp_from" name="smtp_from" type="text" value="{{.St.SMTPFrom}}" placeholder="IT Status <status@example.com>" spellcheck="false"{{if .Errors.smtp_from}} aria-invalid="true"{{end}}>
-      {{template "admin-field-error" .Errors.smtp_from}}
+      {{template "field-error" .Errors.smtp_from}}
     </div>
   </fieldset>
 
@@ -153,15 +151,19 @@
   </div>
 </form>
 
-<section class="card admin-narrow" id="test-email">
-  <div class="card-header"><h2>Send test e-mail</h2></div>
+<section class="card narrow" id="test-email" aria-labelledby="test-email-title">
+  <div class="card-header"><h2 id="test-email-title">Test e-mail</h2></div>
   <div class="card-body">
-    <p class="small muted">Sends a test message with the <strong>saved</strong> SMTP settings – save your changes first.</p>
-    <form method="post" action="/admin/settings/test-email" class="row">
+    <form method="post" action="/admin/settings/test-email" class="form">
       {{template "csrf" $}}
-      <label for="test_to" class="nowrap">Recipient</label>
-      <input id="test_to" name="to" type="email" value="{{.TestEmailTo}}" placeholder="you@example.com" required class="admin-grow">
-      <button type="submit">Send test e-mail</button>
+      <div class="field">
+        <label for="test_to">Recipient</label>
+        <div class="row">
+          <input id="test_to" name="to" type="email" value="{{.TestEmailTo}}" placeholder="you@example.com" required class="grow" aria-describedby="test_to_help">
+          <button type="submit">Send test e-mail</button>
+        </div>
+        <span class="help" id="test_to_help">Sends a test message with the <strong>saved</strong> SMTP settings – save your changes first.</span>
+      </div>
     </form>
   </div>
 </section>

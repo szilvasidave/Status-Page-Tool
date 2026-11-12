@@ -159,7 +159,7 @@ func (s *Server) handleDirectorySync(w http.ResponseWriter, r *http.Request) {
 	msg := fmt.Sprintf("Synchronised %s, %s.", adminPlural(res.Groups, "group"), adminPlural(res.Members, "membership"))
 	kind := "success"
 	if len(res.Errors) > 0 {
-		kind = "error"
+		kind = "warning" // the other groups were synchronised
 		msg += " " + adminPlural(len(res.Errors), "error") + ": " + strings.Join(res.Errors, "; ")
 	}
 	s.redirectWithFlash(w, r, back, kind, adminTruncate(msg, 800))
