@@ -1,0 +1,53 @@
+{{define "head"}}{{template "admin-head"}}{{end}}
+{{define "content"}}
+{{template "admin-subnav" "groups"}}
+{{with .Data}}
+<div class="toolbar">
+  <h1>Find groups</h1>
+  <a class="btn" href="/admin/groups">Back to groups</a>
+</div>
+<form method="get" action="/admin/groups/search" class="row">
+  <label for="q" class="nowrap">Group name</label>
+  <input id="q" name="q" type="search" value="{{.Query}}" required class="admin-grow" placeholder="e.g. IT Operations">
+  <button type="submit">Search</button>
+</form>
+
+{{with .Error}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
+
+{{if .Searched}}
+<section>
+  {{if .Results}}
+  <div class="card">
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th scope="col">Group</th><th scope="col">Object ID</th><th scope="col"><span class="admin-sr-only">Action</span></th></tr></thead>
+        <tbody>
+          {{range .Results}}
+          <tr>
+            <td>{{.Name}}{{with .Description}}<div class="small muted">{{.}}</div>{{end}}</td>
+            <td class="admin-cell-wrap"><code>{{.ID}}</code></td>
+            <td class="nowrap">
+              {{if .ExistingID}}
+              <a href="/admin/groups/{{.ExistingID}}">Already added</a>
+              {{else}}
+              <form method="post" action="/admin/groups" class="inline">
+                {{template "csrf" $}}
+                <input type="hidden" name="external_id" value="{{.ID}}">
+                <input type="hidden" name="name" value="{{.Name}}">
+                <button type="submit" class="btn-small">Add</button>
+              </form>
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {{else if not .Error}}
+  <p class="notice">No groups found whose name starts with “{{.Query}}”.</p>
+  {{end}}
+</section>
+{{end}}
+{{end}}
+{{end}}
