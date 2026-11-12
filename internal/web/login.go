@@ -16,4 +16,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) { s.notImp
 
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) { s.notImplemented(w, r) }
 
-func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) { s.notImplemented(w, r) }
+func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
+	s.notImplemented(w, r)
+}

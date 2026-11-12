@@ -200,7 +200,7 @@ func (s *Server) funcs() template.FuncMap {
 		// statusLabel / overallLabel give human readable status texts.
 		"statusLabel":  func(st store.Status) string { return st.Label() },
 		"overallLabel": store.OverallLabel,
-		"impacts":   func() []store.Status { return store.Impacts },
+		"impacts":      func() []store.Status { return store.Impacts },
 		"incidentStatuses": func() []store.IncidentStatus {
 			return store.IncidentStatuses
 		},
