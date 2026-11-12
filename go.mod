@@ -5,7 +5,9 @@ go 1.26.0
 require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/kardianos/service v1.3.0
+	github.com/wneessen/go-mail v0.8.1
 	golang.org/x/crypto v0.59.0
+	golang.org/x/oauth2 v0.38.0
 	golang.org/x/term v0.48.0
 	modernc.org/sqlite v1.62.0
 )

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{.Subject}}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f6f7f9;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f6f7f9" style="background-color:#f6f7f9;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="width:600px;max-width:600px;background-color:#ffffff;border:1px solid #e2e5ea;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:22px;color:#1c2430;">
+<tr><td style="padding:16px 24px;border-bottom:1px solid #e2e5ea;font-size:14px;font-weight:bold;color:#5f6b7a;">{{.SiteName}}</td></tr>
+<tr><td style="padding:24px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+<td bgcolor="{{.BadgeColor}}" style="background-color:{{.BadgeColor}};color:#ffffff;font-size:13px;line-height:18px;font-weight:bold;padding:4px 10px;border-radius:4px;">{{.Badge}}</td>
+</tr></table>
+<h1 style="margin:12px 0 6px 0;font-size:20px;line-height:26px;color:#1c2430;">{{.Title}}</h1>
+{{- with .Intro}}
+<p style="margin:0 0 16px 0;color:#5f6b7a;">{{.}}</p>
+{{- end}}
+{{- if .Facts}}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;">
+{{- range .Facts}}
+<tr><td style="padding:2px 16px 2px 0;color:#5f6b7a;vertical-align:top;white-space:nowrap;">{{.Label}}</td><td style="padding:2px 0;vertical-align:top;">{{.Value}}</td></tr>
+{{- end}}
+</table>
+{{- end}}
+{{- with .Message}}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;"><tr>
+<td bgcolor="#f1f3f6" style="background-color:#f1f3f6;border-left:4px solid {{$.BadgeColor}};padding:12px 16px;">{{nl2br .}}</td>
+</tr></table>
+{{- end}}
+{{- if .Services}}
+<p style="margin:0 0 6px 0;font-weight:bold;">Affected services</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;border-top:1px solid #e2e5ea;">
+{{- range .Services}}
+<tr><td style="padding:6px 0;border-bottom:1px solid #e2e5ea;">{{.Name}}</td><td align="right" style="padding:6px 0;border-bottom:1px solid #e2e5ea;white-space:nowrap;font-weight:bold;color:{{.Color}};">{{.Label}}</td></tr>
+{{- end}}
+</table>
+{{- end}}
+{{- if .LinkURL}}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 0 0;"><tr>
+<td bgcolor="#1d5fd1" style="background-color:#1d5fd1;border-radius:6px;padding:10px 18px;"><a href="{{.LinkURL}}" style="color:#ffffff;text-decoration:none;font-weight:bold;">{{.LinkText}}</a></td>
+</tr></table>
+{{- end}}
+</td></tr>
+<tr><td style="padding:16px 24px;border-top:1px solid #e2e5ea;font-size:12px;line-height:18px;color:#5f6b7a;">{{.Footer}}</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
