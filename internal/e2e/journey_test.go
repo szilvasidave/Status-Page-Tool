@@ -717,7 +717,7 @@ func (j *journey) breakGlass() {
 		j.t.Error("the login page has no single sign-on button")
 	}
 	p = p.form("/login").set("username", "admin").set("password", "wrong-password").post()
-	p.expectStatus(401).expectText("Invalid username or password.")
+	p.expectStatus(401).expectText("Invalid user name or password.")
 
 	p = b.get(j.base+"/login?local=1&next=%2Fadmin%2Fsettings").expectStatus(200).
 		form("/login").set("username", "admin").set("password", adminPW).post()
