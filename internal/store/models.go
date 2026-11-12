@@ -21,7 +21,9 @@ const (
 	RoleAdmin  Role = 3 // may change configuration
 )
 
-// String returns the value stored in idp_groups.role ("" for viewer/none).
+// String returns "admin", "editor", "viewer" or "" (RoleNone); ParseRole
+// reverses it. idp_groups.role stores "editor", "admin" or "" (no special
+// role, members are viewers); UpdateGroup stores "" for RoleViewer.
 func (r Role) String() string {
 	switch r {
 	case RoleAdmin:

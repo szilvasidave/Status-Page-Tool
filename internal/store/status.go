@@ -75,6 +75,9 @@ func DailyHistory(services []Service, incidents []Incident, maintenances []Maint
 	if loc == nil {
 		loc = time.UTC
 	}
+	if days < 0 {
+		days = 0
+	}
 	nowL := now.In(loc)
 	today := time.Date(nowL.Year(), nowL.Month(), nowL.Day(), 0, 0, 0, 0, loc)
 	starts := make([]time.Time, days)
@@ -82,7 +85,6 @@ func DailyHistory(services []Service, incidents []Incident, maintenances []Maint
 		starts[i] = today.AddDate(0, 0, i-days+1)
 	}
 	out := make(map[int64][]DayStatus, len(services))
-	index := make(map[int64]int, len(services))
 	for _, s := range services {
 		row := make([]DayStatus, days)
 		for i, st := range starts {
@@ -90,15 +92,10 @@ func DailyHistory(services []Service, incidents []Incident, maintenances []Maint
 			row[i] = DayStatus{Date: st, Status: StatusOperational, NoData: !end.After(s.CreatedAt)}
 		}
 		out[s.ID] = row
-		index[s.ID] = 0
 	}
 	for _, inc := range incidents {
 		for i, st := range starts {
-			end := st.AddDate(0, 0, 1)
-			if !inc.StartedAt.Before(end) {
-				continue
-			}
-			if inc.ResolvedAt != nil && inc.ResolvedAt.Before(st) {
+			if !incidentOnDay(&inc, st, st.AddDate(0, 0, 1)) {
 				continue
 			}
 			for _, si := range inc.Services {
@@ -137,4 +134,21 @@ func DailyHistory(services []Service, incidents []Incident, maintenances []Maint
 		}
 	}
 	return out
+}
+
+// incidentOnDay reports whether an incident overlaps the day [dayStart,
+// dayEnd). The incident lasts from StartedAt until ResolvedAt (exclusive) or
+// is still open; an incident resolved the moment it started counts for the
+// day it happened on.
+func incidentOnDay(inc *Incident, dayStart, dayEnd time.Time) bool {
+	if !inc.StartedAt.Before(dayEnd) {
+		return false // starts after this day
+	}
+	r := inc.ResolvedAt
+	if r == nil || r.After(dayStart) {
+		return true
+	}
+	// resolved at or before the start of the day: only a zero-length
+	// incident that happened exactly at dayStart counts
+	return !r.After(inc.StartedAt) && !inc.StartedAt.Before(dayStart)
 }
