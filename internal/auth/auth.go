@@ -117,8 +117,10 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		}
 		ctx = context.WithValue(ctx, csrfKey, token)
 
-		if id := m.loadIdentity(r); id != nil {
-			ctx = WithIdentity(ctx, id)
+		if !strings.HasPrefix(r.URL.Path, "/static/") {
+			if id := m.loadIdentity(r); id != nil {
+				ctx = WithIdentity(ctx, id)
+			}
 		}
 		r = r.WithContext(ctx)
 
