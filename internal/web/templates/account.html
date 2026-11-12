@@ -1,0 +1,87 @@
+{{define "content"}}
+{{with .Data}}
+<div class="toolbar">
+  <h1>Your account</h1>
+</div>
+
+<section class="card" aria-labelledby="account-profile">
+  <div class="card-header"><h2 id="account-profile">Profile</h2></div>
+  <ul class="card-list">
+    <li class="row"><span class="muted">Name</span><span class="spacer"></span><strong>{{.User.DisplayName}}</strong></li>
+    {{- if .User.IsLocalAdmin}}
+    <li class="row"><span class="muted">User name</span><span class="spacer"></span><span class="mono">{{.User.Username}}</span></li>
+    {{- else}}
+    <li class="row"><span class="muted">E-mail</span><span class="spacer"></span>{{with .User.Email}}<span>{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</li>
+    {{- end}}
+    <li class="row"><span class="muted">Role</span><span class="spacer"></span><span class="badge">{{.Role.Label}}</span></li>
+    <li class="row"><span class="muted">Sign-in method</span><span class="spacer"></span><span>{{if .User.IsLocalAdmin}}Local administrator account{{else}}Single sign-on{{end}}</span></li>
+  </ul>
+  <div class="card-footer small muted">{{.RoleHelp}}</div>
+</section>
+
+{{- if .User.IsLocalAdmin}}
+<section class="card" id="password" aria-labelledby="account-password">
+  <div class="card-header"><h2 id="account-password">Change password</h2></div>
+  <div class="card-body">
+    {{with .PasswordError}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
+    <form method="post" action="/account/password" class="form">
+      {{template "csrf" $}}
+      <input type="text" name="username" value="{{.User.Username}}" autocomplete="username" hidden readonly>
+      <div class="field">
+        <label for="current_password">Current password</label>
+        <input id="current_password" name="current_password" type="password" autocomplete="current-password" required>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="new_password">New password</label>
+          <input id="new_password" name="new_password" type="password" autocomplete="new-password" minlength="{{.MinPasswordLength}}" required aria-describedby="new_password_help">
+          <span class="help" id="new_password_help">At least {{.MinPasswordLength}} characters.</span>
+        </div>
+        <div class="field">
+          <label for="confirm_password">Repeat new password</label>
+          <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" minlength="{{.MinPasswordLength}}" required>
+        </div>
+      </div>
+      <p class="small muted">Changing the password signs this account out on all other devices.</p>
+      <div class="form-actions"><button type="submit" class="btn-primary">Change password</button></div>
+    </form>
+  </div>
+</section>
+{{- else}}
+<section class="card" aria-labelledby="account-groups">
+  <div class="card-header"><h2 id="account-groups">Groups</h2></div>
+  {{- if .Groups}}
+  <ul class="card-list">
+    {{- range .Groups}}
+    <li class="row"><span>{{.DisplayName}}</span><span class="spacer"></span>{{if gt .Role 1}}<span class="badge">{{.Role.Label}}</span>{{end}}</li>
+    {{- end}}
+  </ul>
+  {{- else}}
+  <div class="card-body"><p class="muted">You are not a member of any group.</p></div>
+  {{- end}}
+  <div class="card-footer small muted">
+    Your groups come from the identity provider and are refreshed every time you sign in{{if $.Settings.DirectorySyncEnabled}} and by the hourly directory sync{{end}}.
+    Please contact your IT department if a group is missing.
+  </div>
+</section>
+
+<section class="card" aria-labelledby="account-notifications">
+  <div class="card-header"><h2 id="account-notifications">Notifications</h2></div>
+  <div class="card-body">
+    {{- if not .User.Email}}
+    <p class="notice">Your account has no e-mail address, so you do not receive notification e-mails.</p>
+    {{- else if .Services}}
+    <p>E-mails about incidents and maintenance of these services are sent to <strong>{{.User.Email}}</strong>:</p>
+    <ul>
+      {{- range .Services}}
+      <li>{{.Name}}{{with .Category}} <span class="muted small">({{.}})</span>{{end}}</li>
+      {{- end}}
+    </ul>
+    {{- else}}
+    <p class="muted">None of your groups is assigned to a service, so you do not receive notification e-mails.</p>
+    {{- end}}
+  </div>
+</section>
+{{- end}}
+{{end}}
+{{end}}

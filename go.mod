@@ -3,6 +3,8 @@ module github.com/szilvasidave/status-page-tool
 go 1.26.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/kardianos/service v1.3.0
 	github.com/wneessen/go-mail v0.8.1
