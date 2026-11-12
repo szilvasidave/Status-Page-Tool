@@ -1,0 +1,78 @@
+/* Admin and setup pages — additions to style.css (loaded via {{template "admin-head"}}).
+ *
+ *   .admin-field-error     error message below a form field ([aria-invalid] marks the input)
+ *   .admin-meta            definition list for read-only facts (dl > div > dt + dd)
+ *   .admin-code-box        copyable value (e.g. the OIDC redirect URI)
+ *   .admin-cell-wrap       table cell whose long content may wrap anywhere
+ *   .admin-sr-only         visually hidden text for screen readers
+ *   .admin-narrow          block as wide as a .form (e.g. a card below a form)
+ *   .admin-role-option     radio button with explanation (group role)
+ *   .admin-group-add       cards below the groups table
+ *   .admin-grow            input that fills a .row (wraps to its own line on narrow screens)
+ *   .notif-<status>        outbox status badges (pending, sent, failed)
+ *   .setup-steps           wizard step indicator (li.done / li.current)
+ *   .setup-db              database step (SQLite/PostgreSQL field toggling)
+ */
+
+[hidden] { display: none !important; }
+
+.admin-field-error { display: block; color: var(--danger); font-size: .86rem; margin-top: 5px; }
+input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger); }
+
+fieldset > p:first-of-type { margin-top: 4px; }
+.field > label.checkbox { display: flex; }
+fieldset .checkbox { font-weight: 600; }
+fieldset .checkbox + .help { display: block; color: var(--text-muted); font-size: .86rem; margin: -2px 0 0 26px; }
+
+.admin-code-box {
+  display: block; padding: 8px 10px; margin-top: 4px;
+  font-family: var(--mono); font-size: .9rem; word-break: break-all;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-small);
+  user-select: all;
+}
+
+.admin-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 24px; margin: 0 0 24px; }
+.admin-meta dt { font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); font-weight: 600; }
+.admin-meta dd { margin: 2px 0 0; word-break: break-word; }
+
+.admin-cell-wrap { word-break: break-word; min-width: 140px; }
+.admin-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.admin-narrow { max-width: 680px; }
+.form + .admin-narrow, .form + section { margin-top: 32px; }
+.admin-group-add { margin-top: 24px; }
+.admin-grow { flex: 1 1 14em; min-width: 0; width: auto; }
+fieldset .admin-role-option { font-weight: 400; margin: 0 0 10px; }
+
+.notif-sent { color: var(--st-operational); border-color: color-mix(in srgb, var(--st-operational) 35%, transparent); }
+.notif-pending { color: var(--st-maintenance); border-color: color-mix(in srgb, var(--st-maintenance) 35%, transparent); }
+.notif-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+
+/* ---------------------------------------------------------------- setup wizard */
+.setup-card { max-width: 680px; margin: 0 auto; }
+.setup-card .form { max-width: none; }
+.setup-steps { display: flex; gap: 8px; list-style: none; padding: 0; margin: 0 0 24px; flex-wrap: wrap; counter-reset: none; }
+.setup-steps li { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-weight: 500; }
+.setup-steps li + li::before { content: ""; width: 28px; height: 1px; background: var(--border); margin-right: 4px; }
+.setup-step-no {
+  display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border-radius: 50%; border: 1px solid var(--border); background: var(--surface); font-size: .85rem; font-weight: 700;
+}
+.setup-steps li.current { color: var(--text); }
+.setup-steps li.current .setup-step-no { background: var(--primary); border-color: var(--primary); color: var(--primary-text); }
+.setup-steps li.done .setup-step-no { background: var(--st-operational); border-color: var(--st-operational); color: #fff; }
+
+/* The navigation leads nowhere until the setup is complete. */
+body:has(.setup-card) .site-nav, body:has(.setup-card) .user-menu { display: none; }
+.setup-card code.nowrap { word-break: normal; }
+
+/* The SQLite fields are shown exactly when the PostgreSQL fields (toggled by
+   data-show-when on the driver select) are hidden. */
+.setup-db #pg-fields:not([hidden]) ~ #sqlite-fields { display: none; }
+
+@media (max-width: 600px) {
+  .setup-steps { gap: 6px 16px; }
+  .setup-steps li + li::before { display: none; }
+  .setup-card .card-body { padding: 14px; }
+  fieldset { padding: 12px 12px 2px; }
+  .table th, .table td { padding: 8px; }
+}

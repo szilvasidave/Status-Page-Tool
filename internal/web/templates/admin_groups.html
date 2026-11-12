@@ -1,0 +1,81 @@
+{{define "head"}}{{template "admin-head"}}{{end}}
+{{define "content"}}
+{{template "admin-subnav" "groups"}}
+{{with .Data}}
+<div class="toolbar">
+  <h1>Groups</h1>
+  {{if .DirectoryEnabled}}
+  <form method="post" action="/admin/groups/sync" class="inline">
+    {{template "csrf" $}}
+    <button type="submit">Sync now</button>
+  </form>
+  {{end}}
+</div>
+<p class="muted">Groups come from the identity provider. Give a group a role and choose the services its members are
+  notified about. A user's role is the highest role of their groups; everybody else who signs in is a viewer.</p>
+{{template "admin-error-summary" .Errors}}
+
+<div class="card">
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr><th scope="col">Group</th><th scope="col">ID</th><th scope="col">Role</th><th scope="col">Members</th><th scope="col">Services</th></tr>
+      </thead>
+      <tbody>
+        {{range .Groups}}
+        <tr>
+          <td><a href="/admin/groups/{{.ID}}">{{.DisplayName}}</a></td>
+          <td class="admin-cell-wrap"><code>{{.ExternalID}}</code></td>
+          <td>{{if eq .Role.String ""}}<span class="muted">Viewer</span>{{else}}<span class="badge">{{.Role.Label}}</span>{{end}}</td>
+          <td>{{.MemberCount}}</td>
+          <td>{{len .ServiceIDs}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{if not .Groups}}
+  <div class="empty-state"><p>No groups yet. Groups appear here after their members sign in with single sign-on{{if .DirectoryEnabled}} or after a directory sync{{end}}, or add one below.</p></div>
+  {{end}}
+</div>
+
+<div class="grid-2 admin-group-add">
+  <section class="card">
+    <div class="card-header"><h2>Add group</h2></div>
+    <div class="card-body">
+      <form method="post" action="/admin/groups" class="form">
+        {{template "csrf" $}}
+        <div class="field">
+          <label for="external_id">Group ID</label>
+          <input id="external_id" name="external_id" type="text" value="{{.ExternalID}}" required maxlength="255" spellcheck="false"{{if .Errors.external_id}} aria-invalid="true"{{end}}>
+          <span class="help">The value as it appears in the groups claim: the object ID for Microsoft Entra ID, the group name for Keycloak.</span>
+          {{template "admin-field-error" .Errors.external_id}}
+        </div>
+        <div class="field">
+          <label for="name">Display name</label>
+          <input id="name" name="name" type="text" value="{{.Name}}" maxlength="200"{{if .Errors.name}} aria-invalid="true"{{end}}>
+          <span class="help">Optional.</span>
+          {{template "admin-field-error" .Errors.name}}
+        </div>
+        <div class="form-actions"><button type="submit" class="btn-primary">Add group</button></div>
+      </form>
+    </div>
+  </section>
+  {{if .DirectoryEnabled}}
+  <section class="card">
+    <div class="card-header"><h2>Find in Microsoft Entra ID</h2></div>
+    <div class="card-body">
+      <form method="get" action="/admin/groups/search" class="form">
+        <div class="field">
+          <label for="q">Group name</label>
+          <input id="q" name="q" type="search" required placeholder="e.g. IT Operations">
+          <span class="help">Searches the directory by the beginning of the display name.</span>
+        </div>
+        <div class="form-actions"><button type="submit">Search</button></div>
+      </form>
+    </div>
+  </section>
+  {{end}}
+</div>
+{{end}}
+{{end}}

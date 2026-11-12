@@ -312,9 +312,6 @@ func (s *Server) newPage(w http.ResponseWriter, r *http.Request, title string, d
 		SetupMode: s.setupMode,
 		Data:      data,
 	}
-	if p.CSRF == "" {
-		p.CSRF = setupCSRFToken(r)
-	}
 	p.Settings = s.settings(r)
 	p.Nav = navFor(r.URL.Path)
 	return p

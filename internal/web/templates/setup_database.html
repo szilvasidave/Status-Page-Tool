@@ -1,0 +1,83 @@
+{{define "head"}}{{template "admin-head"}}{{end}}
+{{define "content"}}
+{{with .Data}}
+<div class="setup-card">
+  {{template "setup-steps" 1}}
+  <h1>Welcome to Status Page</h1>
+  <p class="muted">Choose where the status page stores its data. The tables are created right away.</p>
+
+  {{with .Success}}<div class="flash flash-success" role="status">{{.}}</div>{{end}}
+  {{with .Error}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
+
+  <form method="post" action="/setup" class="form card card-body setup-db">
+    {{template "csrf" $}}
+    <div class="field">
+      <label for="driver">Database</label>
+      <select id="driver" name="driver" data-show-when="postgres" data-target="#pg-fields">
+        <option value="sqlite"{{if eq .Driver "sqlite"}} selected{{end}}>SQLite (built in)</option>
+        <option value="postgres"{{if eq .Driver "postgres"}} selected{{end}}>PostgreSQL</option>
+      </select>
+      <span class="help">SQLite needs no installation and is the right choice for most installations. Use PostgreSQL if you
+        already run it and want the data on a database server.</span>
+    </div>
+
+    <div id="pg-fields"{{if ne .Driver "postgres"}} hidden{{end}}>
+      <p class="small muted">The database must already exist and the user must be allowed to create tables in it
+        (being the owner of the database is enough).</p>
+      <div class="field-row">
+        <div class="field">
+          <label for="pg_host">Server</label>
+          <input id="pg_host" name="pg_host" type="text" value="{{.PG.Host}}" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pg_port">Port</label>
+          <input id="pg_port" name="pg_port" type="number" min="1" max="65535" value="{{.PGPort}}">
+        </div>
+      </div>
+      <div class="field">
+        <label for="pg_database">Database</label>
+        <input id="pg_database" name="pg_database" type="text" value="{{.PG.Database}}" spellcheck="false">
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="pg_user">User</label>
+          <input id="pg_user" name="pg_user" type="text" value="{{.PG.User}}" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="pg_password">Password</label>
+          <input id="pg_password" name="pg_password" type="password" value="{{.PG.Password}}" autocomplete="new-password">
+        </div>
+      </div>
+      <div class="field">
+        <label for="pg_sslmode">SSL mode</label>
+        <select id="pg_sslmode" name="pg_sslmode">
+          {{$mode := .PG.SSLMode}}
+          {{range .SSLModes}}<option value="{{.}}"{{if eq . $mode}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        <span class="help"><code class="nowrap">prefer</code> encrypts if the server supports it;
+          <code class="nowrap">require</code> always encrypts; <code class="nowrap">verify-full</code> also checks the
+          server certificate.</span>
+      </div>
+    </div>
+
+    <div id="sqlite-fields">
+      <div class="field">
+        <label for="sqlite_path">Database file <span class="muted small">(optional)</span></label>
+        <input id="sqlite_path" name="sqlite_path" type="text" value="{{.SQLitePath}}" placeholder="{{.DefaultSQLitePath}}" spellcheck="false">
+        <span class="help">Leave empty to use <code>{{.DefaultSQLitePath}}</code>. Relative paths are relative to the data folder.</span>
+      </div>
+    </div>
+
+    {{template "setup-token-field" (dict "Ask" .AskToken "File" .TokenFile "Error" "")}}
+
+    <p class="small muted">The server keeps listening on port {{.Port}}. The port can be changed later with the
+      <code class="nowrap">"listen"</code> setting in <code class="nowrap">config.json</code> in the data folder.</p>
+
+    <div class="form-actions">
+      <button type="submit" name="action" value="save" class="btn-primary">Save and continue</button>
+      <button type="submit" name="action" value="test">Test connection</button>
+    </div>
+  </form>
+</div>
+{{end}}
+{{end}}
