@@ -372,7 +372,15 @@ func readGraphError(resp *http.Response) error {
 	return ge
 }
 
-// requestError makes transport and token errors readable.
+// connectionError marks an error that affects every request, not only the
+// requested group: no access token, or Microsoft Graph cannot be reached.
+type connectionError struct{ err error }
+
+func (e *connectionError) Error() string { return e.err.Error() }
+func (e *connectionError) Unwrap() error { return e.err }
+
+// requestError makes transport and token errors readable. They are returned
+// as *connectionError (except for a cancelled ctx).
 func requestError(ctx context.Context, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
@@ -386,16 +394,16 @@ func requestError(ctx context.Context, err error) error {
 		if reason == "" && re.Response != nil {
 			reason = re.Response.Status
 		}
-		return fmt.Errorf("could not get an access token from Microsoft Entra ID (check the client ID and client secret): %s", reason)
+		return &connectionError{fmt.Errorf("could not get an access token from Microsoft Entra ID (check the client ID and client secret): %s", reason)}
 	}
 	var ue *url.Error
 	if errors.As(err, &ue) {
 		if ue.Timeout() {
-			return fmt.Errorf("Microsoft Graph did not respond within %s", graphTimeout)
+			return &connectionError{fmt.Errorf("Microsoft Graph did not respond within %s", graphTimeout)}
 		}
 		err = ue.Err
 	}
-	return fmt.Errorf("could not reach Microsoft Graph: %w", err)
+	return &connectionError{fmt.Errorf("could not reach Microsoft Graph: %w", err)}
 }
 
 func firstLine(s string) string {
