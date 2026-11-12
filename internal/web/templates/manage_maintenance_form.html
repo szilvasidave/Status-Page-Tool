@@ -1,0 +1,101 @@
+{{define "head"}}<link rel="stylesheet" href="/static/manage.css">{{end}}
+
+{{define "content"}}
+{{- with .Data}}
+{{- if .Maintenance}}{{template "manage-subnav" ""}}{{else}}{{template "manage-subnav" "maintenance"}}{{end}}
+<div class="toolbar">
+  <h1>{{.PageTitle}}</h1>
+  {{- with .Maintenance}}
+  {{template "maintenance-badge" $.Data.State}}
+  <a class="btn btn-small" href="/maintenance/{{.ID}}">View on status page</a>
+  {{- end}}
+</div>
+
+{{- if .Editable}}
+{{template "manage-errors" .Errors}}
+<form method="post" action="{{with .Maintenance}}/manage/maintenance/{{.ID}}{{else}}/manage/maintenance{{end}}" class="form manage-form">
+  {{template "csrf" $}}
+  <div class="field">
+    <label for="title">Title</label>
+    <input id="title" name="title" type="text" maxlength="200" required value="{{.Title}}" placeholder="e.g. ERP kernel upgrade">
+  </div>
+  <div class="field">
+    <label for="description">Description <span class="muted">(optional)</span></label>
+    <textarea id="description" name="description" rows="4">{{.Description}}</textarea>
+    <span class="help">What will be done and what users should expect during the maintenance.</span>
+  </div>
+  <div class="field-row">
+    <div class="field">
+      <label for="starts_at">Start</label>
+      <input id="starts_at" name="starts_at" type="datetime-local" required value="{{.StartsAt}}">
+    </div>
+    <div class="field">
+      <label for="ends_at">End</label>
+      <input id="ends_at" name="ends_at" type="datetime-local" required value="{{.EndsAt}}">
+    </div>
+  </div>
+  <p class="help small muted manage-tz">Times are in the {{tz}} time zone.</p>
+
+  <fieldset>
+    <legend>Affected services</legend>
+    {{- if .Groups}}
+    {{template "manage-service-checks" .Groups}}
+    {{- else}}
+    {{template "manage-no-services" $}}
+    {{- end}}
+  </fieldset>
+
+  {{template "manage-notify" (dict "Page" $ "Checked" .Notify "Help" "E-mail the members of the assigned groups when the maintenance is scheduled, when it starts and when it is completed.")}}
+
+  <div class="form-actions">
+    {{- if .Maintenance}}
+    <button type="submit" class="btn-primary">Save changes</button>
+    <a class="btn" href="/manage">Back to overview</a>
+    {{- else}}
+    <button type="submit" class="btn-primary">Schedule maintenance</button>
+    <a class="btn" href="/manage">Cancel</a>
+    {{- end}}
+  </div>
+</form>
+
+{{- else}}
+<p class="notice">This maintenance is {{if eq .State "cancelled"}}cancelled{{else}}completed{{end}} and can no longer be changed.</p>
+<div class="card">
+  <div class="card-body stack">
+    <div><div class="small muted">Window</div>{{.Window}}</div>
+    <div><div class="small muted">Affected services</div>{{with .Services}}{{.}}{{else}}–{{end}}</div>
+    {{- with .Description}}
+    <div><div class="small muted">Description</div>{{nl2br .}}</div>
+    {{- end}}
+    <div><div class="small muted">E-mail notifications</div>{{if .Notify}}On{{else}}Off{{end}}</div>
+  </div>
+</div>
+<p class="manage-back"><a href="/manage">← Back to overview</a></p>
+{{- end}}
+
+{{- with .Maintenance}}
+{{- if or $.Data.CanEnd $.Data.CanCancel $.IsAdmin}}
+<section class="manage-danger" aria-label="More actions">
+  {{- if $.Data.CanEnd}}
+  <form method="post" action="/manage/maintenance/{{.ID}}/end" class="inline" data-confirm="End this maintenance now?">
+    {{template "csrf" $}}
+    <button type="submit">End now</button>
+  </form>
+  {{- end}}
+  {{- if $.Data.CanCancel}}
+  <form method="post" action="/manage/maintenance/{{.ID}}/cancel" class="inline" data-confirm="Cancel this maintenance?{{if .Notify}} The members of the assigned groups will be notified.{{end}}">
+    {{template "csrf" $}}
+    <button type="submit" class="btn-danger">Cancel maintenance</button>
+  </form>
+  {{- end}}
+  {{- if $.IsAdmin}}
+  <form method="post" action="/manage/maintenance/{{.ID}}/delete" class="inline" data-confirm="Delete this maintenance? It disappears from the status page and the history. This cannot be undone.">
+    {{template "csrf" $}}
+    <button type="submit" class="btn-danger">Delete</button>
+  </form>
+  {{- end}}
+</section>
+{{- end}}
+{{- end}}
+{{- end}}
+{{end}}

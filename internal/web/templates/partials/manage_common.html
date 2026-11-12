@@ -1,0 +1,90 @@
+{{/* Partials of the editor area (/manage). */}}
+
+{{/* Sub navigation. Usage: {{template "manage-subnav" "overview"}} with the
+     active tab: overview, incident, maintenance or "" (none). */}}
+{{define "manage-subnav"}}
+<nav class="subnav" aria-label="Manage">
+  <a href="/manage"{{if eq . "overview"}} aria-current="page"{{end}}>Overview</a>
+  <a href="/manage/incidents/new"{{if eq . "incident"}} aria-current="page"{{end}}>Report incident</a>
+  <a href="/manage/maintenance/new"{{if eq . "maintenance"}} aria-current="page"{{end}}>Schedule maintenance</a>
+</nav>
+{{- end}}
+
+{{/* Validation errors of a form. Usage: {{template "manage-errors" .Errors}} with a []string. */}}
+{{define "manage-errors"}}
+{{- if .}}
+<div class="flash flash-error" role="alert">
+  {{- if eq (len .) 1}}{{index . 0}}
+  {{- else}}
+  <strong>Please correct the following:</strong>
+  <ul class="manage-error-list">{{range .}}<li>{{.}}</li>{{end}}</ul>
+  {{- end}}
+</div>
+{{- end}}
+{{- end}}
+
+{{/* Impact selector of the incident forms (one select impact_<serviceID> per
+     service). Usage: {{template "manage-impact-table" .Groups}} with
+     []manageServiceGroup. */}}
+{{define "manage-impact-table"}}
+<div class="card table-wrap manage-impacts-card">
+<table class="table manage-impacts">
+  {{- range .}}
+  <tbody>
+    {{- if .Category}}
+    <tr class="manage-category"><th colspan="2" scope="colgroup">{{.Category}}</th></tr>
+    {{- end}}
+    {{- range .Services}}
+    {{- $impact := .Impact}}
+    <tr>
+      <td><label for="impact_{{.ID}}">{{.Name}}</label></td>
+      <td class="manage-impact-cell">
+        <select id="impact_{{.ID}}" name="impact_{{.ID}}">
+          <option value="">Not affected</option>
+          {{- range impacts}}
+          <option value="{{.}}"{{if eq . $impact}} selected{{end}}>{{statusLabel .}}</option>
+          {{- end}}
+        </select>
+      </td>
+    </tr>
+    {{- end}}
+  </tbody>
+  {{- end}}
+</table>
+</div>
+{{- end}}
+
+{{/* Service checkboxes of the maintenance form (name "services"). Usage:
+     {{template "manage-service-checks" .Groups}} with []manageServiceGroup. */}}
+{{define "manage-service-checks"}}
+<div class="checkbox-list manage-service-list">
+  {{- range .}}
+  {{- if .Category}}<div class="manage-check-category">{{.Category}}</div>{{end}}
+  {{- range .Services}}
+  <label class="checkbox"><input type="checkbox" name="services" value="{{.ID}}"{{if .Checked}} checked{{end}}> <span>{{.Name}}</span></label>
+  {{- end}}
+  {{- end}}
+</div>
+{{- end}}
+
+{{/* Shown instead of a service selector when no services exist.
+     Usage: {{template "manage-no-services" $}} with the *Page. */}}
+{{define "manage-no-services"}}
+<p class="notice">No services have been set up yet.
+  {{- if .IsAdmin}} <a href="/admin/services/new">Add a service</a> first.{{else}} Please ask an administrator to add the services first.{{end}}</p>
+{{- end}}
+
+{{/* "Notify" checkbox with an explanation and a notice when e-mail is not
+     configured. Usage: {{template "manage-notify" (dict "Page" $ "Checked" .Notify "Help" "...")}}. */}}
+{{define "manage-notify"}}
+<div class="field">
+  <div class="checkbox">
+    <input id="notify" type="checkbox" name="notify" value="on"{{if .Checked}} checked{{end}}>
+    <label for="notify"><strong>Send e-mail notifications</strong><span class="help">{{.Help}}</span></label>
+  </div>
+  {{- if not .Page.Settings.SMTPConfigured}}
+  <p class="notice small">E-mail is not configured, so no notifications will be sent.
+    {{- if .Page.IsAdmin}} <a href="/admin/settings">Configure e-mail</a> in the settings.{{else}} An administrator can set it up in the settings.{{end}}</p>
+  {{- end}}
+</div>
+{{- end}}
