@@ -683,7 +683,7 @@ func (j *journey) maintenance(alice *browser) {
 		check("services", j.vpn).post()
 	p.expectRedirect("/manage")
 	p.follow().expectFlash("success", "The maintenance has been scheduled. 1 notification e-mail queued.")
-	j.expectMails("["+siteName+"] Scheduled maintenance: VPN reboot", "alice@e2e.example")
+	j.expectMails("["+siteName+"] Maintenance started: VPN reboot", "alice@e2e.example") // already running
 	p = j.anon.get(j.base+"/").expectStatus(200).expectText("Maintenance in progress", "VPN reboot", "In progress")
 	if !regexp.MustCompile(`>VPN</strong>\s*<span class="pill status-maintenance">`).MatchString(p.Body) {
 		t.Errorf("the status page does not show VPN under maintenance")

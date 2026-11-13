@@ -23,6 +23,9 @@ const (
 	batchSize = 50
 	// keepNotifications is how long sent and failed e-mails are kept.
 	keepNotifications = 90 * 24 * time.Hour
+	// pauseAfterStop is how long the delivery waits after the SMTP server
+	// throttled it (temporary error) or closed the connection.
+	pauseAfterStop = time.Minute
 )
 
 // retryDelays are the waits after the first, second, … failed delivery
@@ -41,6 +44,8 @@ type Notifier struct {
 	outboxInterval      time.Duration // delivery of due e-mails (retries)
 	maintenanceInterval time.Duration // "maintenance started/completed" check
 	cleanupInterval     time.Duration // removal of old e-mails
+
+	pausedUntil time.Time // no delivery before; only used by the worker (deliver)
 }
 
 // New creates a Notifier.
@@ -77,7 +82,9 @@ func (n *Notifier) IncidentUpdated(ctx context.Context, incidentID int64, previo
 	return n.incident(ctx, incidentID, previousServiceIDs, false)
 }
 
-// MaintenanceScheduled notifies about a newly scheduled maintenance.
+// MaintenanceScheduled notifies about a newly created maintenance. A window
+// that had already started (or ended) when it was created gets the
+// "started" (or "completed") e-mail instead, as the worker sends none for it.
 func (n *Notifier) MaintenanceScheduled(ctx context.Context, maintenanceID int64) (int, error) {
 	return n.maintenance(ctx, maintenanceID, MaintenanceEventScheduled, nil)
 }
@@ -115,6 +122,16 @@ func (n *Notifier) maintenance(ctx context.Context, id int64, ev MaintenanceEven
 	m, err := n.store.GetMaintenance(ctx, id)
 	if err != nil {
 		return 0, err
+	}
+	// CreateMaintenance marks a window that has already started or ended as
+	// notified, so the worker sends no "started"/"completed" e-mail for it.
+	if ev == MaintenanceEventScheduled {
+		switch {
+		case m.NotifiedEnd:
+			ev = MaintenanceEventCompleted
+		case m.NotifiedStart:
+			ev = MaintenanceEventStarted
+		}
 	}
 	return n.queue(ctx, about, append(m.ServiceIDs(), previousServiceIDs...), RenderMaintenance(st, m, ev))
 }
@@ -170,11 +187,8 @@ func (n *Notifier) SendTestEmail(ctx context.Context, to string) error {
 		return err
 	}
 	e := renderTestEmail(st)
-	errs, err := Send(ctx, st, []Message{{To: to, Subject: e.Subject, Text: e.Text, HTML: e.HTML}})
-	if err == nil {
-		err = errs[0]
-	}
-	if err != nil {
+	errs, _ := Send(ctx, st, []Message{{To: to, Subject: e.Subject, Text: e.Text, HTML: e.HTML}})
+	if err := errs[0]; err != nil {
 		n.log.Warn("test e-mail failed", "to", to, "err", err)
 		return err
 	}
@@ -245,9 +259,11 @@ func (n *Notifier) Run(ctx context.Context) {
 }
 
 // deliver sends due e-mails in batches until none are left. It stops early
-// when the SMTP server cannot be reached; the next run tries again.
+// when the SMTP server cannot be reached; the next run tries again. After
+// the server throttled the delivery or closed the connection it waits
+// pauseAfterStop.
 func (n *Notifier) deliver(ctx context.Context) {
-	for ctx.Err() == nil {
+	for ctx.Err() == nil && !n.now().Before(n.pausedUntil) {
 		st, err := n.store.GetSettings(ctx)
 		if err != nil {
 			n.logError(ctx, "deliver e-mails", err)
@@ -268,41 +284,34 @@ func (n *Notifier) deliver(ctx context.Context) {
 }
 
 // sendBatch delivers the notifications over one SMTP connection and records
-// the results. It reports whether the delivery may go on with the next batch.
+// the result of each one right away, so that after a crash at most one
+// delivered e-mail is sent again. E-mails that were not tried (the server
+// throttled the delivery or closed the connection, or shutdown) keep their
+// attempts. It reports whether the delivery may go on with the next batch.
 func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []store.Notification) bool {
 	msgs := make([]Message, len(due))
 	for i, d := range due {
 		msgs[i] = Message{To: d.Email, Subject: d.Subject, Text: d.BodyText, HTML: d.BodyHTML}
 	}
-	errs, connErr := Send(ctx, st, msgs)
-	if connErr != nil && ctx.Err() == nil {
-		n.log.Warn("e-mails not delivered, will retry", "count", len(msgs), "err", connErr)
-	}
 
-	// Record the results even if ctx has been cancelled meanwhile, so that
-	// delivered e-mails are not sent again after a restart.
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	now := n.now()
-	ok := connErr == nil
+	ok := true
 	sent, failed := 0, 0
-	for i, d := range due {
-		sendErr := errs[i]
-		if sendErr != nil && ctx.Err() != nil &&
-			(errors.Is(sendErr, context.Canceled) || errors.Is(sendErr, context.DeadlineExceeded)) {
-			continue // interrupted by shutdown: not an attempt, retried after the restart
-		}
+	record := func(d store.Notification, sendErr error, logRetry bool) {
+		// Record the result even if ctx has been cancelled meanwhile, so
+		// that a delivered e-mail is not sent again after a restart.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
 		var err error
 		if sendErr == nil {
 			sent++
 			err = n.store.MarkNotificationSent(rctx, d.ID)
 		} else {
 			failed++
-			retryAt := nextAttempt(now, d.Attempts+1)
+			retryAt := nextAttempt(n.now(), d.Attempts+1)
 			switch {
 			case retryAt == nil:
 				n.log.Warn("giving up on e-mail", "id", d.ID, "to", d.Email, "attempts", d.Attempts+1, "err", sendErr)
-			case connErr == nil: // connection errors are logged once above
+			case logRetry:
 				n.log.Warn("e-mail not delivered, will retry", "id", d.ID, "to", d.Email, "retry_at", retryAt.Format(time.RFC3339), "err", sendErr)
 			}
 			err = n.store.MarkNotificationAttemptFailed(rctx, d.ID, sendErr.Error(), retryAt)
@@ -312,10 +321,32 @@ func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []stor
 			ok = false
 		}
 	}
+
+	tried := 0
+	err := send(ctx, st, msgs, func(i int, sendErr error) {
+		tried = i + 1
+		record(due[i], sendErr, true)
+	})
+	switch {
+	case err == nil:
+	case ctx.Err() != nil:
+		// Shutting down: the rest is sent after the restart.
+	case errors.Is(err, errStopped):
+		n.pausedUntil = n.now().Add(pauseAfterStop)
+		n.log.Warn("SMTP server throttled the delivery or closed the connection, pausing e-mail delivery",
+			"pause", pauseAfterStop, "not_tried", len(due)-tried, "err", err)
+	default:
+		// Could not connect or sign in: a failed attempt for every e-mail,
+		// logged once.
+		n.log.Warn("e-mails not delivered, will retry", "count", len(due)-tried, "err", err)
+		for _, d := range due[tried:] {
+			record(d, err, false)
+		}
+	}
 	if sent > 0 {
 		n.log.Info("e-mails sent", "count", sent, "failed", failed)
 	}
-	return ok && ctx.Err() == nil
+	return ok && err == nil
 }
 
 // nextAttempt returns when to retry after the given number of failed
@@ -364,12 +395,12 @@ func (n *Notifier) checkMaintenances(ctx context.Context) {
 			}
 		}
 		if !m.NotifiedStart {
-			if err := n.store.MarkMaintenanceNotified(ctx, m.ID, true); err != nil {
+			if err := n.store.MarkMaintenanceNotified(ctx, m, true); err != nil {
 				n.logError(ctx, "check maintenance windows", err)
 			}
 		}
 		if ended && !m.NotifiedEnd {
-			if err := n.store.MarkMaintenanceNotified(ctx, m.ID, false); err != nil {
+			if err := n.store.MarkMaintenanceNotified(ctx, m, false); err != nil {
 				n.logError(ctx, "check maintenance windows", err)
 			}
 		}

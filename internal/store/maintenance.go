@@ -213,17 +213,19 @@ func (s *Store) MaintenancesToNotify(ctx context.Context, now time.Time) ([]Main
 }
 
 // MarkMaintenanceNotified sets notified_start (start=true) or notified_end
-// (start=false) to true. Returns ErrNotFound for an unknown maintenance.
-func (s *Store) MarkMaintenanceNotified(ctx context.Context, id int64, start bool) error {
-	q := `UPDATE maintenances SET notified_end = ? WHERE id = ?`
+// (start=false) of maintenance m.ID to true, but only if its start (or end)
+// is still m.StartsAt (or m.EndsAt): a window that an editor moved
+// meanwhile keeps its flags, so that its new start or end is announced.
+// It does nothing for an unknown maintenance.
+func (s *Store) MarkMaintenanceNotified(ctx context.Context, m *Maintenance, start bool) error {
+	q, at := `UPDATE maintenances SET notified_end = ? WHERE id = ? AND ends_at = ?`, m.EndsAt
 	if start {
-		q = `UPDATE maintenances SET notified_start = ? WHERE id = ?`
+		q, at = `UPDATE maintenances SET notified_start = ? WHERE id = ? AND starts_at = ?`, m.StartsAt
 	}
-	err := affected(s.db.ExecContext(ctx, q, true, id))
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("mark maintenance %d as notified: %w", id, err)
+	if _, err := s.db.ExecContext(ctx, q, true, m.ID, at.Unix()); err != nil {
+		return fmt.Errorf("mark maintenance %d as notified: %w", m.ID, err)
 	}
-	return err
+	return nil
 }
 
 // listMaintenances returns the maintenances matching where (alias m) in the

@@ -178,6 +178,17 @@ func (e *notifyEnv) outbox() []store.Notification {
 	return ns
 }
 
+// due returns the e-mails due at the test clock with their bodies (the
+// outbox list has none), oldest first.
+func (e *notifyEnv) due() []store.Notification {
+	e.t.Helper()
+	ns, err := e.store.DueNotifications(context.Background(), e.clock, 1000)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return ns
+}
+
 // clearOutbox removes all notifications.
 func (e *notifyEnv) clearOutbox() {
 	e.t.Helper()
@@ -239,7 +250,7 @@ func TestNotifierIncidentRecipients(t *testing.T) {
 
 	// alice (A and B) once, bob (B), erin (A); carol has no e-mail, dave's
 	// group is not assigned to Mail or VPN.
-	out := e.outbox()
+	out := e.due()
 	if addrs := notifyAddresses(out); !slices.Equal(addrs, []string{"alice@example.com", "bob@example.com", "erin@example.com"}) {
 		t.Fatalf("recipients = %v", addrs)
 	}
@@ -261,7 +272,7 @@ func TestNotifierIncidentRecipients(t *testing.T) {
 	}
 	got, err = e.n.IncidentUpdated(ctx, id, []int64{e.mail, e.printers})
 	notifyExpect(t, "IncidentUpdated", got, err, 3)
-	out = e.outbox()
+	out = e.due()
 	if addrs := notifyAddresses(out); !slices.Equal(addrs, []string{"alice@example.com", "dave@example.com", "erin@example.com"}) {
 		t.Errorf("recipients = %v", addrs)
 	}
@@ -308,6 +319,35 @@ func TestNotifierMaintenanceMails(t *testing.T) {
 	}
 	if _, err := e.n.MaintenanceScheduled(ctx, 999); err == nil {
 		t.Error("unknown maintenance: expected an error")
+	}
+}
+
+// TestNotifierMaintenanceCreatedLate: a window created while it is already
+// in progress (or over) is announced as started (or completed), as the
+// worker sends no e-mail for it.
+func TestNotifierMaintenanceCreatedLate(t *testing.T) {
+	e := newNotifyEnv(t)
+	e.startSMTP(nil)
+	ctx := context.Background()
+
+	running := e.maintenance("Reboot", -10*time.Minute, time.Hour, true, e.vpn)
+	got, err := e.n.MaintenanceScheduled(ctx, running)
+	notifyExpect(t, "MaintenanceScheduled (in progress)", got, err, 2)
+	past := e.maintenance("Patching", -2*time.Hour, -time.Hour, true, e.vpn)
+	got, err = e.n.MaintenanceScheduled(ctx, past)
+	notifyExpect(t, "MaintenanceScheduled (over)", got, err, 2)
+
+	want := map[string]int{
+		"[Acme IT] Maintenance started: Reboot":     2,
+		"[Acme IT] Maintenance completed: Patching": 2,
+	}
+	if got := notifySubjects(e.outbox()); !maps.Equal(got, want) {
+		t.Errorf("queued = %v, want %v", got, want)
+	}
+	// The worker does not announce the start again.
+	e.n.checkMaintenances(ctx)
+	if got := notifySubjects(e.outbox()); !maps.Equal(got, want) {
+		t.Errorf("after the worker ran: queued = %v, want %v", got, want)
 	}
 }
 
@@ -479,6 +519,121 @@ func TestNotifierRetrySucceeds(t *testing.T) {
 	}
 	if bob := e.outbox()[1]; bob.Status != store.NotificationSent || bob.Attempts != 2 {
 		t.Errorf("bob after retry: %+v", bob)
+	}
+}
+
+// TestNotifierThrottled: an SMTP server that accepts 30 e-mails a minute
+// (like Microsoft 365 SMTP AUTH) gets every e-mail delivered: the delivery
+// pauses when it is throttled, and e-mails that were not tried keep their
+// attempts.
+func TestNotifierThrottled(t *testing.T) {
+	for _, closeAtLimit := range []bool{false, true} {
+		e := newNotifyEnv(t)
+		srv := e.startSMTP(&fakeSMTP{limit: 30, closeAtLimit: closeAtLimit})
+		ctx := context.Background()
+
+		const total = 120
+		var msgs []store.OutboundEmail
+		for i := range total {
+			msgs = append(msgs, store.OutboundEmail{Email: fmt.Sprintf("user%d@example.com", i), Subject: "Hello", BodyText: "Hi"})
+		}
+		if err := e.store.EnqueueEmails(ctx, msgs); err != nil {
+			t.Fatal(err)
+		}
+		for minute := 1; minute <= 10 && len(srv.received()) < total; minute++ {
+			e.n.deliver(ctx)
+			if got, want := len(srv.received()), min(30*minute, total); got != want {
+				t.Fatalf("closeAtLimit=%v, minute %d: %d e-mails delivered, want %d", closeAtLimit, minute, got, want)
+			}
+			e.clock = e.clock.Add(30 * time.Second)
+			e.n.deliver(ctx) // paused: nothing happens
+			if got := len(srv.received()); got != min(30*minute, total) {
+				t.Fatalf("delivered during the pause: %d", got)
+			}
+			e.clock = e.clock.Add(30 * time.Second)
+			srv.setLimit(30 * (minute + 1)) // the next minute
+		}
+		retried := 0
+		for _, n := range e.outbox() {
+			if n.Status != store.NotificationSent || n.Attempts > 2 {
+				t.Errorf("closeAtLimit=%v: %s: status %s after %d attempts (%s)", closeAtLimit, n.Email, n.Status, n.Attempts, n.LastError)
+			}
+			if n.Attempts == 2 {
+				retried++
+			}
+		}
+		// Only the e-mail that hit the limit counts a failed attempt.
+		if retried != 3 {
+			t.Errorf("closeAtLimit=%v: %d e-mails needed a second attempt, want 3", closeAtLimit, retried)
+		}
+		if n := len(srv.received()); n != total {
+			t.Errorf("closeAtLimit=%v: %d e-mails delivered, want %d", closeAtLimit, n, total)
+		}
+	}
+}
+
+// TestNotifierDeliveredOnce: a server that closes the connection after
+// accepting an e-mail (so that the reset after it fails) gets every e-mail
+// exactly once, and none is marked as failed.
+func TestNotifierDeliveredOnce(t *testing.T) {
+	e := newNotifyEnv(t)
+	srv := e.startSMTP(&fakeSMTP{dropAfterData: true})
+	ctx := context.Background()
+	if err := e.store.EnqueueEmails(ctx, []store.OutboundEmail{
+		{Email: "a@example.com", Subject: "1", BodyText: "x"},
+		{Email: "b@example.com", Subject: "2", BodyText: "x"},
+		{Email: "c@example.com", Subject: "3", BodyText: "x"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		e.n.deliver(ctx)
+		e.clock = e.clock.Add(pauseAfterStop)
+	}
+	e.clock = e.clock.Add(2 * time.Hour)
+	e.n.deliver(ctx)
+	if got := len(srv.received()); got != 3 {
+		t.Errorf("%d e-mails received, want 3", got)
+	}
+	for _, n := range e.outbox() {
+		if n.Status != store.NotificationSent || n.Attempts != 1 || n.LastError != "" {
+			t.Errorf("%s: %+v, want sent at the first attempt", n.Email, n)
+		}
+	}
+}
+
+// TestNotifierRecordsEachResult: a delivered e-mail is recorded right away,
+// not after the whole batch, so that a crash does not send it again.
+func TestNotifierRecordsEachResult(t *testing.T) {
+	e := newNotifyEnv(t)
+	srv := e.startSMTP(&fakeSMTP{hold: make(chan struct{})})
+	ctx := context.Background()
+	if err := e.store.EnqueueEmails(ctx, []store.OutboundEmail{
+		{Email: "a@example.com", Subject: "1", BodyText: "x"},
+		{Email: "b@example.com", Subject: "2", BodyText: "x"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		e.n.deliver(ctx)
+		close(done)
+	}()
+	// The server holds the second e-mail; the first one is already sent.
+	deadline := time.Now().Add(10 * time.Second)
+	for e.outbox()[0].Status != store.NotificationSent {
+		if time.Now().After(deadline) {
+			t.Fatal("the first e-mail was not recorded as sent while the second one was being delivered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := e.outbox()[1]; n.Status != store.NotificationPending || n.Attempts != 0 {
+		t.Errorf("second e-mail = %+v", n)
+	}
+	srv.hold <- struct{}{}
+	<-done
+	if n := e.outbox()[1]; n.Status != store.NotificationSent {
+		t.Errorf("second e-mail after delivery = %+v", n)
 	}
 }
 

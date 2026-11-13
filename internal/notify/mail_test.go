@@ -50,10 +50,25 @@ type fakeSMTP struct {
 	username    string // if set, MAIL FROM requires authentication
 	password    string
 	rejectRcpt  string // recipient rejected with 550
+	// limit, if > 0, is the number of mails accepted (in total, see
+	// setLimit); further MAIL FROM commands get a temporary 451, or with
+	// closeAtLimit a 421 and the connection is closed (rate limiting).
+	limit         int
+	closeAtLimit  bool
+	dropAfterData bool          // close the connection right after accepting a mail
+	rejectNoop    bool          // answer NOOP with 502
+	hold          chan struct{} // if set, MAIL FROM waits for a value once a mail has been accepted
 
 	ln    net.Listener
 	mu    sync.Mutex
 	mails []fakeMail
+}
+
+// setLimit changes limit while the server is running.
+func (s *fakeSMTP) setLimit(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.limit = n
 }
 
 func (s *fakeSMTP) start(t *testing.T) (host string, port int) {
@@ -141,6 +156,20 @@ func (s *fakeSMTP) handle(conn net.Conn) {
 				reply("530 5.7.0 Authentication required")
 				continue
 			}
+			s.mu.Lock()
+			limited, accepted := s.limit > 0 && len(s.mails) >= s.limit, len(s.mails)
+			s.mu.Unlock()
+			if limited && s.closeAtLimit {
+				reply("421 4.7.0 Too many messages, closing connection")
+				return
+			}
+			if limited {
+				reply("451 4.4.2 Message submission rate for this client has exceeded the configured limit")
+				continue
+			}
+			if s.hold != nil && accepted > 0 {
+				<-s.hold
+			}
 			from, rcpts = angleAddr(arg), nil
 			reply("250 2.1.0 OK")
 		case "RCPT":
@@ -161,10 +190,17 @@ func (s *fakeSMTP) handle(conn net.Conn) {
 			s.mails = append(s.mails, fakeMail{From: from, To: rcpts, Data: data, TLS: isTLS, Auth: auth})
 			s.mu.Unlock()
 			reply("250 2.0.0 OK queued")
+			if s.dropAfterData {
+				return
+			}
 		case "RSET":
 			from, rcpts = "", nil
 			reply("250 2.0.0 OK")
 		case "NOOP":
+			if s.rejectNoop {
+				reply("502 5.5.2 Command not recognized")
+				continue
+			}
 			reply("250 2.0.0 OK")
 		case "QUIT":
 			reply("221 2.0.0 Bye")
@@ -531,6 +567,50 @@ func TestSendPerMessageErrors(t *testing.T) {
 	got := srv.received()
 	if len(got) != 2 || got[0].To[0] != "ok1@example.com" || got[1].To[0] != "ok2@example.com" {
 		t.Errorf("received %+v", got)
+	}
+}
+
+func TestSendStopsWhenThrottled(t *testing.T) {
+	for _, closeAtLimit := range []bool{false, true} {
+		srv := &fakeSMTP{limit: 1, closeAtLimit: closeAtLimit}
+		host, port := srv.start(t)
+		msgs := []Message{{To: "a@example.com", Text: "1"}, {To: "b@example.com", Text: "2"}, {To: "c@example.com", Text: "3"}}
+		errs, err := Send(context.Background(), smtpSettings(host, port, "none"), msgs)
+		code := map[bool]string{false: "451", true: "421"}[closeAtLimit]
+		if !errors.Is(err, errStopped) || !strings.Contains(err.Error(), code) {
+			t.Errorf("%s: error = %v, want a stop because of the rate limit", code, err)
+		}
+		if errs[0] != nil || errs[1] == nil || !strings.Contains(errs[1].Error(), code) || !errors.Is(errs[2], errStopped) {
+			t.Errorf("%s: errors = %v; want delivered, rate limited, not tried", code, errs)
+		}
+		if n := len(srv.received()); n != 1 {
+			t.Errorf("%s: %d mails received, want 1", code, n)
+		}
+	}
+}
+
+func TestSendDeliveredDespiteClosedConnection(t *testing.T) {
+	srv := &fakeSMTP{dropAfterData: true} // closes the connection before RSET
+	host, port := srv.start(t)
+	msgs := []Message{{To: "a@example.com", Text: "1"}, {To: "b@example.com", Text: "2"}}
+	errs, err := Send(context.Background(), smtpSettings(host, port, "none"), msgs)
+	if errs[0] != nil {
+		t.Errorf("accepted message reported as failed: %v", errs[0])
+	}
+	if !errors.Is(err, errStopped) || !errors.Is(errs[1], errStopped) || !strings.Contains(err.Error(), "closed the connection") {
+		t.Errorf("second message: %v (Send: %v), want not tried because the connection was closed", errs[1], err)
+	}
+	if n := len(srv.received()); n != 1 {
+		t.Errorf("%d mails received, want 1", n)
+	}
+
+	// The connection does not work for the first message: a connection
+	// error (every message failed), not a stop.
+	srv = &fakeSMTP{rejectNoop: true}
+	host, port = srv.start(t)
+	errs, err = Send(context.Background(), smtpSettings(host, port, "none"), msgs)
+	if err == nil || errors.Is(err, errStopped) || errs[0] != err || errs[1] != err {
+		t.Errorf("connection check failed: %v, %v; want a connection error for every message", errs, err)
 	}
 }
 

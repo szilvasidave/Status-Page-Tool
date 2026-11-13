@@ -167,6 +167,43 @@ func TestDailyHistoryDST(t *testing.T) {
 	equal(t, "incident on the long day", statuses(row), []Status{StatusOperational, StatusDegraded, StatusOperational})
 }
 
+// TestDailyHistoryMidnightDST: where daylight saving time starts at
+// midnight, the day starts at 01:00; every day keeps its own bar.
+func TestDailyHistoryMidnightDST(t *testing.T) {
+	// America/Santiago: on 2026-09-06 the clocks go from 00:00 to 01:00.
+	santiago, err := time.LoadLocation("America/Santiago")
+	check(t, err)
+	services := []Service{{ID: 1, CreatedAt: date(2026, 1, 1, 0, 0)}}
+	resolved := time.Date(2026, 9, 5, 23, 45, 0, 0, santiago)
+	incidents := []Incident{{StartedAt: time.Date(2026, 9, 5, 23, 15, 0, 0, santiago), ResolvedAt: &resolved,
+		Services: []ServiceImpact{{ServiceID: 1, Impact: StatusDegraded}}}}
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, santiago)
+	row := DailyHistory(services, incidents, nil, 3, now, santiago)[1]
+	var starts []string
+	for _, d := range row {
+		starts = append(starts, d.Date.Format("2 Jan 2006 15:04 -07"))
+	}
+	equal(t, "day starts", starts, []string{"5 Sep 2026 00:00 -04", "6 Sep 2026 01:00 -03", "7 Sep 2026 00:00 -03"})
+	equal(t, "23 hour day", row[2].Date.Sub(row[1].Date), 23*time.Hour)
+	equal(t, "incident on 5 Sep only", statuses(row), []Status{StatusDegraded, StatusOperational, StatusOperational})
+	equal(t, "incident count", []int{row[0].Incidents, row[1].Incidents}, []int{1, 0})
+
+	// Today is the day with the skipped midnight.
+	row = DailyHistory(services, nil, nil, 2, time.Date(2026, 9, 6, 10, 0, 0, 0, santiago), santiago)[1]
+	equal(t, "today", row[1].Date.Format(time.RFC3339), "2026-09-06T01:00:00-03:00")
+	equal(t, "yesterday", row[0].Date.Format(time.RFC3339), "2026-09-05T00:00:00-04:00")
+
+	// Asia/Beirut: on 2026-03-29 the clocks go from 00:00 to 01:00.
+	beirut, err := time.LoadLocation("Asia/Beirut")
+	check(t, err)
+	day := StartOfDay(time.Date(2026, 3, 29, 18, 0, 0, 0, beirut))
+	equal(t, "beirut start of day", day.Format(time.RFC3339), "2026-03-29T01:00:00+03:00")
+	equal(t, "beirut next day", AddDays(day, 1).Format(time.RFC3339), "2026-03-30T00:00:00+03:00")
+	equal(t, "beirut previous day", AddDays(day, -1).Format(time.RFC3339), "2026-03-28T00:00:00+02:00")
+	equal(t, "beirut from the day before", AddDays(time.Date(2026, 3, 28, 0, 0, 0, 0, beirut), 1).Format(time.RFC3339), "2026-03-29T01:00:00+03:00")
+	equal(t, "ordinary day", StartOfDay(time.Date(2026, 3, 30, 0, 0, 0, 0, beirut)).Format(time.RFC3339), "2026-03-30T00:00:00+03:00")
+}
+
 func TestDailyHistoryEdgeCases(t *testing.T) {
 	now := date(2026, 6, 10, 12, 0)
 	services := []Service{{ID: 1, CreatedAt: date(2026, 1, 1, 0, 0)}}

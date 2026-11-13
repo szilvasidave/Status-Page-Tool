@@ -78,24 +78,24 @@ func DailyHistory(services []Service, incidents []Incident, maintenances []Maint
 	if days < 0 {
 		days = 0
 	}
-	nowL := now.In(loc)
-	today := time.Date(nowL.Year(), nowL.Month(), nowL.Day(), 0, 0, 0, 0, loc)
-	starts := make([]time.Time, days)
-	for i := 0; i < days; i++ {
-		starts[i] = today.AddDate(0, 0, i-days+1)
+	// Day i lasts from bounds[i] until bounds[i+1].
+	today := StartOfDay(now.In(loc))
+	bounds := make([]time.Time, days+1)
+	for i := range bounds {
+		bounds[i] = AddDays(today, i-days+1)
 	}
+	starts := bounds[:days]
 	out := make(map[int64][]DayStatus, len(services))
 	for _, s := range services {
 		row := make([]DayStatus, days)
 		for i, st := range starts {
-			end := st.AddDate(0, 0, 1)
-			row[i] = DayStatus{Date: st, Status: StatusOperational, NoData: !end.After(s.CreatedAt)}
+			row[i] = DayStatus{Date: st, Status: StatusOperational, NoData: !bounds[i+1].After(s.CreatedAt)}
 		}
 		out[s.ID] = row
 	}
 	for _, inc := range incidents {
 		for i, st := range starts {
-			if !incidentOnDay(&inc, st, st.AddDate(0, 0, 1)) {
+			if !incidentOnDay(&inc, st, bounds[i+1]) {
 				continue
 			}
 			for _, si := range inc.Services {
@@ -119,8 +119,7 @@ func DailyHistory(services []Service, incidents []Incident, maintenances []Maint
 			mEnd = now
 		}
 		for i, st := range starts {
-			end := st.AddDate(0, 0, 1)
-			if !m.StartsAt.Before(end) || !mEnd.After(st) {
+			if !m.StartsAt.Before(bounds[i+1]) || !mEnd.After(st) {
 				continue
 			}
 			for _, s := range m.Services {
@@ -134,6 +133,30 @@ func DailyHistory(services []Service, incidents []Incident, maintenances []Maint
 		}
 	}
 	return out
+}
+
+// StartOfDay returns the first instant of t's day in t's location: midnight,
+// or where a daylight saving time change skips midnight (e.g. in
+// America/Santiago) the moment the new offset begins.
+func StartOfDay(t time.Time) time.Time {
+	y, m, d := t.Date()
+	start := time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+	if start.Day() != d {
+		// time.Date put the skipped midnight before the change, on the
+		// previous day; the day starts where that zone period ends.
+		if _, end := start.ZoneBounds(); !end.IsZero() {
+			start = end
+		}
+	}
+	return start
+}
+
+// AddDays returns the start (see StartOfDay) of the day n days after t's
+// day. Unlike t.AddDate it does not depend on the time of day of t, which
+// is not midnight for a day that starts after a skipped midnight.
+func AddDays(t time.Time, n int) time.Time {
+	y, m, d := t.Date()
+	return StartOfDay(time.Date(y, m, d+n, 12, 0, 0, 0, t.Location()))
 }
 
 // incidentOnDay reports whether an incident overlaps the day [dayStart,
