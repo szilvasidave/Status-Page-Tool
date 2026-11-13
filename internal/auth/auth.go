@@ -8,7 +8,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,8 +30,13 @@ const (
 	CSRFField       = "csrf_token"
 	CSRFHeader      = "X-CSRF-Token"
 	SessionLifetime = 12 * time.Hour
-	// MaxFormBytes limits the size of request bodies.
+	// MaxFormBytes limits the size of request bodies, except for uploads
+	// (see MaxUploadBytes).
 	MaxFormBytes = 1 << 20
+	// MaxUploadBytes limits the body of POST /admin/branding (Admin →
+	// Branding), the only upload: a multipart form with up to three images
+	// (logos and favicon) of at most 512 KB each.
+	MaxUploadBytes = 4 << 20
 )
 
 // ErrInvalidCredentials is returned for a wrong username or password.
@@ -102,10 +109,20 @@ func New(st *store.Store, key []byte, log *slog.Logger) *Manager {
 // request context and rejects state-changing requests (POST, PUT, PATCH,
 // DELETE) without a valid CSRF token or with a foreign Origin. SCIM
 // provisioning (/scim/) passes through untouched: it is no browser, it
-// authenticates with its own bearer token and uses no cookies.
+// authenticates with its own bearer token and uses no cookies. Static files
+// (/static/) and the brand images (/brand/) are public and cacheable: a GET
+// or HEAD of them passes through as well, without a session lookup and
+// without setting the CSRF cookie (a response that may be kept in a shared
+// cache must not carry a cookie of one visitor).
+//
+// The body of a state-changing request is limited to MaxFormBytes
+// (MaxUploadBytes for POST /admin/branding). Without a CSRF header the
+// middleware reads the form (urlencoded or multipart) to find the token,
+// and a body over the limit is answered with 413 instead of a misleading
+// CSRF error. The parsed form stays in the request for the handler.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/scim/") {
+		if strings.HasPrefix(r.URL.Path, "/scim/") || (isPublicAsset(r.URL.Path) && isSafeMethod(r.Method)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -123,7 +140,7 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		}
 		ctx = context.WithValue(ctx, csrfKey, token)
 
-		if !strings.HasPrefix(r.URL.Path, "/static/") {
+		if !isPublicAsset(r.URL.Path) {
 			if id := m.loadIdentity(r); id != nil {
 				ctx = WithIdentity(ctx, id)
 			}
@@ -131,13 +148,18 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		r = r.WithContext(ctx)
 
 		if !isSafeMethod(r.Method) {
-			r.Body = http.MaxBytesReader(w, r.Body, MaxFormBytes)
+			limit := bodyLimit(r)
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 			if !m.sameOrigin(r) {
 				http.Error(w, "Forbidden: cross-origin request", http.StatusForbidden)
 				return
 			}
 			sent := r.Header.Get(CSRFHeader)
 			if sent == "" {
+				if err := parseBody(r, limit); err != nil && bodyTooLarge(r, err, limit) {
+					http.Error(w, fmt.Sprintf("Request too large: at most %d MB can be sent at once. Please go back and try again with less data or smaller files.", limit>>20), http.StatusRequestEntityTooLarge)
+					return
+				}
 				sent = r.PostFormValue(CSRFField)
 			}
 			if sent == "" || subtle.ConstantTimeCompare([]byte(sent), []byte(token)) != 1 {
@@ -149,8 +171,42 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// isPublicAsset reports whether p is a static file or a brand image: public
+// and cacheable, no session needed.
+func isPublicAsset(p string) bool {
+	return strings.HasPrefix(p, "/static/") || strings.HasPrefix(p, "/brand/")
+}
+
 func isSafeMethod(m string) bool {
 	return m == http.MethodGet || m == http.MethodHead || m == http.MethodOptions
+}
+
+// bodyLimit returns the maximum body size of a state-changing request:
+// MaxUploadBytes for POST /admin/branding (exact path), else MaxFormBytes.
+func bodyLimit(r *http.Request) int64 {
+	if r.Method == http.MethodPost && r.URL.Path == "/admin/branding" {
+		return MaxUploadBytes
+	}
+	return MaxFormBytes
+}
+
+// parseBody parses the form in the request body, like PostFormValue would,
+// but returns the error: a multipart form with ParseMultipartForm (its files
+// stay in memory, as the body is at most limit bytes), anything else with
+// ParseForm (which reads only urlencoded bodies).
+func parseBody(r *http.Request, limit int64) error {
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err == nil && mt == "multipart/form-data" {
+		return r.ParseMultipartForm(limit)
+	}
+	return r.ParseForm()
+}
+
+// bodyTooLarge reports whether err of parseBody is due to a body over limit:
+// the http.MaxBytesError of the body reader, or a declared Content-Length
+// above the limit (in case a parser does not pass that error on).
+func bodyTooLarge(r *http.Request, err error, limit int64) bool {
+	var tooLarge *http.MaxBytesError
+	return errors.As(err, &tooLarge) || r.ContentLength > limit
 }
 
 // sameOrigin checks the Origin (or Referer) header, if the browser sent one,

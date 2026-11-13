@@ -12,6 +12,7 @@ import (
 //	{{PK}}    auto-increment primary key column definition
 //	{{BOOL}}  boolean column type
 //	{{FALSE}} / {{TRUE}} boolean literals for DEFAULT clauses
+//	{{BLOB}}  binary data column type (BLOB, BYTEA)
 var migrations = []string{
 	// 1: initial schema
 	`
@@ -167,6 +168,21 @@ DELETE FROM settings WHERE key = 'directory_sync_enabled';
 	`
 ALTER TABLE users ADD COLUMN email_from_user_name {{BOOL}} NOT NULL DEFAULT {{FALSE}};
 `,
+	// 4: brand_images – logos and favicon uploaded on Admin → Branding.
+	//   name    logo-light, logo-dark or favicon
+	//   version first 16 hex characters of the SHA-256 of data; also stored
+	//           in the settings brand_logo_light, brand_logo_dark and
+	//           brand_favicon, so that pages can link to the image
+	//           (/brand/{name}?v=version) without reading it
+	`
+CREATE TABLE brand_images (
+	name         TEXT PRIMARY KEY,
+	content_type TEXT NOT NULL,
+	data         {{BLOB}} NOT NULL,
+	version      TEXT NOT NULL,
+	updated_at   BIGINT NOT NULL
+);
+`,
 }
 
 func (d *DB) dialect(sql string) string {
@@ -175,6 +191,7 @@ func (d *DB) dialect(sql string) string {
 		"{{BOOL}}", "INTEGER",
 		"{{FALSE}}", "0",
 		"{{TRUE}}", "1",
+		"{{BLOB}}", "BLOB",
 	)
 	if d.IsPostgres() {
 		r = strings.NewReplacer(
@@ -182,6 +199,7 @@ func (d *DB) dialect(sql string) string {
 			"{{BOOL}}", "BOOLEAN",
 			"{{FALSE}}", "FALSE",
 			"{{TRUE}}", "TRUE",
+			"{{BLOB}}", "BYTEA",
 		)
 	}
 	return r.Replace(sql)

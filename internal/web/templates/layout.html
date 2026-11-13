@@ -1,13 +1,16 @@
 {{define "layout" -}}
 <!doctype html>
-<html lang="en">
+<html lang="en"{{with .Theme.Mode}} data-theme="{{.}}"{{end}}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="{{.Theme.ColorScheme}}">
 <title>{{if .Title}}{{.Title}} · {{end}}{{.SiteName}}</title>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+{{- with .Theme.CSS}}
+<style>{{.}}</style>
+{{- end}}
+<link rel="icon" href="{{.Theme.FaviconURL}}"{{if .Theme.FaviconSVG}} type="image/svg+xml"{{end}}>
 <script src="/static/app.js" defer></script>
 {{block "head" .}}{{end}}
 </head>
@@ -15,7 +18,16 @@
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="site-header">
   <div class="container header-inner">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">{{.SiteName}}</span></a>
+    {{- /* Logo (or the default mark) and site name; see pageTheme in brand.go. */}}
+    <a class="brand{{if .Theme.LogoURL}} brand-with-logo{{end}}" href="/">
+      {{- with .Theme}}
+      {{- if and .LogoURL .LogoDarkURL}}<picture><source srcset="{{.LogoDarkURL}}" media="(prefers-color-scheme: dark)"><img class="brand-logo" src="{{.LogoURL}}" alt="{{.LogoAlt}}"></picture>
+      {{- else if .LogoURL}}<img class="brand-logo" src="{{.LogoURL}}" alt="{{.LogoAlt}}">
+      {{- else}}<span class="brand-mark" aria-hidden="true"></span>
+      {{- end}}
+      {{- if .ShowName}}<span class="brand-name">{{$.SiteName}}</span>{{end}}
+      {{- end -}}
+    </a>
     {{- if not (or .SetupMode (eq .Nav "setup"))}}
     <nav class="site-nav" aria-label="Main">
       <a href="/"{{if eq .Nav "status"}} aria-current="page"{{end}}>Status</a>
@@ -42,6 +54,7 @@
   {{- if and (eq .Nav "admin") .IsAdmin}}
   <nav class="subnav" aria-label="Administration">
     <a href="/admin/settings"{{if eq .SubNav "settings"}} aria-current="page"{{end}}>Settings</a>
+    <a href="/admin/branding"{{if eq .SubNav "branding"}} aria-current="page"{{end}}>Branding</a>
     <a href="/admin/services"{{if eq .SubNav "services"}} aria-current="page"{{end}}>Services</a>
     <a href="/admin/groups"{{if eq .SubNav "groups"}} aria-current="page"{{end}}>Groups</a>
     <a href="/admin/users"{{if eq .SubNav "users"}} aria-current="page"{{end}}>Users</a>

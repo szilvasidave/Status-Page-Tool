@@ -26,6 +26,8 @@ no runtime dependencies, installed on Windows with a normal setup wizard.
   incidents and maintenance windows) and *Administrator* (configuration).
 - **E-mail** with Microsoft 365 through Microsoft Graph (default; uses the
   single sign-on app registration) or through any SMTP server.
+- **Branding:** your logo, favicon and colours for light and dark mode, set
+  by administrators in the web interface ([Branding](#branding)).
 - **Storage:** built-in SQLite or PostgreSQL.
 - Administrators configure everything in the web interface, except the
   listen address, the TLS certificate and the database connection, which are
@@ -40,6 +42,7 @@ only notification channel.
 - [First-run setup](#first-run-setup)
 - [Using the status page](#using-the-status-page)
 - [Configuration in the web interface](#configuration-in-the-web-interface)
+  - [Branding](#branding)
 - [Single sign-on](#single-sign-on)
 - [How users and groups get into the status page](#how-users-and-groups-get-into-the-status-page)
 - [Roles and groups](#roles-and-groups)
@@ -56,7 +59,8 @@ only notification channel.
 
 ### Windows (installer)
 
-1. Download `StatusPageSetup-<version>.exe` from the releases page and run it
+1. Download `StatusPageSetup-<version>.exe` from the
+   [releases page](https://github.com/szilvasidave/Status-Page-Tool/releases/latest) and run it
    (administrator rights are required; Windows 10 / Server 2016 or newer, x64).
 2. Choose the **HTTP port** (default 8080) and the **database**:
    - *SQLite* – built in, nothing else to install; recommended for small
@@ -227,9 +231,9 @@ upcoming (`state` `in_progress` or `scheduled`) are listed. Times are UTC
 ## Configuration in the web interface
 
 Administrators configure the status page under **Admin** (`/admin`):
-**Settings**, **Services**, **Groups**, **Users** and **Notifications**. Only
-the listen address, the TLS certificate, the database connection and the log
-level are set in [`config.json`](#configjson).
+**Settings**, **Branding**, **Services**, **Groups**, **Users** and
+**Notifications**. Only the listen address, the TLS certificate, the database
+connection and the log level are set in [`config.json`](#configjson).
 
 ### General settings
 
@@ -251,6 +255,103 @@ The first section of **Admin → Settings**:
 The other sections of the settings page are described below:
 [single sign-on](#single-sign-on), [provisioning](#set-up-provisioning-in-microsoft-entra-id)
 and [e-mail](#e-mail).
+
+### Branding
+
+**Admin → Branding** adapts the status page to your company: logos, favicon,
+the colours of light and dark mode, and the appearance. Every field is
+optional; whatever is left empty keeps the default look.
+
+- **Logo for light mode** – a PNG, JPEG, GIF, WebP or SVG image of at most
+  512 KB. It replaces the default mark in the header of every page: status
+  pages, sign-in page, administration, account and error pages. It is shown
+  32 pixels high (and at most 240 pixels wide), so use an SVG or an image at
+  least 64 pixels high, which stays sharp on high-resolution screens.
+- **Logo for dark mode** – optional, same formats, e.g. a version with light
+  lettering. Without it the light-mode logo is shown in dark mode too, so it
+  should then be readable on a dark header as well (and a logo uploaded only
+  for dark mode is shown in both modes).
+- **Show the site name next to the logo** – on by default. Turn it off when
+  the logo already contains the name; screen readers then read the
+  [site name](#general-settings) as the logo's text. Next to a logo the name
+  is shown only where it fits completely: on phones, or with a long name or a
+  wide logo, often only the logo is shown. A name that must always be visible
+  therefore belongs in the logo.
+- **Favicon** – the icon in the browser tab: PNG, GIF, SVG or ICO, at most
+  512 KB. Without one the default icon is used, drawn in the light-mode
+  accent colour.
+- **Appearance** – *Follow the device setting* (the default: light or dark
+  mode, as each viewer's operating system or browser is set), *Always light*
+  or *Always dark*. Printed pages always use the light colours.
+- **Colours** – hex codes such as `#1f5bd8` (`#abc` is short for `#aabbcc`),
+  typed in or chosen with the colour picker next to the field. An empty
+  field shows the colour it falls back to:
+
+  | Colour | Used for | When empty |
+  |--------|----------|------------|
+  | Light mode: **Accent colour** | buttons, links, focus rings, the active tab and the default mark in the header | the default blue `#1f5bd8` |
+  | Light mode: **Header background** | the header at the top of every page | the default header (white) |
+  | Dark mode: **Accent colour** | the same in dark mode | the light-mode accent colour, lightened where needed so that it stands out on the dark background (contrast at least 3:1); without a light-mode accent colour either, the default blue `#2f6be0` |
+  | Dark mode: **Header background** | the header in dark mode | the default dark header (the light-mode header colour is not used) |
+
+**Readability.** Whatever colours you choose, text stays readable and focus
+outlines stay visible:
+
+- Buttons get white or near-black text, whichever contrasts more with the
+  accent colour (black where neither reaches 4.5:1). Their hover shade is a
+  little darker behind white text and a little lighter behind dark text, so
+  the text never gets harder to read.
+- Links are text on the page background, so they need a contrast of at least
+  4.5:1 (WCAG AA). A light accent colour in light mode, or a dark one in dark
+  mode, often does not reach it; links then use a darker (light mode) or
+  lighter (dark mode) shade of it, which the branding page names.
+- Focus outlines, the border of the field being edited and the marker of the
+  active tab need a contrast of at least 3:1 on the page. Where the accent
+  colour does not reach it, they use a darker (light mode) or lighter (dark
+  mode) shade of it.
+- A header background gets white or dark text, whichever contrasts more (at
+  least 4.5:1). The muted text is mixed from the two and keeps at least 4.5:1
+  on the background; the hover and the highlight of the current page are
+  slightly lighter or darker shades of the background, on which the text
+  keeps at least 4.5:1 too.
+
+The branding page shows a **preview** of the header, a button, a link and some
+text in light and in dark mode, with the saved settings.
+
+The **status colours** – green *operational*, blue *maintenance*, yellow
+*degraded*, orange *partial outage*, red *major outage* – cannot be changed:
+on the status page and in e-mails they must mean the same to everybody, and
+viewers recognise a status by its colour at a glance.
+
+**Saving.** Files are checked by their content, not by their name. SVG files
+must be plain images. Their `svg` element needs
+`xmlns="http://www.w3.org/2000/svg"`, without which browsers do not show the
+file. Files with active content are refused: scripts, event handlers,
+embedded documents (e.g. web pages), entity declarations, a document type
+declaration with its own definitions (`<!DOCTYPE svg [ … ]>`; a plain
+`<!DOCTYPE svg PUBLIC …>` is fine) and processing instructions such as style
+sheet links (`<?xml-stylesheet …?>`). Export such a file again as a plain
+SVG, or use a PNG. If anything is wrong, nothing is saved and the page shows
+what to fix; files must then be chosen again. To remove an image, tick
+*Remove* next to it; a newly chosen file replaces the old one.
+
+**The images are public.** Logos and favicon are served at
+`/brand/logo-light`, `/brand/logo-dark` and `/brand/favicon` to anybody who
+can reach the status page, even when public access is off, because the
+sign-in page shows them. Browsers keep them in their cache; a new image gets
+a new address, so it appears at once. The images are stored in the database,
+so they are part of its [backup](#data-directory-backup-and-upgrade).
+
+**E-mails** use only the light-mode accent colour, for the *View incident*
+and *View maintenance* buttons and the *Open the status page* button of the
+test e-mail (with the same text colour as the buttons of the status page);
+without one the buttons stay blue. Everything else in the e-mails stays as
+it is. They contain no logo, because mail clients block or proxy images from
+the internet.
+
+**Restore defaults** (below the form, after a confirmation) removes the logos
+and the favicon, empties the colours, sets the appearance back to *Follow the
+device setting* and turns *Show the site name next to the logo* on again.
 
 ## Single sign-on
 
@@ -921,6 +1022,13 @@ statuspage local-login status -data /var/lib/statuspage
   proxy rule), only for the IP ranges of the AzureActiveDirectory service
   tag, and keep the web interface internal. The provisioning endpoint uses
   only its token: no cookies, no sessions.
+- **Logos and favicon** (`/brand/…`) can be read without signing in, even
+  when public access is off (see [Branding](#branding)), so upload nothing
+  confidential. Only images are accepted (SVG files only without scripts,
+  event handlers or other active content), and SVG files are served with a
+  Content Security Policy that sandboxes them
+  (`default-src 'none'; style-src 'unsafe-inline'; sandbox`): even one opened
+  directly in the browser cannot run scripts.
 - **Data directory.** `config.json` contains the secret key and, for
   PostgreSQL, the database password. On Windows the installer and
   `statuspage.exe` itself (server, `setup` and `service install`) limit the
@@ -964,4 +1072,5 @@ development (see the comment in `tools/devseed/main.go`).
 
 GitHub Actions (`.github/workflows/build.yml`) runs the tests, builds binaries
 for Windows, Linux (amd64, arm64) and macOS (arm64) and the installer, and
-publishes them as a release for tags `v*`.
+publishes them as a release for tags `v*`; the release notes start with the
+version's section of [`CHANGELOG.md`](CHANGELOG.md).

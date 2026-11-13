@@ -11,7 +11,8 @@
 //   - names are ordered case-insensitively.
 //
 // The implementation is split by topic: settings.go, users.go, groups.go,
-// services.go, incidents.go, maintenance.go, notifications.go, sessions.go.
+// services.go, incidents.go, maintenance.go, notifications.go, sessions.go,
+// brand.go (logos and favicon).
 package store
 
 import (

@@ -26,6 +26,8 @@ Later feedback:
 11. No local user management: the one local administrator can only change its
     display name, user name and password; everybody else comes from the IdP.
 12. Easier forms: a time zone select, a category select for services.
+13. Each company can brand it: logos and colours for light and dark mode; no
+    e-mail templating.
 
 ## Architecture
 
@@ -38,13 +40,16 @@ internal/setup         database setup shared by the CLI/installer and the web wi
                        connection and privilege checks, migrations, writing config.json
 internal/db            database open (SQLite via modernc.org/sqlite, PostgreSQL via pgx), schema migrations
 internal/store         all application SQL; models; pure status computation (status.go);
-                       SCIM data access (scim.go); local administrator details and sign-in switch (local_admin.go)
+                       SCIM data access (scim.go); local administrator details and sign-in switch (local_admin.go);
+                       logos and favicon (brand.go)
 internal/secret        AES-GCM encryption of stored secrets and cookies, random tokens
 internal/auth          sessions, CSRF, local admin login (and its switch), OIDC login + group memberships at login
 internal/scim          SCIM 2.0 endpoint /scim/v2 for user and group provisioning from Microsoft Entra ID
 internal/msgraph       Microsoft Graph client: client-credentials token of the SSO app registration, sendMail
 internal/notify        e-mail outbox, rendering, delivery with Microsoft Graph (default) or SMTP (go-mail),
                        maintenance start/end mails
+internal/theme         branding (leaf package, pure functions): colour tokens of light and dark mode derived
+                       from the chosen colours, their CSS, e-mail button colour, default favicon, image checks
 internal/web           HTTP handlers + html/template templates + static assets (embedded)
 internal/e2e           end-to-end tests: the real app driven like a browser, plus the CLI
 internal/testutil      test helpers: mock OpenID provider (mockidp), fake SMTP server (fakesmtp),
@@ -57,7 +62,8 @@ SQL outside `internal/store` is limited to the migrations (`internal/db`),
 the connection and privilege checks of `internal/setup` and `tools/devseed`.
 The former `internal/directory` (a Microsoft Graph pull of group members) was
 removed; migration 2 deletes its setting and adds the provisioning columns,
-migration 3 adds `users.email_from_user_name`.
+migration 3 adds `users.email_from_user_name`, migration 4 the table
+`brand_images` (logos and favicon; `{{BLOB}}` is `BLOB` or `BYTEA`).
 
 ## Key decisions
 
@@ -327,12 +333,19 @@ migration 3 adds `users.email_from_user_name`.
     connection is reopened at once.
 * **Web UI**: server-rendered `html/template` pages in one layout, one
   stylesheet (`static/style.css`, its class vocabulary is documented at the
-  top and checked by a test), light and dark mode via `prefers-color-scheme`.
+  top and checked by a test), light and dark mode via `prefers-color-scheme`
+  (the branding can force one, see below), on screen only: printing always
+  uses the light colours.
   `static/app.js` only adds delete confirmations (`data-confirm`), a
   confirmation when a button that submits another form (`form="…"`, e.g.
   the provisioning token buttons) would lose changes made in the settings
-  form (`data-unsaved`), field toggling (`data-show-when`) and, in the
-  setup wizard, the browser's time zone as the default
+  form (`data-unsaved`), field toggling (`data-show-when`), on the branding
+  page colour pickers synced with the hex fields (`data-color-for`), the
+  default of the empty dark accent field following the light accent
+  (`data-fallback-for`; a port of the colour maths of `internal/theme`, keep
+  the two in sync) and a size check of chosen files (`data-max-bytes`: a
+  file that is too large is cleared and a message shown below the field),
+  and, in the setup wizard, the browser's time zone as the default
   (`data-browser-timezone`, with a small map of renamed zones that browsers
   report under old names); pages stay usable without JavaScript. The
   settings page has one handler file and one template
@@ -340,6 +353,104 @@ migration 3 adds `users.email_from_user_name`.
   `partials/settings_*.html`), each with a view and a save function.
   Flash messages: success, info, warning (done, but e.g. the e-mails could
   not be queued), error.
+* **Branding** (Admin → Branding, `internal/theme`): logos for light and
+  dark mode, a favicon, the accent and header colour of each mode and the
+  appearance (follow the device, always light, always dark). Status colours
+  are not customisable (they keep their meaning), and there is no e-mail
+  templating.
+  * **Storage**: images in the table `brand_images` (name `logo-light`,
+    `logo-dark` or `favicon`, content type, data, version = the first 16 hex
+    characters of the SHA-256). The versions are also settings
+    (`brand_logo_light`, `brand_logo_dark`, `brand_favicon`), written in the
+    same transaction and only by `SetBrandImage`/`DeleteBrandImage`
+    (`SaveSettings` skips them, like the provisioning token), so pages link
+    to `/brand/{name}?v=<version>` from the cached settings without reading
+    the image, and saving the settings never brings back a replaced or
+    removed image. Colours, mode and "show the site name" are ordinary
+    settings (`theme_*`, colours `#rrggbb` or empty for the default;
+    normalised on load and save). The branding page saves them with
+    `SaveTheme`, which writes only these six keys: the rest of its copy
+    comes from the settings cache and may be older (e.g. a local-login
+    switch the command line has just changed), so it is never written back.
+  * **Uploads**: at most 512 KB per image; `POST /admin/branding` is the
+    only multipart form (body ≤ 4 MiB). `theme.CheckImage` takes the type
+    from the content, never from the file name: logos PNG, JPEG, GIF, WebP
+    or SVG, favicons PNG, GIF, SVG or ICO; PNG, JPEG and GIF headers must
+    decode, WebP is recognised by its signature only. An SVG must be
+    well-formed XML with an `svg` root in the SVG namespace (without
+    `xmlns="http://www.w3.org/2000/svg"` browsers do not draw it:
+    `ErrSVGNamespace`, with its own message); before the root there may be
+    only a byte order mark, the XML declaration, comments and a document
+    type declaration without an internal subset. Refused as active content
+    (`ErrSVGActive`, "scripts, event handlers, embedded documents, entity or
+    document type declarations, or style sheet links"): entity
+    declarations, a document type declaration with an internal subset (`[`
+    or `<` in it: it can declare default attributes such as `onload`, and
+    `encoding/xml` and browsers read quotes in it differently), processing
+    instructions other than the XML declaration (e.g. `<?xml-stylesheet?>`),
+    `script`, `foreignObject`, XHTML and other embedding elements, `on…`
+    attributes and values with `javascript:`, `vbscript:` or
+    `data:text/html`. Everything is validated first; on any error nothing is
+    stored (422) and files must be chosen again.
+  * **Serving** (`GET /brand/{name}`): public, also while public access is
+    off, because the sign-in page shows the logo; like `/static/` it has no
+    session lookup, no setup redirect and no request log, and a GET or HEAD
+    sets no CSRF cookie (the response may be kept in shared caches). `ETag` = the
+    version (304 on a match), `Cache-Control: public, max-age=31536000,
+    immutable` when `?v=` is the current version, else `no-cache`; SVG gets
+    its own CSP `default-src 'none'; style-src 'unsafe-inline'; sandbox`.
+    Without an upload `favicon` is `theme.FaviconSVG` in the light accent
+    (version `c` + its hex digits; pages use it only when the light accent
+    is customised, else `/static/favicon.svg`); a missing logo is 404.
+  * **Colours** (`theme.Resolve`): the page tokens (background, surfaces,
+    text, border) are fixed; `theme` holds the defaults of `style.css`, and
+    a test keeps them equal. A custom accent gets white or #111111 text,
+    whichever contrasts more (white or black if neither reaches 4.5; one of
+    them always does), a hover shade with 14 % black (light) or white (dark)
+    mixed in, or 14 % of the other one where that would lower the contrast
+    with the button text (in effect darker behind white text, lighter behind
+    dark text), and a link colour moved towards black (light) or white
+    (dark) until its contrast on `--surface-2`, the worst page surface, is
+    at least 4.5 (the branding page names the adjusted shade). Focus
+    outlines, the border of a focused field and the marker of the active
+    tab are not text and use `--primary-ui` (`Palette.PrimaryUI`): the
+    accent moved the same way until its contrast on `--surface-2` is at
+    least 3. The default accents reach it unchanged, so `style.css` sets it
+    to `var(--primary)`; a test checks that these rules use it. Without a
+    dark accent, dark mode uses the light accent, lightened until its
+    contrast on the dark background is at least 3. A custom header gets
+    white or #17202c text, whichever contrasts more (black if neither
+    reaches 4.5), muted text mixed until it reaches 4.5, hover and current
+    shades with 10 and 16 % of the text colour (or of the opposite colour,
+    black for white text and white for dark text, where the text would drop
+    below 4.5 on them) and a line shade with 20 %; the dark header has no
+    fallback to the light one.
+  * **CSS and appearance**: when a colour is set, `theme.CSS` gives a
+    `<style>` block after the stylesheet with the complete set of accent and
+    header variables (`--primary`, `--primary-ui`, `--link`, `--focus`,
+    `--header-*`, …; defaults included) for both modes, with the selectors
+    and media queries of `style.css`, so a colour customised for one mode
+    never leaks into the other. The dark tokens of `style.css` are in
+    `@media screen and (prefers-color-scheme: dark) { :root:not([data-theme="light"]) }`
+    and in an identical `@media screen { :root[data-theme="dark"] }` block
+    (checked by a test). They apply only on screen, so printing always uses
+    the light tokens, also when dark mode is forced (the print styles set
+    `color-scheme: light` too). A forced appearance sets `data-theme` on
+    `<html>` and the matching `color-scheme` meta tag. The header shows the
+    logo (in auto mode a `<picture>` with the dark logo for
+    `prefers-color-scheme: dark`), scaled down (at least 32 px wide) where
+    the header is too narrow, with an empty `alt` while the site name is
+    shown next to it and the site name otherwise. Next to a logo the name
+    is shown only where it fits completely, else it wraps into a hidden
+    second line and stays the link text for screen readers (on phones, or
+    with a long name or a wide logo, often only the logo is visible). Setup
+    mode and a failed settings load use the defaults.
+  * **E-mails**: only the link button takes the light accent
+    (`theme.EmailButton`, with the button text colour of the web interface):
+    *View incident*, *View maintenance* and *Open the status page* of the
+    test e-mail. Without one the HTML is unchanged (a test compares the test
+    e-mail with the one from before branding). No logo, because mail clients
+    block or proxy remote images.
 * **Times** are stored as unix seconds (UTC) and displayed/entered in the
   configured time zone. It is chosen from a select of the zone.tab zones
   (IANA tzdata 2025c, 418 zones) grouped by region, labelled with the current
@@ -348,7 +459,12 @@ migration 3 adds `users.email_from_user_name`.
 * **Security**: sessions in DB (cookie holds a random token, DB stores its
   SHA-256), 12h lifetime, HttpOnly + SameSite=Lax cookies; CSRF double-submit
   token + Origin check on all POSTs (not on `/scim/`, which has no cookies and
-  its own bearer token); bcrypt for the local password; OIDC with state,
+  its own bearer token); request bodies ≤ 1 MiB (`auth.MaxFormBytes`;
+  `auth.MaxUploadBytes`, 4 MiB, for `POST /admin/branding`), and without a
+  CSRF header the middleware parses the form itself (multipart in memory),
+  so a larger body gets 413 instead of a misleading CSRF error; uploaded
+  SVGs are checked and served sandboxed (see Branding); bcrypt for the
+  local password; OIDC with state,
   nonce and PKCE; secrets in the DB are AES-GCM encrypted with the key from
   `config.json` (the SCIM token is only hashed); strict CSP (no inline
   scripts); data directory restricted to SYSTEM/Administrators on Windows.
@@ -356,8 +472,9 @@ migration 3 adds `users.email_from_user_name`.
 ## URL map
 
 Public (login required if "public access" is off): `/`, `/history`,
-`/incidents/{id}`, `/maintenance/{id}`, `/api/status` (JSON). Health:
-`/healthz`. First run: `/setup`.
+`/incidents/{id}`, `/maintenance/{id}`, `/api/status` (JSON). Always public:
+`/static/…`, `/brand/{logo-light,logo-dark,favicon}` (uploaded logos and
+favicon). Health: `/healthz`. First run: `/setup`.
 Auth: `/login`, `/auth/oidc/login`, `/auth/oidc/callback`, `/logout`,
 `/account`, `POST /account/profile` (local administrator: display name and
 user name), `POST /account/password`.
@@ -365,7 +482,8 @@ Editors: `/manage…`. Admins: `/admin/settings` (also `POST
 /admin/settings/test-email`, `POST /admin/settings/scim-token` – generate a
 provisioning token and redirect to the settings page, which shows it once –
 and `POST /admin/settings/scim-token/delete` – turn provisioning off),
-`/admin/services`, `/admin/groups`, `/admin/users` (`POST
+`/admin/branding` (`POST` multipart; `POST /admin/branding/reset` restores
+the defaults), `/admin/services`, `/admin/groups`, `/admin/users` (`POST
 /admin/users/{id}/delete` removes a user who is not provisioned),
 `/admin/notifications`.
 Provisioning: `/scim/v2/…` (`Users`, `Groups`, `ServiceProviderConfig`,

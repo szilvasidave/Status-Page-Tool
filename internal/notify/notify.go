@@ -18,6 +18,7 @@ import (
 
 	"github.com/szilvasidave/status-page-tool/internal/msgraph"
 	"github.com/szilvasidave/status-page-tool/internal/store"
+	"github.com/szilvasidave/status-page-tool/internal/theme"
 )
 
 const (
@@ -220,6 +221,7 @@ func renderTestEmail(st *store.Settings) Email {
 		},
 		Footer: "You receive this e-mail because an administrator sent a test e-mail from the settings page.",
 	}
+	v.ButtonColor, v.ButtonText = theme.EmailButton(st.ThemeAccentLight)
 	if st.MailMethod == store.MailSMTP {
 		server := strings.TrimSpace(st.SMTPHost)
 		if st.SMTPPort != 0 {

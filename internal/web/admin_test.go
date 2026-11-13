@@ -16,6 +16,7 @@ import (
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/store"
+	"github.com/szilvasidave/status-page-tool/internal/theme"
 )
 
 // adminFollow performs a GET request to the redirect target of r (to see the
@@ -152,6 +153,7 @@ func TestAdminSettingsSave(t *testing.T) {
 		SMTPHost: "smtp.example.com", SMTPPort: 465, SMTPSecurity: "tls", SMTPUsername: "mailer",
 		SMTPPassword: "mail-pass-1", SMTPFrom: "IT Status <status@example.com>",
 		LocalLoginEnabled: true, MailMethod: store.MailSMTP,
+		ThemeMode: theme.ModeAuto, ThemeShowSiteName: true,
 	}
 	if *st != want {
 		t.Fatalf("stored settings:\n got %+v\nwant %+v", *st, want)
