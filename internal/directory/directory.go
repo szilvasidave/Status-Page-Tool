@@ -5,6 +5,8 @@
 // It reuses the OIDC client id and secret from the settings (client
 // credentials flow). The app registration needs the Microsoft Graph
 // application permissions GroupMember.Read.All and User.ReadBasic.All.
+// Disabled accounts are only left out with User.Read.All instead of
+// User.ReadBasic.All: Graph returns accountEnabled only with that permission.
 package directory
 
 import (
@@ -138,6 +140,13 @@ func (s *Syncer) SyncNow(ctx context.Context) (Result, error) {
 			if stopsSync(ctx, err) {
 				return res, err
 			}
+			if errors.Is(err, ErrGroupNotFound) {
+				// Deleted in the directory: the group has no members any
+				// more (its role and services stay until an admin deletes it).
+				if cerr := s.store.SyncGroupMembers(ctx, g.ID, "", nil); cerr != nil {
+					err = fmt.Errorf("it no longer exists in the directory, but its members could not be removed: %w", cerr)
+				}
+			}
 			res.Errors = append(res.Errors, groupProblem(g, err))
 			continue
 		}
@@ -186,7 +195,7 @@ func groupProblem(g *store.Group, err error) string {
 		label = fmt.Sprintf("%q (%s)", g.Name, g.ExternalID)
 	}
 	if errors.Is(err, ErrGroupNotFound) {
-		return "group " + label + " no longer exists in the directory"
+		return "group " + label + " no longer exists in the directory; its members were removed"
 	}
 	return "group " + label + ": " + err.Error()
 }

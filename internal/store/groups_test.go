@@ -1,8 +1,117 @@
 package store
 
 import (
+	"strings"
 	"testing"
 )
+
+// TestGroupExternalIDCase: Entra ID object ids are matched case-insensitively
+// (the claim has them in lower case, an admin may paste them in upper case);
+// other ids keep their case.
+func TestGroupExternalIDCase(t *testing.T) {
+	const lower = "8f3a1c2d-0000-4000-8000-00000000abcd"
+	upper := strings.ToUpper(lower)
+	equal(t, "IsGUID", []bool{IsGUID(lower), IsGUID(upper), IsGUID("it-admins"), IsGUID(lower[1:] + "x"), IsGUID(strings.ReplaceAll(lower, "-", "_"))},
+		[]bool{true, true, false, false, false})
+	equal(t, "NormExternalID", []string{NormExternalID(" " + upper + " "), NormExternalID(" IT-Admins ")}, []string{lower, "IT-Admins"})
+
+	forEachDB(t, func(t *testing.T, s *Store) {
+		g := mustGroup(t, s, " "+upper+" ", "")
+		equal(t, "stored in lower case", g.ExternalID, lower)
+		check(t, s.UpdateGroup(ctx, g.ID, "Editors", RoleEditor))
+		equal(t, "added again in upper case", mustGroup(t, s, upper, "").ID, g.ID)
+
+		u := mustUser(t, s, "sub", "u@example.com", "U")
+		check(t, s.SetUserGroups(ctx, u.ID, []GroupRef{{ExternalID: lower}, {ExternalID: upper}}))
+		groups, err := s.UserGroups(ctx, u.ID)
+		check(t, err)
+		equal(t, "one group", len(groups), 1)
+		equal(t, "the added group", groups[0].ID, g.ID)
+		role, err := s.UserRole(ctx, u.ID)
+		check(t, err)
+		equal(t, "role of the added group", role, RoleEditor)
+
+		// Group names (Keycloak) may differ only in case.
+		a := mustGroup(t, s, "IT-Admins", "")
+		b := mustGroup(t, s, "it-admins", "")
+		if a.ID == b.ID {
+			t.Fatal("group names that differ in case were merged")
+		}
+	})
+}
+
+// TestSyncGroupMembersDirectoryIsAuthoritative: the directory's e-mail
+// address and name win for users who never signed in (directory sync exists
+// for them), and an address that moved to another directory object never
+// moves that object onto an existing user's row.
+func TestSyncGroupMembersDirectoryIsAuthoritative(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		g := mustGroup(t, s, "grp", "")
+		svc := mustService(t, s, "Payroll", "", 0, g.ID)
+		recipients := func() []string {
+			t.Helper()
+			r, err := s.RecipientsForServices(ctx, []int64{svc.ID})
+			check(t, err)
+			var out []string
+			for _, x := range r {
+				out = append(out, x.Email+"|"+x.Name)
+			}
+			return out
+		}
+		user := func(id int64) *User {
+			t.Helper()
+			u, err := s.GetUser(ctx, id)
+			check(t, err)
+			return u
+		}
+
+		// John changes his name and address in the directory.
+		check(t, s.SyncGroupMembers(ctx, g.ID, "", []DirectoryUser{{DirectoryID: "d-john", Email: "john.smith@corp.example", Name: "John Smith"}}))
+		check(t, s.SyncGroupMembers(ctx, g.ID, "", []DirectoryUser{{DirectoryID: "d-john", Email: "John.Doe@corp.example", Name: "John Doe"}}))
+		equal(t, "refreshed", recipients(), []string{"john.doe@corp.example|John Doe"})
+
+		// His old address now belongs to Jane: she gets her own row.
+		check(t, s.SyncGroupMembers(ctx, g.ID, "", []DirectoryUser{
+			{DirectoryID: "d-john", Email: "john.doe@corp.example", Name: "John Doe"},
+			{DirectoryID: "d-jane", Email: "john.smith@corp.example", Name: "Jane"},
+		}))
+		equal(t, "reassigned address", recipients(), []string{"john.doe@corp.example|John Doe", "john.smith@corp.example|Jane"})
+
+		// Users who signed in keep the values from the sign-in.
+		alice, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-alice", DirectoryID: "d-alice", Email: "alice@corp.example", Name: "Alice"})
+		check(t, err)
+		check(t, s.SyncGroupMembers(ctx, g.ID, "", []DirectoryUser{{DirectoryID: "d-alice", Email: "alice.mail@corp.example", Name: "Alice Directory"}}))
+		got := user(alice.ID)
+		equal(t, "signed-in user", [2]string{got.Email, got.Name}, [2]string{"alice@corp.example", "Alice"})
+
+		// Max's old address is reassigned to Moritz before Max's own group is
+		// synchronised again: the stale address moves from Max's row to
+		// Moritz instead of Moritz being merged into Max's row.
+		g2 := mustGroup(t, s, "grp2", "")
+		check(t, s.SyncGroupMembers(ctx, g2.ID, "", []DirectoryUser{{DirectoryID: "d-max", Email: "max@corp.example", Name: "Max"}}))
+		maxRow := mustMember(t, s, g2.ID)
+		check(t, s.SyncGroupMembers(ctx, g.ID, "", []DirectoryUser{{DirectoryID: "d-moritz", Email: "max@corp.example", Name: "Moritz"}}))
+		moritz := mustMember(t, s, g.ID)
+		if moritz.ID == maxRow.ID {
+			t.Fatal("Moritz was matched to Max's row by e-mail")
+		}
+		equal(t, "Moritz has the address", [2]string{moritz.Email, moritz.DirectoryID}, [2]string{"max@corp.example", "d-moritz"})
+		equal(t, "Max's stale address removed", user(maxRow.ID).Email, "")
+		check(t, s.SyncGroupMembers(ctx, g2.ID, "", []DirectoryUser{{DirectoryID: "d-max", Email: "max.new@corp.example", Name: "Max"}}))
+		equal(t, "Max's new address", user(maxRow.ID).Email, "max.new@corp.example")
+	})
+}
+
+// mustMember returns the only member of a group.
+func mustMember(t *testing.T, s *Store, groupID int64) User {
+	t.Helper()
+	members, err := s.GroupMembers(ctx, groupID)
+	check(t, err)
+	if len(members) != 1 {
+		t.Fatalf("group %d has %d members, want 1", groupID, len(members))
+	}
+	return members[0]
+}
 
 func TestGroupsCRUD(t *testing.T) {
 	forEachDB(t, func(t *testing.T, s *Store) {

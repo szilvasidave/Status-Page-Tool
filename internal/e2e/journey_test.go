@@ -432,9 +432,10 @@ func (j *journey) singleSignOn() *browser {
 	j.ssoLogin(carol, carolUser, "/account").expectStatus(200).expectText("staff", "ERP")
 	j.admin.get(j.base+"/admin/groups/"+j.staff).expectStatus(200).expectText("Carol Leaver", "Bob Viewer", "Alice Editor")
 
-	// Carol left the group at the identity provider: her next sign-in
+	// Carol left her last group at the identity provider, which then leaves
+	// the groups claim out (like Entra ID and Keycloak): her next sign-in
 	// removes the membership.
-	carolUser.Groups = []string{}
+	carolUser.Groups = nil
 	carol.get(j.base + "/account").expectStatus(200) // still signed in
 	j.idp.SetUser(carolUser)
 	p = carol.open(j.base + "/auth/oidc/login?next=%2Faccount")
@@ -456,6 +457,20 @@ func (j *journey) singleSignOn() *browser {
 	p = erin.get(j.base+"/admin/services/"+j.vpn).expectStatus(200).form("/admin/services/"+j.vpn).set("description", "Remote access").post()
 	p.expectRedirect("/admin/services")
 	p.follow().expectFlash("success", "Service “VPN” saved.").expectText("Remote access")
+
+	// Entra ID object ids match in any case: a group added with the id in
+	// upper case applies to the lower-case id in the claim.
+	const editorsID = "8f3a1c2d-0000-4000-8000-00000000abcd"
+	p = j.admin.get(j.base+"/admin/groups").expectStatus(200).form("/admin/groups").set("external_id", strings.ToUpper(editorsID)).post()
+	u, _ := url.Parse(p.redirect())
+	m := groupURLRe.FindStringSubmatch(u.Path)
+	if m == nil {
+		t.Fatalf("adding group %s redirects to %q", strings.ToUpper(editorsID), p.redirect())
+	}
+	j.setGroupRole(m[1], "editor")
+	frank := newBrowser(t, "frank")
+	j.ssoLogin(frank, mockidp.User{Subject: "sub-frank", Email: "frank@e2e.example", Name: "Frank Editor", Groups: []string{editorsID}}, "/manage").
+		expectStatus(200).expectText("Frank Editor", "Report incident")
 
 	// Roles are evaluated on every request.
 	j.setGroupRole(j.ops, "viewer")

@@ -128,31 +128,38 @@ func (s *Store) SetPasswordHash(ctx context.Context, userID int64, hash string) 
 
 // UpsertOIDCUser finds the user for a successful OIDC login and updates it,
 // or creates it. Matching order: oidc_subject, then directory_id (if given),
-// then email (if given, case-insensitive). The matched user gets
-// oidc_subject (taken over if it changed), email (lower case, if given),
-// name (if given), directory_id (if given) and last_login_at=now updated.
-// Local admin accounts are never matched or modified (they have no e-mail).
+// then email (if given, case-insensitive; with a directory id only rows
+// without one, so that the row of another directory object is never taken
+// over). The matched user gets oidc_subject (taken over if it changed),
+// email (lower case, if given), name (if given), directory_id (if given) and
+// last_login_at=now updated. When the subject of a row changes, the row's
+// sessions are deleted (they belong to the previous identity). Local admin
+// accounts are never matched or modified (they have no e-mail).
 // Must not fail on unique constraints when another row already holds the
 // e-mail/directory id: the first match wins and conflicting values are
 // cleared from the other row.
 func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) {
 	subject := strings.TrimSpace(in.Subject)
-	email := normEmail(in.Email)
-	name := strings.TrimSpace(in.Name)
-	dir := strings.TrimSpace(in.DirectoryID)
 	if subject == "" {
 		return nil, errors.New("sign-in: the identity provider did not return a subject (sub claim)")
 	}
-
 	var out *User
-	err := s.db.InTx(ctx, func(tx *db.Tx) error {
+	upsert := func(tx *db.Tx) error {
+		email := normEmail(in.Email)
+		name := strings.TrimSpace(in.Name)
+		dir := strings.TrimSpace(in.DirectoryID)
+
 		const notAdmin = " AND u.is_local_admin = ?"
 		u, err := findUser(ctx, tx, "u.oidc_subject = ?"+notAdmin, subject, false)
 		if errors.Is(err, ErrNotFound) && dir != "" {
 			u, err = findUser(ctx, tx, "u.directory_id = ?"+notAdmin, dir, false)
 		}
 		if errors.Is(err, ErrNotFound) && email != "" {
-			u, err = findUser(ctx, tx, "u.email = ?"+notAdmin, email, false)
+			cond := "u.email = ?"
+			if dir != "" {
+				cond += " AND u.directory_id IS NULL"
+			}
+			u, err = findUser(ctx, tx, cond+notAdmin, email, false)
 		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
@@ -160,13 +167,18 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 		var id int64 // 0 = create a new user
 		if u != nil {
 			id = u.ID
+			if u.OIDCSubject != "" && u.OIDCSubject != subject {
+				if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+					return err
+				}
+			}
 		}
 
-		// Free unique values that are held by other rows.
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET oidc_subject = NULL WHERE oidc_subject = ? AND id <> ?`, subject, id); err != nil {
-			return err
-		}
-		if dir != "" {
+		// Free unique values that are held by other rows. (The subject, and
+		// the directory id of a new user, can only be held by a row that a
+		// concurrent transaction created after the lookup: then the write
+		// below fails and the lookup is repeated.)
+		if dir != "" && u != nil {
 			if _, err := tx.ExecContext(ctx, `UPDATE users SET directory_id = NULL WHERE directory_id = ? AND id <> ?`, dir, id); err != nil {
 				return err
 			}
@@ -205,25 +217,48 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 		}
 		out, err = findUser(ctx, tx, "u.id = ?", id)
 		return err
-	})
+	}
+	// PostgreSQL: a concurrent sign-in or directory sync may create or
+	// change the same user after the lookup (duplicate key, or a deadlock).
+	// Look again; then the row is found.
+	err := s.db.InTx(ctx, upsert)
+	for attempt := 1; attempt < 3 && isConflict(err); attempt++ {
+		err = s.db.InTx(ctx, upsert)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("save signed-in user %q: %w", subject, err)
 	}
 	return out, nil
 }
 
-// SetUserGroups replaces the group memberships of a user with the given
-// groups, as reported by the identity provider at login. Groups are created
-// if they do not exist yet (keyed by ExternalID; Name defaults to ExternalID).
-// An existing group's name is only overwritten when ref.Name is non-empty and
-// differs from ExternalID. Refs with an empty ExternalID are ignored.
+// insertMembershipSQL adds a user to a group. A sign-in and a directory sync
+// may insert the same membership at the same time (PostgreSQL), and a
+// membership kept from the sync may be in the claim, too.
+const insertMembershipSQL = `INSERT INTO user_groups (user_id, group_id) VALUES (?, ?) ON CONFLICT DO NOTHING`
+
+// SetUserGroups replaces all group memberships of a user with the given
+// groups (SetLoginGroups without keepSynced).
 func (s *Store) SetUserGroups(ctx context.Context, userID int64, groups []GroupRef) error {
+	return s.SetLoginGroups(ctx, userID, groups, false)
+}
+
+// SetLoginGroups sets the group memberships of a user to the groups reported
+// by the identity provider at sign-in: memberships of other groups are
+// removed. Groups are created if they do not exist yet (keyed by ExternalID,
+// see NormExternalID; Name defaults to ExternalID). An existing group's name
+// is only overwritten when ref.Name is non-empty and differs from
+// ExternalID. Refs with an empty ExternalID are ignored.
+//
+// With keepSynced (directory sync enabled), memberships of groups managed by
+// the directory sync (last_synced_at set) are not removed: only the sync
+// removes those.
+func (s *Store) SetLoginGroups(ctx context.Context, userID int64, groups []GroupRef, keepSynced bool) error {
 	// Unique refs (the first name wins), sorted so that concurrent logins
 	// lock the group rows in the same order.
 	names := make(map[string]string)
 	var exts []string
 	for _, ref := range groups {
-		ext := strings.TrimSpace(ref.ExternalID)
+		ext := NormExternalID(ref.ExternalID)
 		if _, dup := names[ext]; ext == "" || dup {
 			continue
 		}
@@ -241,11 +276,15 @@ func (s *Store) SetUserGroups(ctx context.Context, userID int64, groups []GroupR
 			}
 			ids = append(ids, g)
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM user_groups WHERE user_id = ?`, userID); err != nil {
+		del := `DELETE FROM user_groups WHERE user_id = ?`
+		if keepSynced {
+			del += ` AND group_id NOT IN (SELECT id FROM idp_groups WHERE last_synced_at IS NOT NULL)`
+		}
+		if _, err := tx.ExecContext(ctx, del, userID); err != nil {
 			return err
 		}
 		for _, gid := range ids {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)`, userID, gid); err != nil {
+			if _, err := tx.ExecContext(ctx, insertMembershipSQL, userID, gid); err != nil {
 				return err
 			}
 		}
