@@ -1,26 +1,63 @@
 {{/* Settings page section; see internal/web/admin_settings_sync.go. Dot is the *adminSettingsData. */}}
 {{define "settings-sync"}}
-  <fieldset class="box" id="directory">
-    <legend>Directory sync (Microsoft Entra ID)</legend>
+  <fieldset class="box" id="provisioning">
+    <legend>Users and groups from Microsoft Entra ID (SCIM provisioning)</legend>
+    <p class="help"><strong>Provisioning</strong> from Microsoft Entra ID sends all users of the groups assigned to the
+      provisioning app – including people who never signed in, so that they are notified, too – and updates them and the
+      group members about every 40 minutes.</p>
+    <p class="help"><strong>Sign-in</strong> updates the groups of the user who signs in from the groups claim. This works
+      with any OpenID Connect provider, but only for people who have signed in. The members of provisioned groups are left
+      to provisioning.</p>
     <div class="field">
-      <label class="checkbox"><input type="checkbox" name="directory_sync_enabled"{{if .St.DirectorySyncEnabled}} checked{{end}}{{if .Errors.directory_sync_enabled}} aria-invalid="true"{{end}}> Synchronise group members from Microsoft Entra ID</label>
-      <span class="help">Every hour the members of all groups that have a role or services are read from Microsoft Graph, so they
-        are notified even if they never signed in, and groups can be searched by name. Uses the single sign-on client ID and
-        secret; the app registration needs the Microsoft Graph <em>application</em> permissions
-        <strong>GroupMember.Read.All</strong> and <strong>User.Read.All</strong> with admin consent.</span>
-      {{template "field-error" .Errors.directory_sync_enabled}}
+      <span class="label">Tenant URL</span>
+      <code class="code-box">{{.Sync.TenantURL}}</code>
+      <span class="help">In the Microsoft Entra admin center create an enterprise application for provisioning (the app
+        registration of single sign-on cannot provision): <em>Create your own application → Non-gallery</em> if Entra ID
+        can reach this address from the internet (HTTPS with a publicly trusted certificate), otherwise the
+        <em>On-premises SCIM app</em> with the Microsoft Entra provisioning agent. Under <em>Provisioning</em> choose the
+        mode <em>Automatic</em>, enter this Tenant URL and the token as <em>Secret Token</em>, then assign the groups to the
+        application and start provisioning.
+        {{- if not .St.BaseURL}} The address is derived from this page – set the base URL above so that it does not
+        change.{{end}}</span>
     </div>
-    {{if .Sync.DirectoryEnabled}}
+    {{- with .Sync.NewToken}}
+    <div class="flash flash-success" role="status">
+      <strong>New token generated.</strong> Copy it now and enter it as <em>Secret Token</em> in Microsoft Entra ID: it
+      is shown only once.{{if $.Sync.Replaced}} The previous token no longer works.{{end}}
+      <code class="code-box" id="scim-token">{{.}}</code>
+    </div>
+    {{- end}}
     <div class="field">
-      <button type="submit" form="directory-sync-form" class="btn-small">Sync now</button>
+      <span class="label">Token</span>
+      {{- if .Sync.Enabled}}
+      <p>Provisioning is on. The token was generated <time datetime="{{isoTime .Sync.TokenCreated}}">{{fmtTime .Sync.TokenCreated}}</time>.</p>
+      {{- else}}
+      <p class="muted">No token – provisioning is off.</p>
+      {{- end}}
+      <div class="row">
+        <button type="submit" form="scim-token-form">{{if .Sync.Enabled}}Generate new token{{else}}Generate token{{end}}</button>
+        {{- if .Sync.Enabled}}
+        <button type="submit" form="scim-off-form" class="btn-danger">Turn off provisioning</button>
+        {{- end}}
+      </div>
+      {{- if .Sync.Enabled}}
+      <span class="help">A new token replaces the current one at once. Turning provisioning off deletes the token; sign-ins
+        then update the members of all groups again.</span>
+      {{- end}}
     </div>
-    {{end}}
   </fieldset>
 {{end}}
 
 {{/* Forms outside the main settings form. Dot: (dict "D" <*adminSettingsData> "P" <*Page>). */}}
 {{define "settings-sync-forms"}}
-<form id="directory-sync-form" method="post" action="/admin/groups/sync" class="inline">
-  {{template "csrf" .P}}<input type="hidden" name="next" value="/admin/settings">
+<form id="scim-token-form" method="post" action="/admin/settings/scim-token#provisioning" class="inline"
+  {{- if .D.Sync.Enabled}} data-confirm="Generate a new token? The current token stops working at once; enter the new one in Microsoft Entra ID."{{end}}>
+  {{template "csrf" .P}}
 </form>
+{{- if .D.Sync.Enabled}}
+<form id="scim-off-form" method="post" action="/admin/settings/scim-token/delete" class="inline"
+  data-confirm="Turn off provisioning? Microsoft Entra ID can then no longer change users and groups, and sign-ins update the members of all groups again.">
+  {{template "csrf" .P}}
+</form>
+{{- end}}
 {{end}}

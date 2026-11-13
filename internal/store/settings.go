@@ -92,7 +92,6 @@ var settingFields = []settingField{
 	strField("oidc_scopes", func(s *Settings) *string { return &s.OIDCScopes }),
 	strField("oidc_groups_claim", func(s *Settings) *string { return &s.OIDCGroupsClaim }),
 	strField("oidc_button_label", func(s *Settings) *string { return &s.OIDCButtonLabel }),
-	boolField("directory_sync_enabled", func(s *Settings) *bool { return &s.DirectorySyncEnabled }),
 
 	boolField("local_login_enabled", func(s *Settings) *bool { return &s.LocalLoginEnabled }),
 

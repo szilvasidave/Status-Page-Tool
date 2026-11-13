@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 
+	"github.com/szilvasidave/status-page-tool/internal/scim"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
@@ -58,6 +59,8 @@ func (s *Server) routes() {
 	m.Handle("GET /admin/settings", admin(s.handleSettings))
 	m.Handle("POST /admin/settings", admin(s.handleSettingsSave))
 	m.Handle("POST /admin/settings/test-email", admin(s.handleTestEmail))
+	m.Handle("POST /admin/settings/scim-token", admin(s.handleSCIMTokenNew))
+	m.Handle("POST /admin/settings/scim-token/delete", admin(s.handleSCIMTokenDelete))
 	m.Handle("GET /admin/services", admin(s.handleServices))
 	m.Handle("GET /admin/services/new", admin(s.handleServiceNew))
 	m.Handle("POST /admin/services", admin(s.handleServiceCreate))
@@ -66,14 +69,17 @@ func (s *Server) routes() {
 	m.Handle("POST /admin/services/{id}/delete", admin(s.handleServiceDelete))
 	m.Handle("GET /admin/groups", admin(s.handleGroups))
 	m.Handle("POST /admin/groups", admin(s.handleGroupCreate))
-	m.Handle("GET /admin/groups/search", admin(s.handleGroupSearch))
-	m.Handle("POST /admin/groups/sync", admin(s.handleDirectorySync))
 	m.Handle("GET /admin/groups/{id}", admin(s.handleGroupEdit))
 	m.Handle("POST /admin/groups/{id}", admin(s.handleGroupUpdate))
 	m.Handle("POST /admin/groups/{id}/delete", admin(s.handleGroupDelete))
 	m.Handle("GET /admin/users", admin(s.handleUsers))
 	m.Handle("POST /admin/users/{id}/delete", admin(s.handleUserDelete))
 	m.Handle("GET /admin/notifications", admin(s.handleNotifications))
+
+	// SCIM provisioning from Microsoft Entra ID (Tenant URL <Base URL>/scim/v2).
+	// It authenticates with its own bearer token: the middleware passes
+	// /scim/ through without session, CSRF check or setup redirect.
+	m.Handle("/scim/", scim.New(s.Store, s.Log))
 
 	// Everything else.
 	m.HandleFunc("/", s.notFound)

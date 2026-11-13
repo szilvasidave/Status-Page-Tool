@@ -81,11 +81,6 @@ type Settings struct {
 	OIDCGroupsClaim  string // name of the ID token claim containing group ids/names
 	OIDCButtonLabel  string
 
-	// DirectorySyncEnabled turns on group member synchronisation from
-	// Microsoft Entra ID via Microsoft Graph using the OIDC client
-	// credentials.
-	DirectorySyncEnabled bool
-
 	// LocalLoginEnabled allows the local administrator account to sign in.
 	// It can only be turned off while single sign-on works; the command
 	// "statuspage local-login enable" turns it on again.
@@ -264,13 +259,9 @@ type OIDCUser struct {
 	Email       string
 	Name        string
 	DirectoryID string // e.g. Entra ID "oid" claim, may be empty
-}
-
-// DirectoryUser is a group member returned by a directory sync.
-type DirectoryUser struct {
-	DirectoryID string
-	Email       string
-	Name        string
+	// PrincipalName is the user name at the identity provider (claim
+	// preferred_username, else upn), as sent; may be empty.
+	PrincipalName string
 }
 
 // Recipient is a user that should receive a notification e-mail.

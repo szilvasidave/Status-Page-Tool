@@ -100,9 +100,15 @@ func New(st *store.Store, key []byte, log *slog.Logger) *Manager {
 
 // Middleware loads the session, puts the Identity and CSRF token into the
 // request context and rejects state-changing requests (POST, PUT, PATCH,
-// DELETE) without a valid CSRF token or with a foreign Origin.
+// DELETE) without a valid CSRF token or with a foreign Origin. SCIM
+// provisioning (/scim/) passes through untouched: it is no browser, it
+// authenticates with its own bearer token and uses no cookies.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/scim/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		ctx := r.Context()
 
 		token := ""

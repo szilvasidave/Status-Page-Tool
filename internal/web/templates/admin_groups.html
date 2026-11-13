@@ -1,19 +1,13 @@
 {{define "content"}}
 {{with .Data}}
-<div class="toolbar">
-  <h1>Groups</h1>
-  {{- if .DirectoryEnabled}}
-  <form method="post" action="/admin/groups/sync" class="inline">
-    {{template "csrf" $}}
-    <button type="submit">Sync now</button>
-  </form>
-  {{- end}}
-</div>
-<p class="lead">Groups come from the identity provider. Give a group a role and choose the services its members are
-  notified about. A user's role is the highest role of their groups; everybody else who signs in is a viewer.</p>
+<h1>Groups</h1>
+<p class="lead">Groups come from the identity provider: from the groups claim when members sign in, or provisioned from
+  Microsoft Entra ID (marked <span class="badge">Provisioned</span>; their members come from provisioning). Give a group
+  a role and choose the services its members are notified about. A user's role is the highest role of their groups;
+  everybody else who signs in is a viewer.</p>
 
 {{- if .InUse}}
-<div class="card table-wrap" tabindex="0" role="region" aria-label="Groups with a role or services">
+<div class="card table-wrap" tabindex="0" role="region" aria-label="Groups with a role, services or provisioning">
   <table class="table">
     <thead>
       <tr><th scope="col">Group</th><th scope="col">ID</th><th scope="col">Role</th><th scope="col">Members</th><th scope="col">Services</th></tr>
@@ -21,7 +15,7 @@
     <tbody>
       {{- range .InUse}}
       <tr>
-        <td><a href="/admin/groups/{{.ID}}">{{.DisplayName}}</a></td>
+        <td><a href="/admin/groups/{{.ID}}">{{.DisplayName}}</a>{{if .Provisioned}} <span class="badge">Provisioned</span>{{end}}</td>
         <td class="cell-wrap"><code>{{.ExternalID}}</code></td>
         <td>{{if eq .Role.String ""}}<span class="muted">Viewer</span>{{else}}<span class="badge">{{.Role.Label}}</span>{{end}}</td>
         <td>{{.MemberCount}}</td>
@@ -34,7 +28,8 @@
 {{- else if .Other}}
 <p class="notice">No group has a role or services yet. Open a group below, or add one, to assign them.</p>
 {{- else}}
-<p class="notice">No groups yet. Groups appear here after their members sign in with single sign-on{{if .DirectoryEnabled}} or after a directory sync{{end}}; you can also add one below.</p>
+<p class="notice">No groups yet. Groups appear here after their members sign in with single sign-on or when Microsoft Entra ID
+  provisions them; you can also add one below.</p>
 {{- end}}
 
 {{- with .Other}}
@@ -83,21 +78,6 @@
       </form>
     </div>
   </section>
-  {{- if .DirectoryEnabled}}
-  <section class="card" aria-labelledby="find-group">
-    <div class="card-header"><h2 id="find-group">Find in Microsoft Entra ID</h2></div>
-    <div class="card-body">
-      <form method="get" action="/admin/groups/search" class="form">
-        <div class="field">
-          <label for="q">Group name</label>
-          <input id="q" name="q" type="search" required placeholder="e.g. IT Operations" aria-describedby="q-help">
-          <span class="help" id="q-help">Searches the directory by the beginning of the display name.</span>
-        </div>
-        <div class="form-actions"><button type="submit">Search</button></div>
-      </form>
-    </div>
-  </section>
-  {{- end}}
 </div>
 {{end}}
 {{end}}

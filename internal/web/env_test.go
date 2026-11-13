@@ -18,7 +18,6 @@ import (
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
 	"github.com/szilvasidave/status-page-tool/internal/db"
-	"github.com/szilvasidave/status-page-tool/internal/directory"
 	"github.com/szilvasidave/status-page-tool/internal/notify"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
@@ -73,8 +72,7 @@ func newTestEnvNoAdmin(t *testing.T) *testEnv {
 	st := store.New(d, key)
 	am := auth.New(st, key, log)
 	h, err := NewHandler(Deps{
-		Config: cfg, DataDir: dir, Store: st, Auth: am,
-		Notifier: notify.New(st, log), Directory: directory.NewSyncer(st, log),
+		Config: cfg, DataDir: dir, Store: st, Auth: am, Notifier: notify.New(st, log),
 		Version: "test", Log: log, SetupToken: "test-setup-token",
 	})
 	if err != nil {

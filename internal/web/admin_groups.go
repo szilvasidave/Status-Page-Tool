@@ -3,24 +3,19 @@ package web
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
-	"time"
 
-	"github.com/szilvasidave/status-page-tool/internal/directory"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
 // adminGroupsData is the data of the groups list.
 type adminGroupsData struct {
-	InUse            []store.Group // groups with a role or services
-	Other            []store.Group // all other groups (shown collapsed)
-	DirectoryEnabled bool
-	ExternalID       string // "add group" form values
-	Name             string
-	Errors           adminFormErrors
+	InUse      []store.Group // groups with a role or services, and provisioned groups
+	Other      []store.Group // all other groups (shown collapsed)
+	ExternalID string        // "add group" form values
+	Name       string
+	Errors     adminFormErrors
 }
 
 // adminSplitGroups splits groups into the groups in use (with a role or
@@ -50,8 +45,9 @@ func (s *Server) adminRenderGroups(w http.ResponseWriter, r *http.Request, statu
 		s.serverError(w, r, err)
 		return
 	}
-	d.InUse, d.Other = adminSplitGroups(groups, nil)
-	d.DirectoryEnabled = s.adminDirectoryEnabled(r.Context())
+	// Provisioned groups were assigned to the provisioning app on purpose:
+	// they are listed even before they get a role or services.
+	d.InUse, d.Other = adminSplitGroups(groups, func(g *store.Group) bool { return g.Provisioned })
 	if d.Errors == nil {
 		d.Errors = adminFormErrors{}
 	}
@@ -106,81 +102,6 @@ func (s *Server) adminGroupByExternalID(ctx context.Context, externalID string) 
 		}
 	}
 	return nil, nil
-}
-
-// adminGroupSearchData is the data of the directory group search page.
-type adminGroupSearchData struct {
-	Query    string
-	Searched bool
-	Results  []adminGroupResult
-	Error    string
-}
-
-// adminGroupResult is a directory group; ExistingID is set if it was added
-// already.
-type adminGroupResult struct {
-	directory.Group
-	ExistingID int64
-}
-
-func (s *Server) handleGroupSearch(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if !s.adminDirectoryEnabled(ctx) {
-		s.redirectWithFlash(w, r, "/admin/groups", "info", "Searching the directory requires directory sync with Microsoft Entra ID. Turn it on in Settings.")
-		return
-	}
-	d := &adminGroupSearchData{Query: strings.TrimSpace(r.URL.Query().Get("q"))}
-	if d.Query != "" {
-		d.Searched = true
-		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		found, err := s.Directory.SearchGroups(sctx, d.Query)
-		cancel()
-		if err != nil {
-			s.Log.Warn("directory group search failed", "query", d.Query, "err", err)
-			d.Error = "The search failed: " + err.Error()
-		}
-		groups, err := s.Store.ListGroups(ctx)
-		if err != nil {
-			s.serverError(w, r, err)
-			return
-		}
-		known := make(map[string]int64, len(groups))
-		for _, g := range groups {
-			known[strings.ToLower(g.ExternalID)] = g.ID
-		}
-		for _, g := range found {
-			d.Results = append(d.Results, adminGroupResult{Group: g, ExistingID: known[strings.ToLower(g.ID)]})
-		}
-	}
-	s.render(w, r, "admin_group_search", "Search groups", d)
-}
-
-func (s *Server) handleDirectorySync(w http.ResponseWriter, r *http.Request) {
-	back := "/admin/groups"
-	if r.FormValue("next") == "/admin/settings" {
-		back = "/admin/settings"
-	}
-	if !s.adminDirectoryEnabled(r.Context()) {
-		s.redirectWithFlash(w, r, back, "error", "Directory sync is not enabled. Turn it on in Settings (requires Microsoft Entra ID).")
-		return
-	}
-	// Stay below the server's write timeout.
-	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
-	defer cancel()
-	res, err := s.Directory.SyncNow(ctx)
-	if err != nil {
-		s.Log.Warn("directory sync failed", "err", err)
-		s.redirectWithFlash(w, r, back, "error", "Directory sync failed: "+err.Error())
-		return
-	}
-	s.Log.Info("directory sync", "groups", res.Groups, "memberships", res.Members, "errors", len(res.Errors), "user", adminActor(r))
-	msg := fmt.Sprintf("Synchronised %s, %s.", plural(res.Groups, "group"), plural(res.Members, "membership"))
-	kind := "success"
-	if len(res.Errors) > 0 {
-		kind = "warning" // the other groups were synchronised
-		msg += " " + plural(len(res.Errors), "error") + ": " + strings.Join(res.Errors, "; ")
-	}
-	s.redirectWithFlash(w, r, back, kind, msg)
 }
 
 // adminGroupForm is the data of the group edit page.

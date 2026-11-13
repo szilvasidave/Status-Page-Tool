@@ -28,16 +28,16 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		case u.OIDCSubject != "":
 			rows[i].SignIn = "SSO"
 		default:
-			rows[i].SignIn = "Directory only (never signed in)"
+			rows[i].SignIn = "Never signed in"
 		}
 	}
 	s.render(w, r, "admin_users", "Users", rows)
 }
 
-// handleUserDelete removes a single sign-on or directory user with the
+// handleUserDelete removes a single sign-on or provisioned user with the
 // user's group memberships and sessions, e.g. someone who left the company
 // or changed teams and should no longer be notified. The user is created
-// again at the next sign-in or directory sync.
+// again at the next sign-in or when provisioning creates them again.
 func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.pathID(w, r)
 	if !ok {

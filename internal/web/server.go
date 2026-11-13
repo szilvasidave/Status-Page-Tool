@@ -28,7 +28,6 @@ import (
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
-	"github.com/szilvasidave/status-page-tool/internal/directory"
 	"github.com/szilvasidave/status-page-tool/internal/notify"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
@@ -38,14 +37,13 @@ var assets embed.FS
 
 // Deps are the dependencies of the web handlers.
 type Deps struct {
-	Config    *config.Config
-	DataDir   string
-	Store     *store.Store     // nil in setup mode
-	Auth      *auth.Manager    // nil in setup mode
-	Notifier  *notify.Notifier // nil in setup mode
-	Directory *directory.Syncer
-	Version   string
-	Log       *slog.Logger
+	Config   *config.Config
+	DataDir  string
+	Store    *store.Store     // nil in setup mode
+	Auth     *auth.Manager    // nil in setup mode
+	Notifier *notify.Notifier // nil in setup mode
+	Version  string
+	Log      *slog.Logger
 
 	// Activate is called by the setup wizard (setup mode only) after the
 	// database connection was configured and the config file was written. It
@@ -134,10 +132,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireSetupDone redirects everything to /setup until a local administrator
-// account exists.
+// account exists. SCIM provisioning (/scim/) answers with its own errors.
 func (s *Server) requireSetupDone(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.setupDone.Load() || r.URL.Path == "/setup" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" {
+		if s.setupDone.Load() || r.URL.Path == "/setup" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" ||
+			strings.HasPrefix(r.URL.Path, "/scim/") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -37,6 +37,9 @@ type User struct {
 	Email   string
 	Name    string
 	OID     string // Microsoft Entra ID object id ("oid")
+	// PreferredUsername is the "preferred_username" claim (Microsoft Entra
+	// ID: the user principal name).
+	PreferredUsername string
 	// Groups is the "groups" claim: nil leaves the claim out, an empty
 	// (non-nil) slice sends "groups": [].
 	Groups []string
@@ -53,6 +56,7 @@ func (u User) claims() map[string]any {
 	set("email", u.Email)
 	set("name", u.Name)
 	set("oid", u.OID)
+	set("preferred_username", u.PreferredUsername)
 	if u.Email != "" {
 		c["email_verified"] = true
 	}

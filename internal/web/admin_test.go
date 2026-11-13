@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +15,6 @@ import (
 	_ "time/tzdata" // time zones independent of the host
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
-	"github.com/szilvasidave/status-page-tool/internal/directory"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
@@ -55,9 +52,6 @@ func adminSettingsForm(st *store.Settings) url.Values {
 	if st.OIDCEnabled {
 		f.Set("oidc_enabled", "on")
 	}
-	if st.DirectorySyncEnabled {
-		f.Set("directory_sync_enabled", "on")
-	}
 	return f
 }
 
@@ -73,8 +67,8 @@ func adminSettings(t *testing.T, e *testEnv) *store.Settings {
 func TestAdminAccessControl(t *testing.T) {
 	e := newTestEnv(t)
 	pages := []string{"/admin", "/admin/settings", "/admin/services", "/admin/services/new", "/admin/groups",
-		"/admin/groups/search?q=x", "/admin/users", "/admin/notifications"}
-	posts := []string{"/admin/settings", "/admin/settings/test-email", "/admin/services", "/admin/groups", "/admin/groups/sync"}
+		"/admin/users", "/admin/notifications"}
+	posts := []string{"/admin/settings", "/admin/settings/test-email", "/admin/services", "/admin/groups"}
 
 	for _, p := range pages {
 		if r := e.get(p); r.Status != http.StatusSeeOther || !strings.HasPrefix(r.Location, "/login") {
@@ -104,13 +98,6 @@ func TestAdminAccessControl(t *testing.T) {
 	e.loginAs("boss@example.com", store.RoleAdmin)
 	for _, p := range pages[1:] {
 		r := e.get(p)
-		if p == "/admin/groups/search?q=x" {
-			// directory sync is not enabled: back to the groups page
-			if r.Status != http.StatusSeeOther || r.Location != "/admin/groups" {
-				t.Errorf("GET %s: got %d %q", p, r.Status, r.Location)
-			}
-			continue
-		}
 		if r.Status != http.StatusOK {
 			t.Errorf("admin GET %s: got %d", p, r.Status)
 			continue
@@ -142,7 +129,6 @@ func TestAdminSettingsSave(t *testing.T) {
 	f.Set("oidc_scopes", "  openid   profile email ")
 	f.Set("oidc_groups_claim", "")
 	f.Set("oidc_button_label", "Sign in with Microsoft")
-	f.Set("directory_sync_enabled", "on")
 	f.Set("smtp_host", "smtp.example.com")
 	f.Set("smtp_port", "")
 	f.Set("smtp_security", "tls")
@@ -158,7 +144,7 @@ func TestAdminSettingsSave(t *testing.T) {
 		SiteName: "ACME IT Status", BaseURL: "https://status.example.com", PublicAccess: false, Timezone: "Europe/Berlin",
 		OIDCEnabled: true, OIDCIssuer: "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0",
 		OIDCClientID: "client-1", OIDCClientSecret: "very-secret-1", OIDCScopes: "openid profile email",
-		OIDCGroupsClaim: "groups", OIDCButtonLabel: "Sign in with Microsoft", DirectorySyncEnabled: true,
+		OIDCGroupsClaim: "groups", OIDCButtonLabel: "Sign in with Microsoft",
 		SMTPHost: "smtp.example.com", SMTPPort: 465, SMTPSecurity: "tls", SMTPUsername: "mailer",
 		SMTPPassword: "mail-pass-1", SMTPFrom: "IT Status <status@example.com>",
 		LocalLoginEnabled: true, MailMethod: store.MailSMTP,
@@ -215,7 +201,6 @@ func TestAdminSettingsValidation(t *testing.T) {
 		{"OIDC http issuer", map[string]string{"oidc_enabled": "on", "oidc_issuer": "http://idp.example.com", "oidc_client_id": "c", "oidc_client_secret": "s"}, "must start with https://"},
 		{"OIDC without secret", map[string]string{"oidc_enabled": "on", "oidc_issuer": "https://idp.example.com", "oidc_client_id": "c"}, "Enter the client secret"},
 		{"OIDC without openid scope", map[string]string{"oidc_enabled": "on", "oidc_issuer": "https://idp.example.com", "oidc_client_id": "c", "oidc_client_secret": "s", "oidc_scopes": "profile"}, "must include"},
-		{"directory sync with other IdP", map[string]string{"oidc_enabled": "on", "oidc_issuer": "https://keycloak.example.com/realms/x", "oidc_client_id": "c", "oidc_client_secret": "s", "directory_sync_enabled": "on"}, "only with Microsoft Entra ID"},
 		{"SMTP port", map[string]string{"smtp_host": "smtp.example.com", "smtp_from": "a@example.com", "smtp_port": "99999"}, "port number between 1 and 65535"},
 		{"SMTP security", map[string]string{"smtp_security": "ssl"}, "Choose STARTTLS, TLS or none."},
 		{"SMTP without sender", map[string]string{"smtp_host": "smtp.example.com"}, "Enter the sender address"},
@@ -233,7 +218,7 @@ func TestAdminSettingsValidation(t *testing.T) {
 			}
 			mustContain(t, r.Body, "Please correct the highlighted", `aria-invalid="true"`, adminEscape(tt.want))
 			for k, v := range tt.change {
-				if k != "oidc_enabled" && k != "directory_sync_enabled" && k != "smtp_security" && strings.TrimSpace(v) != "" {
+				if k != "oidc_enabled" && k != "smtp_security" && strings.TrimSpace(v) != "" {
 					mustContain(t, r.Body, `value="`+adminEscape(v)+`"`) // entered values are kept
 				}
 			}
@@ -469,7 +454,7 @@ func TestAdminGroups(t *testing.T) {
 	}
 	editURL := r.Location
 	r = e.get(editURL)
-	mustContain(t, r.Body, "Group “Service Desk” added.", "0c6d-guid", `value="viewer" checked`, "E-Mail", "never", "No known members yet")
+	mustContain(t, r.Body, "Group “Service Desk” added.", "0c6d-guid", `value="viewer" checked`, "E-Mail", "No known members yet")
 
 	// Adding it again does not create a duplicate.
 	r = e.post("/admin/groups", url.Values{"external_id": {"0c6d-guid"}})
@@ -520,13 +505,6 @@ func TestAdminGroups(t *testing.T) {
 	}
 	mustContain(t, e.get("/admin/groups").Body, "No group has a role or services yet", "Other groups (2)")
 
-	// Directory features are off.
-	r = adminFollow(t, e, e.post("/admin/groups/sync", nil))
-	mustContain(t, r.Body, "Directory sync is not enabled")
-	if r := e.get("/admin/groups/search?q=desk"); r.Status != http.StatusSeeOther {
-		t.Fatalf("search without directory sync: %d", r.Status)
-	}
-
 	// Delete.
 	mustContain(t, adminFollow(t, e, e.post(editURL+"/delete", nil)).Body, "Group “Desk” deleted.")
 	if _, err := e.Store.GetGroup(ctx, g.ID); !errors.Is(err, store.ErrNotFound) {
@@ -543,8 +521,12 @@ func TestAdminUsers(t *testing.T) {
 	ctx := context.Background()
 	u, _ := e.Store.UpsertOIDCUser(ctx, store.OIDCUser{Subject: "s1", Email: "sso@example.com", Name: "Sam SSO"})
 	_ = e.Store.SetUserGroups(ctx, u.ID, []store.GroupRef{{ExternalID: "ops", Name: "Ops Team"}})
-	g, _ := e.Store.CreateGroup(ctx, "dir-group", "Directory Group")
-	if err := e.Store.SyncGroupMembers(ctx, g.ID, "", []store.DirectoryUser{{DirectoryID: "d1", Email: "dora@example.com", Name: "Dora Directory"}}); err != nil {
+	dora, _, err := e.Store.CreateSCIMUser(ctx, store.SCIMUserData{UserName: "dora@example.com", Email: "dora@example.com", Name: "Dora Directory", Active: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, _, err := e.Store.CreateSCIMGroup(ctx, store.SCIMGroupData{DisplayName: "Directory Group", ExternalID: "dir-group", Members: []int64{dora.ID}})
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -554,11 +536,11 @@ func TestAdminUsers(t *testing.T) {
 	}
 	mustContain(t, r.Body, "Administrator", "Local administrator",
 		"Sam SSO", "sso@example.com", "Ops Team", ">SSO<",
-		"Dora Directory", "Directory Group", "Directory only (never signed in)", "never",
+		"Dora Directory", "Directory Group", "Never signed in", "never",
 		"come from the identity provider")
 
 	// SSO and directory users can be removed, the local administrator not.
-	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "next sign-in or the next directory sync")
+	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "next sign-in or when they are provisioned again")
 	if n := strings.Count(r.Body, `/delete"`); n != 2 {
 		t.Errorf("%d remove buttons, want 2 (not for the local administrator)", n)
 	}
@@ -619,43 +601,6 @@ func TestAdminNotifications(t *testing.T) {
 	if strings.Contains(r.Body, "E-mail is not configured") {
 		t.Error("SMTP note shown although SMTP is configured")
 	}
-}
-
-// TestAdminDirectoryTemplates renders the pages that are only reachable with
-// directory sync enabled (which needs Microsoft Graph) with sample data.
-func TestAdminDirectoryTemplates(t *testing.T) {
-	s := &Server{Deps: Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
-	s.loc.Store(time.UTC)
-	if err := s.loadTemplates(); err != nil {
-		t.Fatal(err)
-	}
-	render := func(name string, data any) string {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/admin/x", nil)
-		req = req.WithContext(auth.WithCSRFToken(req.Context(), "tok-123"))
-		s.render(rec, req, name, "Test", data)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("render %s: %d %s", name, rec.Code, rec.Body)
-		}
-		return rec.Body.String()
-	}
-
-	body := render("admin_group_search", &adminGroupSearchData{Query: "IT", Searched: true, Results: []adminGroupResult{
-		{Group: directory.Group{ID: "guid-1", Name: "IT Operations", Description: "Ops team"}, ExistingID: 7},
-		{Group: directory.Group{ID: "guid-2", Name: "IT Security"}},
-	}})
-	mustContain(t, body, `href="/admin/groups/7"`, "Already added", "Ops team", `name="external_id" value="guid-2"`,
-		`name="name" value="IT Security"`, `name="csrf_token" value="tok-123"`)
-	body = render("admin_group_search", &adminGroupSearchData{Query: "x", Searched: true, Error: "The search failed: boom"})
-	mustContain(t, body, "The search failed: boom")
-	body = render("admin_group_search", &adminGroupSearchData{Query: "zzz", Searched: true})
-	mustContain(t, body, "No groups found")
-
-	body = render("admin_groups", &adminGroupsData{DirectoryEnabled: true, Errors: adminFormErrors{}})
-	mustContain(t, body, `action="/admin/groups/search"`, `action="/admin/groups/sync"`, "Sync now")
-	body = render("admin_settings", &adminSettingsData{St: store.DefaultSettings(), Sync: adminSyncData{DirectoryEnabled: true}, Errors: adminFormErrors{}})
-	mustContain(t, body, `form="directory-sync-form"`, `id="directory-sync-form"`, `name="next" value="/admin/settings"`)
 }
 
 // TestAdminLengthLimitsCountCharacters: length limits count characters like

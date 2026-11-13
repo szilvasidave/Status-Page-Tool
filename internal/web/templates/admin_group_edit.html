@@ -2,12 +2,18 @@
 {{with .Data}}
 <a class="back-link" href="/admin/groups">← Groups</a>
 <h1>{{.Group.DisplayName}}</h1>
+{{- if .Group.Provisioned}}
+<p class="lead"><span class="badge">Provisioned</span> The members of this group come from Microsoft Entra ID (SCIM
+  provisioning); sign-ins do not change them.</p>
+{{- end}}
 
 <div class="card card-body">
   <dl class="facts">
     <div><dt>Group ID</dt><dd><code>{{.Group.ExternalID}}</code></dd></div>
     <div><dt>Members</dt><dd>{{.Group.MemberCount}}</dd></div>
-    <div><dt>Last synchronised</dt><dd>{{with .Group.LastSyncedAt}}<time datetime="{{isoTime .}}">{{fmtTime .}}</time>{{else}}<span class="muted">never</span>{{end}}</dd></div>
+    {{- with .Group.LastSyncedAt}}
+    <div><dt>Last provisioning change</dt><dd><time datetime="{{isoTime .}}">{{fmtTime .}}</time></dd></div>
+    {{- end}}
     <div><dt>Added</dt><dd><time datetime="{{isoTime .Group.CreatedAt}}">{{fmtDate .Group.CreatedAt}}</time></dd></div>
   </dl>
 </div>
@@ -18,7 +24,7 @@
   <div class="field">
     <label for="name">Display name</label>
     <input id="name" name="name" type="text" value="{{.Group.Name}}" maxlength="200" placeholder="{{.Group.ExternalID}}"{{if .Errors.name}} aria-invalid="true"{{end}} aria-describedby="name-help">
-    <span class="help" id="name-help">Shown in the admin pages. Empty shows the group ID. A directory sync replaces it with the name from the directory.</span>
+    <span class="help" id="name-help">Shown in the admin pages. Empty shows the group ID.{{if .Group.Provisioned}} Provisioning replaces it with the name from Microsoft Entra ID.{{end}}</span>
     {{template "field-error" .Errors.name}}
   </div>
 
@@ -64,7 +70,7 @@
       <tbody>
         {{- range .Members}}
         <tr>
-          <td>{{.DisplayName}}</td>
+          <td>{{.DisplayName}}{{if not .Active}} <span class="badge badge-muted">Deactivated</span>{{end}}</td>
           <td class="cell-wrap">{{with .Email}}{{.}}{{else}}<span class="muted">none</span>{{end}}</td>
           <td class="nowrap">{{with .LastLoginAt}}<time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}<span class="muted">never</span>{{end}}</td>
         </tr>
@@ -73,14 +79,15 @@
     </table>
   </div>
   {{- else}}
-  <p class="notice">No known members yet. Members are recorded when they sign in with single sign-on, or by the directory sync if it is enabled.</p>
+  <p class="notice">No known members yet. Members are recorded when they sign in with single sign-on, or when Microsoft Entra ID
+    provisions the group.</p>
   {{- end}}
 </section>
 
 <section class="danger-zone" aria-labelledby="delete-group">
   <h2 id="delete-group">Delete group</h2>
   <p class="muted">Removes the role and the service assignments of this group. If members still have the group in their
-    sign-in claim, it is created again (without a role) at their next sign-in.</p>
+    sign-in claim, or Microsoft Entra ID provisions it again, it is created again (without a role).</p>
   <form method="post" action="/admin/groups/{{.Group.ID}}/delete" data-confirm="Delete the group “{{.Group.DisplayName}}”? Its role and service assignments are removed.">
     {{template "csrf" $}}
     <button type="submit" class="btn-danger">Delete group</button>
