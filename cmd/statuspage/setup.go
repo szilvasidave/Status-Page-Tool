@@ -23,6 +23,9 @@ const setupUsage = `statuspage setup [-data DIR] (-params-file FILE | -db sqlite
 
 Checks the database connection, creates the tables and writes config.json.
 With -check-only only the connection is tested and nothing is written.
+Running it again (e.g. for a new database password) keeps the secret key, the
+TLS and log settings and, unless -listen is given, the listen address.
+Exit code 0 on success, 1 on error, 2 for an invalid command line.
 
 Examples:
   statuspage setup -db sqlite
@@ -47,7 +50,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 	pgUser := fs.String("pg-user", "statuspage", "PostgreSQL user")
 	pgPassword := fs.String("pg-password", "", "PostgreSQL password (default: env STATUSPAGE_PG_PASSWORD)")
 	pgSSLMode := fs.String("pg-sslmode", "prefer", "PostgreSQL SSL mode: "+strings.Join(setup.SSLModes, ", "))
-	listen := fs.String("listen", config.DefaultListen, "address the web server listens on, e.g. :8080")
+	listen := fs.String("listen", "", "address the web server listens on, e.g. :9090 (default: the address in an existing config.json, otherwise "+config.DefaultListen+")")
 	checkOnly := fs.Bool("check-only", false, "only test the settings, write nothing")
 	resultFile := fs.String("result-file", "", `write "OK" or the error message to this file (used by the installer)`)
 	if err := parseFlags(fs, args); err != nil {

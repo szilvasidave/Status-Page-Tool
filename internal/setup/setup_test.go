@@ -139,20 +139,35 @@ func TestApplySQLite(t *testing.T) {
 	}
 	assertMigrated(t, loaded, dataDir)
 
-	// Re-running keeps the secret key and the TLS settings.
-	loaded.TLSCert, loaded.TLSKey = "cert.pem", "key.pem"
+	// Re-running (e.g. for a new database password) keeps the secret key,
+	// the TLS and log settings and the listen address, also when the file
+	// was saved with a byte order mark by Notepad. The installer's
+	// setup-mode hint is removed.
+	loaded.TLSCert, loaded.TLSKey, loaded.LogLevel = "cert.pem", "key.pem", "debug"
 	if err := loaded.Save(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(config.Path(dataDir))
+	if err := os.WriteFile(config.Path(dataDir), append([]byte("\xef\xbb\xbf"), b...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hint := filepath.Join(dataDir, config.SetupListenFile)
+	if err := os.WriteFile(hint, []byte(":9191"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg2, err := Apply(ctx, dataDir, Params{Driver: "sqlite"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg2.SecretKey != cfg.SecretKey || cfg2.TLSCert != "cert.pem" || cfg2.TLSKey != "key.pem" {
-		t.Fatalf("secret key or TLS settings not kept: %+v", cfg2)
+	if cfg2.SecretKey != cfg.SecretKey || cfg2.TLSCert != "cert.pem" || cfg2.TLSKey != "key.pem" || cfg2.LogLevel != "debug" || cfg2.Listen != ":9090" {
+		t.Fatalf("settings not kept: %+v", cfg2)
 	}
-	if cfg2.Listen != config.DefaultListen {
-		t.Fatalf("listen = %q", cfg2.Listen)
+	if _, err := os.Stat(hint); !os.IsNotExist(err) {
+		t.Fatalf("%s not removed: %v", config.SetupListenFile, err)
+	}
+	// An explicit listen address replaces the old one.
+	if cfg2, err = Apply(ctx, dataDir, Params{Driver: "sqlite", Listen: ":9092"}); err != nil || cfg2.Listen != ":9092" {
+		t.Fatalf("listen = %q, %v", cfg2.Listen, err)
 	}
 
 	// A damaged config file is reported, not overwritten.

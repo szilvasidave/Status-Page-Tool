@@ -1,10 +1,12 @@
 // Package config handles the small bootstrap configuration file (config.json)
 // that lives in the data directory. It only contains what is needed before the
-// database can be reached: listen address, database connection and the secret
-// key. Everything else is stored in the database and edited in the web UI.
+// database can be reached: listen address, optional TLS certificate, database
+// connection, secret key and log level. Everything else is stored in the
+// database and edited in the web UI.
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -43,10 +45,14 @@ type Config struct {
 	// are stored in the database (OIDC client secret, SMTP password) and
 	// short-lived cookies. Generated automatically.
 	SecretKey string `json:"secret_key"`
-	// Optional TLS certificate and key (PEM files). When both are set the
-	// server serves HTTPS directly.
+	// Optional TLS certificate and key (PEM files, absolute or relative to
+	// the data directory). When both are set the server serves HTTPS
+	// directly; setting only one of them is an error.
 	TLSCert string `json:"tls_cert,omitempty"`
 	TLSKey  string `json:"tls_key,omitempty"`
+	// LogLevel is debug, info (default), warn or error. The environment
+	// variable STATUSPAGE_LOG_LEVEL overrides it.
+	LogLevel string `json:"log_level,omitempty"`
 }
 
 // DefaultDataDir returns the platform specific default data directory:
@@ -89,7 +95,7 @@ func Load(dataDir string) (*Config, error) {
 		return nil, err
 	}
 	var c Config
-	if err := json.Unmarshal(b, &c); err != nil {
+	if err := json.Unmarshal(TrimBOM(b), &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", Path(dataDir), err)
 	}
 	if c.Listen == "" {
@@ -101,7 +107,16 @@ func Load(dataDir string) (*Config, error) {
 	if _, err := c.Key(); err != nil {
 		return nil, err
 	}
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		return nil, errors.New("config: tls_cert and tls_key must be set together (or both left empty)")
+	}
 	return &c, nil
+}
+
+// TrimBOM removes a UTF-8 byte order mark, which Notepad and Windows
+// PowerShell 5 write when saving a file as UTF-8.
+func TrimBOM(b []byte) []byte {
+	return bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
 }
 
 // Save writes the config atomically to dataDir with restrictive permissions.
@@ -134,10 +149,24 @@ func (c *Config) SQLitePath(dataDir string) string {
 	if c.DBDSN == "" {
 		return filepath.Join(dataDir, "statuspage.db")
 	}
-	if filepath.IsAbs(c.DBDSN) {
-		return c.DBDSN
+	return resolve(dataDir, c.DBDSN)
+}
+
+// TLSFiles returns the TLS certificate and key paths, resolved relative to
+// dataDir; both are empty when TLS is not configured.
+func (c *Config) TLSFiles(dataDir string) (cert, key string) {
+	if c.TLSCert == "" || c.TLSKey == "" {
+		return "", ""
 	}
-	return filepath.Join(dataDir, c.DBDSN)
+	return resolve(dataDir, c.TLSCert), resolve(dataDir, c.TLSKey)
+}
+
+// resolve returns p, or p relative to dataDir if it is not absolute.
+func resolve(dataDir, p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(dataDir, p)
 }
 
 // NewSecretKey generates a new random base64 encoded 32 byte key.
@@ -157,7 +186,7 @@ type PostgresParams struct {
 	Database string `json:"database"`
 	User     string `json:"user"`
 	Password string `json:"password"`
-	SSLMode  string `json:"sslmode"` // disable, require, verify-ca, verify-full
+	SSLMode  string `json:"sslmode"` // disable, allow, prefer, require, verify-ca, verify-full
 }
 
 // DSN builds a PostgreSQL connection URL with proper escaping.
@@ -187,3 +216,10 @@ func (p PostgresParams) DSN() string {
 // SetupTokenFile is the name of the file in the data directory that contains
 // the one-time setup token. It is deleted when the setup is complete.
 const SetupTokenFile = "setup-token.txt"
+
+// SetupListenFile is the name of an optional file in the data directory with
+// the listen address (e.g. ":9090") to use while the server runs in setup
+// mode. The Windows installer writes it when its database setup failed, so
+// that the web setup runs on the port chosen in the installer. It is deleted
+// when the setup is complete.
+const SetupListenFile = "setup-listen.txt"

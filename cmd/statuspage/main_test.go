@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kardianos/service"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
@@ -74,6 +79,66 @@ func TestSetupSQLite(t *testing.T) {
 	}
 	if cfg.Listen != ":9123" || cfg.DBDriver != config.DriverSQLite {
 		t.Fatalf("unexpected config %+v", cfg)
+	}
+
+	// Running setup again (e.g. for a new database password) without
+	// -listen keeps the listen address and the secret key.
+	code, _, errOut = runCLI(t, "setup", "-data", dir, "-db", "sqlite")
+	if code != 0 {
+		t.Fatalf("exit code %d: %s", code, errOut)
+	}
+	cfg2, err := config.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.Listen != ":9123" || cfg2.SecretKey != cfg.SecretKey {
+		t.Fatalf("setup without -listen changed the config: %+v", cfg2)
+	}
+
+	// An invalid command line exits with 2 and writes no result file.
+	if err := os.Remove(result); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ = runCLI(t, "setup", "-data", dir, "-db", "sqlite", "-bogus", "-result-file", result); code != 2 {
+		t.Fatalf("invalid flag: exit code %d", code)
+	}
+	if _, err := os.Stat(result); !os.IsNotExist(err) {
+		t.Fatalf("result file written for an invalid command line: %v", err)
+	}
+}
+
+// TestWaitUntilServing: "service start" reports success only when the status
+// page answers, and an error with the log file when the service stops.
+func TestWaitUntilServing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintln(w, "ok")
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	cfg := &config.Config{Listen: strings.TrimPrefix(srv.URL, "http://"), DBDriver: config.DriverSQLite, SecretKey: config.NewSecretKey()}
+	if err := cfg.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	running := func() (service.Status, error) { return service.StatusRunning, nil }
+	stopped := func() (service.Status, error) { return service.StatusStopped, nil }
+
+	if err := waitUntilServing(running, dir, 5*time.Second); err != nil {
+		t.Fatalf("answering server: %v", err)
+	}
+
+	srv.Close()
+	err := waitUntilServing(stopped, dir, 5*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "stopped right after starting") || !strings.Contains(err.Error(), filepath.Join(dir, logFileName)) {
+		t.Fatalf("stopped service: %v", err)
+	}
+	start := time.Now()
+	err = waitUntilServing(running, dir, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "does not answer at "+srv.URL) || time.Since(start) > 10*time.Second {
+		t.Fatalf("running service that does not answer: %v", err)
 	}
 }
 
@@ -159,12 +224,37 @@ func TestLogFile(t *testing.T) {
 
 func TestLogLevel(t *testing.T) {
 	for in, want := range map[string]slog.Level{"": slog.LevelInfo, "debug": slog.LevelDebug, "WARN": slog.LevelWarn, "error": slog.LevelError} {
-		if got, err := logLevel(in); err != nil || got != want {
+		if got, err := logLevel(in, "test"); err != nil || got != want {
 			t.Errorf("logLevel(%q) = %v, %v", in, got, err)
 		}
 	}
-	if _, err := logLevel("loud"); err == nil {
-		t.Error("expected an error for an invalid level")
+	if _, err := logLevel("loud", "log_level in config.json"); err == nil || !strings.Contains(err.Error(), `invalid log level "loud" in log_level in config.json`) {
+		t.Errorf("expected an error for an invalid level, got %v", err)
+	}
+}
+
+// TestLogLevelFromConfig: the Windows service does not see environment
+// variables set after the last reboot, so the level can be set in
+// config.json; the environment variable still overrides it.
+func TestLogLevelFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{DBDriver: config.DriverSQLite, SecretKey: config.NewSecretKey(), LogLevel: "debug"}
+	if err := cfg.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer slog.SetDefault(slog.Default())
+
+	t.Setenv("STATUSPAGE_LOG_LEVEL", "")
+	log, closeLog := newLogger(dir, false)
+	closeLog()
+	if !log.Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("log_level debug from config.json is not used")
+	}
+	t.Setenv("STATUSPAGE_LOG_LEVEL", "warn")
+	log, closeLog = newLogger(dir, false)
+	closeLog()
+	if log.Enabled(context.Background(), slog.LevelInfo) {
+		t.Error("STATUSPAGE_LOG_LEVEL does not override log_level")
 	}
 }
 

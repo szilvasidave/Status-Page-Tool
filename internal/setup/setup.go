@@ -43,7 +43,9 @@ type Params struct {
 	Driver     string                `json:"driver"`                // "sqlite" or "postgres"
 	SQLitePath string                `json:"sqlite_path,omitempty"` // optional; default <data>/statuspage.db
 	Postgres   config.PostgresParams `json:"postgres"`
-	Listen     string                `json:"listen,omitempty"` // default ":8080"
+	// Listen is the web server address. Empty keeps the address of an
+	// existing config.json, or ":8080" for a new one.
+	Listen string `json:"listen,omitempty"`
 }
 
 // normalized returns a copy of p with whitespace trimmed and defaults
@@ -146,12 +148,14 @@ func Check(ctx context.Context, dataDir string, p Params) error {
 
 // Apply checks p, creates or upgrades all tables and writes config.json in
 // dataDir. A new secret key is generated unless config.json already exists,
-// in which case its secret key and TLS settings are kept so that encrypted
-// settings stay readable. Returns the written configuration.
+// in which case its secret key, TLS and log level settings (and its listen
+// address, unless p.Listen is set) are kept, so that encrypted settings stay
+// readable. Returns the written configuration.
 func Apply(ctx context.Context, dataDir string, p Params) (*config.Config, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
+	keepListen := strings.TrimSpace(p.Listen) == ""
 	p = p.normalized()
 
 	old, err := existingConfig(dataDir)
@@ -163,7 +167,13 @@ func Apply(ctx context.Context, dataDir string, p Params) (*config.Config, error
 		if _, err := old.Key(); err == nil {
 			cfg.SecretKey = old.SecretKey
 		}
-		cfg.TLSCert, cfg.TLSKey = old.TLSCert, old.TLSKey
+		cfg.TLSCert, cfg.TLSKey, cfg.LogLevel = old.TLSCert, old.TLSKey, old.LogLevel
+		if keepListen && old.Listen != "" {
+			cfg.Listen = old.Listen
+		}
+	}
+	if err := config.EnsureDataDir(dataDir); err != nil {
+		return nil, err
 	}
 
 	var d *db.DB
@@ -197,6 +207,8 @@ func Apply(ctx context.Context, dataDir string, p Params) (*config.Config, error
 	if err := cfg.Save(dataDir); err != nil {
 		return nil, fmt.Errorf("could not write the configuration file %s: %v", config.Path(dataDir), pathErr(err))
 	}
+	// The installer's hint for setup mode is no longer needed.
+	_ = os.Remove(filepath.Join(dataDir, config.SetupListenFile))
 	return cfg, nil
 }
 
@@ -211,7 +223,7 @@ func existingConfig(dataDir string) (*config.Config, error) {
 		return nil, fmt.Errorf("could not read the existing configuration file %s: %v", path, pathErr(err))
 	}
 	var c config.Config
-	if err := json.Unmarshal(b, &c); err != nil {
+	if err := json.Unmarshal(config.TrimBOM(b), &c); err != nil {
 		return nil, fmt.Errorf("the existing configuration file %s is damaged (%v); fix or delete it and try again", path, err)
 	}
 	return &c, nil
