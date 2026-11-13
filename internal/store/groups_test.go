@@ -121,11 +121,16 @@ func TestSyncLargeGroupSQLite(t *testing.T) {
 	for i := range members {
 		members[i] = DirectoryUser{DirectoryID: fmt.Sprint("d-", i), Email: fmt.Sprintf("user%d@example.com", i), Name: fmt.Sprint("User ", i)}
 	}
-	check(t, s.SyncGroupMembers(ctx, g.ID, "", members))
+	// Compare with the first sync (which inserts every user) instead of a
+	// fixed limit, so the check holds on slow machines and with -race: with
+	// index use the re-sync is clearly faster, with table scans it was slower.
 	start := time.Now()
 	check(t, s.SyncGroupMembers(ctx, g.ID, "", members))
-	if d := time.Since(start); d > time.Second {
-		t.Errorf("re-synchronising %d members took %v", n, d)
+	first := time.Since(start)
+	start = time.Now()
+	check(t, s.SyncGroupMembers(ctx, g.ID, "", members))
+	if again := time.Since(start); again > first {
+		t.Errorf("re-synchronising %d members took %v, longer than the first sync (%v): e-mail lookups scan the users table", n, again, first)
 	}
 	got, err := s.GroupMembers(ctx, g.ID)
 	check(t, err)

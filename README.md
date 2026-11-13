@@ -523,7 +523,7 @@ statuspage version
 Exit codes: 0 on success, 1 on an error, 2 for an invalid command line
 (unknown command or option; `setup` then writes no result file).
 
-Example: `echo 'new-long-password' | statuspage reset-password -username admin -data /var/lib/statuspage`
+Example: `echo 'new-long-password' | statuspage reset-password -username it-admin -data /var/lib/statuspage`
 
 ## Security notes
 
