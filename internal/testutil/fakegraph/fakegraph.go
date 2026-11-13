@@ -4,10 +4,11 @@
 // The token endpoint (POST /{tenant}/oauth2/v2.0/token) checks the client
 // credentials request and answers like Entra ID (e.g. AADSTS7000215 for a
 // wrong client secret). The sendMail endpoint
-// (POST /v1.0/users/{sender}/sendMail) checks the bearer token, the sender
-// mailbox in the path and the JSON body: one recipient, a subject, an HTML
-// or text body and "saveToSentItems": false. Accepted messages are kept;
-// failures (throttling, access denied, …) can be injected.
+// (POST /v1.0/users/{sender}/sendMail, or /v1.0/users('{sender}')/sendMail,
+// which a sender that begins with "$" needs) checks the bearer token, the
+// sender mailbox in the path and the JSON body: one recipient, a subject, an
+// HTML or text body and "saveToSentItems": false. Accepted messages are
+// kept; failures (throttling, access denied, …) can be injected.
 //
 //	fg := fakegraph.Start(t) // also points internal/msgraph to the fake server
 //	// configure the application with the issuer fg.Issuer(), fg.ClientID,
@@ -39,7 +40,7 @@ import (
 
 // Message is an e-mail accepted by the fake server.
 type Message struct {
-	Sender      string // mailbox from the request path (/users/{sender}/sendMail)
+	Sender      string // mailbox from the request path (/users/{sender}/sendMail or /users('{sender}')/sendMail)
 	To          string // the only recipient
 	Subject     string
 	ContentType string // "HTML" or "Text"
@@ -134,6 +135,7 @@ func Start(t testing.TB) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /{tenant}/oauth2/v2.0/token", s.token)
 	mux.HandleFunc("POST /v1.0/users/{sender}/sendMail", s.sendMail)
+	mux.HandleFunc("POST /v1.0/{user}/sendMail", s.sendMail) // users('{sender}')
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("fakegraph: unexpected request %s %s", r.Method, r.URL)
 		graphError(w, Failure{Status: http.StatusBadRequest, Code: "BadRequest", Message: "Unsupported request."})
@@ -340,12 +342,19 @@ func (s *Server) sendMail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sender, problem := senderOf(r)
+	if problem != "" {
+		s.t.Errorf("fakegraph: invalid sendMail request: %s", problem)
+		graphError(w, Failure{Status: http.StatusBadRequest, Code: "BadRequest", Message: problem})
+		return
+	}
 	m, problem := s.parse(r)
 	if problem != "" {
 		s.t.Errorf("fakegraph: invalid sendMail request: %s", problem)
 		graphError(w, Failure{Status: http.StatusBadRequest, Code: "RequestBodyRead", Message: problem})
 		return
 	}
+	m.Sender = sender
 
 	// The answer: an unknown sender mailbox, an injected failure, an
 	// invalid recipient, the Respond function, else accepted.
@@ -386,10 +395,30 @@ func (s *Server) sendMail(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// parse checks the request and returns the message, or a description of
-// what is wrong with the request.
+// senderOf returns the sender mailbox of the request path, or a description
+// of what is wrong with the path: /users/{sender}, or the key syntax
+// /users('{sender}') with quotes doubled, which a sender that begins with
+// "$" needs (Microsoft Graph answers /users/$… with HTTP 400, as OData
+// reserves the "$" prefix).
+func senderOf(r *http.Request) (string, string) {
+	if sender := r.PathValue("sender"); sender != "" {
+		if strings.HasPrefix(sender, "$") {
+			return "", fmt.Sprintf("/users/%s: a sender that begins with $ must be addressed as /users('%s')", sender, sender)
+		}
+		return sender, ""
+	}
+	key, prefixed := strings.CutPrefix(r.PathValue("user"), "users('")
+	key, quoted := strings.CutSuffix(key, "')")
+	if !prefixed || !quoted {
+		return "", fmt.Sprintf("unsupported path segment %q, want users/{sender} or users('{sender}')", r.PathValue("user"))
+	}
+	return strings.ReplaceAll(key, "''", "'"), ""
+}
+
+// parse checks the request body and returns the message without its
+// sender, or a description of what is wrong with the body.
 func (s *Server) parse(r *http.Request) (Message, string) {
-	m := Message{Sender: r.PathValue("sender")}
+	var m Message
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
 		return m, fmt.Sprintf("Content-Type %q, want application/json", r.Header.Get("Content-Type"))
 	}

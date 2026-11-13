@@ -198,7 +198,7 @@ func TestGraphBatchFailure(t *testing.T) {
 			dead := httptest.NewServer(nil)
 			dead.Close()
 			msgraph.DefaultEndpoints = msgraph.Endpoints{Login: dead.URL, Graph: dead.URL} // restored by fakegraph
-		}, []string{"could not reach Microsoft Graph"}},
+		}, []string{"could not reach Microsoft Entra ID to get an access token"}},
 		{"not an Entra ID issuer", func(fg *fakegraph.Server, e *notifyEnv) {
 			e.changeSettings(func(st *store.Settings) { st.OIDCIssuer = "https://keycloak.example.com/realms/it" })
 		}, []string{"Microsoft Graph uses the app registration of the single sign-on settings: the issuer is not a Microsoft Entra ID issuer"}},

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -44,7 +45,11 @@ const (
 // cached and renewed shortly before it expires.
 type Client struct {
 	graphURL string
-	http     *http.Client
+	creds    *clientcredentials.Config
+	http     *http.Client // for the access token requests and Microsoft Graph
+
+	mu    sync.Mutex
+	token *oauth2.Token // the cached access token
 }
 
 // New creates a client for the Microsoft Entra ID tenant of the OIDC issuer
@@ -65,23 +70,43 @@ func New(issuer, clientID, clientSecret string) (*Client, error) {
 }
 
 func newClient(tokenURL, graphURL, clientID, clientSecret string) *Client {
-	cc := &clientcredentials.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		TokenURL:     tokenURL,
-		Scopes:       []string{scope},
-		AuthStyle:    oauth2.AuthStyleInParams,
+	return &Client{
+		graphURL: strings.TrimRight(graphURL, "/"),
+		creds: &clientcredentials.Config{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			TokenURL:     tokenURL,
+			Scopes:       []string{scope},
+			AuthStyle:    oauth2.AuthStyleInParams,
+		},
+		// Redirects are not followed: the client secret and the access
+		// token must not be sent anywhere else.
+		http: &http.Client{
+			Timeout:       timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
-	// Redirects are not followed: the client secret and the access token
-	// must not be sent anywhere else.
-	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	// The token requests use their own client with a timeout; the context
-	// only passes that client to the token source.
-	tokenClient := &http.Client{Timeout: timeout, CheckRedirect: noRedirect}
-	httpClient := cc.Client(context.WithValue(context.Background(), oauth2.HTTPClient, tokenClient))
-	httpClient.Timeout = timeout
-	httpClient.CheckRedirect = noRedirect
-	return &Client{graphURL: strings.TrimRight(graphURL, "/"), http: httpClient}
+}
+
+// accessToken returns the cached access token, or gets a new one from
+// Microsoft Entra ID if it expires within 10 seconds. The token request uses
+// ctx, so that it ends when the caller gives up (e.g. at shutdown); the
+// client of oauth2.Transport would request it without ctx.
+func (c *Client) accessToken(ctx context.Context) (*oauth2.Token, error) {
+	c.mu.Lock()
+	tok := c.token
+	c.mu.Unlock()
+	if tok.Valid() {
+		return tok, nil
+	}
+	tok, err := c.creds.Token(context.WithValue(ctx, oauth2.HTTPClient, c.http))
+	if err != nil {
+		return nil, tokenError(ctx, err)
+	}
+	c.mu.Lock()
+	c.token = tok
+	c.mu.Unlock()
+	return tok, nil
 }
 
 // ErrNotEntra is returned by Tenant and New for an issuer that is not one of
@@ -152,11 +177,11 @@ type (
 )
 
 // SendMail sends m from the mailbox sender (its e-mail address, user
-// principal name or object ID) with POST /users/{sender}/sendMail, without
-// keeping a copy in its Sent Items. The app registration needs the
-// application permission Mail.Send. nil means that Microsoft Graph accepted
-// the e-mail for delivery (HTTP 202); an error response of Microsoft Graph
-// is returned as *Error.
+// principal name or object ID) with POST /users/{sender}/sendMail (see
+// userPath), without keeping a copy in its Sent Items. The app registration
+// needs the application permission Mail.Send. nil means that Microsoft Graph
+// accepted the e-mail for delivery (HTTP 202); an error response of
+// Microsoft Graph is returned as *Error.
 func (c *Client) SendMail(ctx context.Context, sender string, m Mail) error {
 	body := itemBody{ContentType: "HTML", Content: m.HTML}
 	if m.HTML == "" {
@@ -167,7 +192,18 @@ func (c *Client) SendMail(ctx context.Context, sender string, m Mail) error {
 		Body:         body,
 		ToRecipients: []recipient{{EmailAddress: emailAddress{Address: m.To}}},
 	}}
-	return c.post(ctx, "/v1.0/users/"+url.PathEscape(sender)+"/sendMail", req)
+	return c.post(ctx, "/v1.0"+userPath(sender)+"/sendMail", req)
+}
+
+// userPath returns the path of a user or mailbox: /users/{id}, path-escaped.
+// An id that begins with "$" is written /users('{id}') (a quote in it
+// doubled): Microsoft Graph answers /users/$… with HTTP 400 because OData
+// reserves the "$" prefix (see "Get a user" on Microsoft Learn).
+func userPath(id string) string {
+	if strings.HasPrefix(id, "$") {
+		return "/users('" + url.PathEscape(strings.ReplaceAll(id, "'", "''")) + "')"
+	}
+	return "/users/" + url.PathEscape(id)
 }
 
 // post sends v as JSON. A 2xx response is success; its body is ignored.
@@ -182,6 +218,11 @@ func (c *Client) post(ctx context.Context, path string, v any) error {
 	if err != nil {
 		return err
 	}
+	tok, err := c.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	tok.SetAuthHeader(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
@@ -249,12 +290,32 @@ func retryAfter(header string, now time.Time) time.Duration {
 	return 0
 }
 
-// requestError makes transport and token errors readable. A cancelled ctx
-// is returned as is.
+// requestError makes a transport error of a Microsoft Graph request
+// readable. A cancelled ctx is returned as is.
 func requestError(ctx context.Context, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			return fmt.Errorf("Microsoft Graph did not respond in time: %w", ctxErr)
+		}
+		return ctxErr
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if ue.Timeout() {
+			return fmt.Errorf("Microsoft Graph did not respond within %s", timeout)
+		}
+		err = ue.Err
+	}
+	return fmt.Errorf("could not reach Microsoft Graph: %w", err)
+}
+
+// tokenError makes an error of the access token request to Microsoft Entra
+// ID readable, so that it is not mistaken for a problem with Microsoft
+// Graph. A cancelled ctx is returned as is.
+func tokenError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			return fmt.Errorf("Microsoft Entra ID did not respond in time to the access token request: %w", ctxErr)
 		}
 		return ctxErr
 	}
@@ -275,11 +336,11 @@ func requestError(ctx context.Context, err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
 		if ue.Timeout() {
-			return fmt.Errorf("Microsoft Graph did not respond within %s", timeout)
+			return fmt.Errorf("Microsoft Entra ID did not respond within %s to the access token request", timeout)
 		}
-		err = ue.Err
+		return fmt.Errorf("could not reach Microsoft Entra ID to get an access token: %w", ue.Err)
 	}
-	return fmt.Errorf("could not reach Microsoft Graph: %w", err)
+	return fmt.Errorf("could not get an access token from Microsoft Entra ID: %w", err)
 }
 
 // entraDescription shortens the error description of Entra ID, e.g.

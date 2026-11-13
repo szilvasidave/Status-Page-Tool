@@ -237,8 +237,9 @@ func TestUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The access token is requested first.
 	err = c.SendMail(context.Background(), "status@contoso.example", msgraph.Mail{To: "a@contoso.example", HTML: "x"})
-	if err == nil || !strings.Contains(err.Error(), "could not reach Microsoft Graph") {
+	if err == nil || !strings.HasPrefix(err.Error(), "could not reach Microsoft Entra ID to get an access token: ") {
 		t.Errorf("error = %v", err)
 	}
 }
