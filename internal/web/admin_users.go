@@ -34,10 +34,13 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "admin_users", "Users", rows)
 }
 
-// handleUserDelete removes a single sign-on or provisioned user with the
-// user's group memberships and sessions, e.g. someone who left the company
-// or changed teams and should no longer be notified. The user is created
-// again at the next sign-in or when provisioning creates them again.
+// handleUserDelete removes a single sign-on user with the user's group
+// memberships and sessions, e.g. someone who left the company or changed
+// teams and should no longer be notified. The user is created again at the
+// next sign-in. Provisioned users are not removed here: Microsoft Entra ID
+// deactivates and deletes them, and one removed here would come back at the
+// next sign-in without the memberships of provisioned groups, which Entra ID
+// sends again only when provisioning is restarted.
 func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.pathID(w, r)
 	if !ok {
@@ -45,6 +48,11 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	u, err := s.Store.GetUser(ctx, id)
+	if err == nil && u.Provisioned {
+		s.redirectWithFlash(w, r, "/admin/users", "error", "“"+u.DisplayName()+"” is provisioned by Microsoft Entra ID and "+
+			"cannot be removed here: Entra ID deactivates the user when they are disabled, deleted or unassigned there.")
+		return
+	}
 	if err == nil {
 		err = s.Store.DeleteUser(ctx, id)
 	}

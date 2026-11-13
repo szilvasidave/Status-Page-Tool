@@ -52,7 +52,7 @@ func TestCommands(t *testing.T) {
 		t.Fatalf("reset-password: %d %q", code, errOut)
 	}
 	code, _, errOut := runCLI(t, "reset-password", "-username", "admin", "-data", t.TempDir())
-	if code != 1 || !strings.Contains(errOut, "not configured yet") {
+	if code != 1 || !strings.Contains(errOut, "config.json not found: pass the data directory of the status page with -data DIR") {
 		t.Fatalf("reset-password without config: %d %q", code, errOut)
 	}
 }

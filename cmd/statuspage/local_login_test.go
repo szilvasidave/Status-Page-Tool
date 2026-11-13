@@ -34,7 +34,11 @@ func TestLocalLoginCommandLine(t *testing.T) {
 	if code, _, errOut := runCLI(t, "local-login", "-h"); code != 0 || !strings.Contains(errOut, "always works") {
 		t.Errorf("-h: %d %q", code, errOut)
 	}
-	if code, _, errOut := runCLI(t, "local-login", "status", "-data", t.TempDir()); code != 1 || !strings.Contains(errOut, "not configured yet") {
+	// Without a configuration (usually: the wrong or no -data), the error
+	// names the file it looked for and the -data option.
+	dir := t.TempDir()
+	if code, _, errOut := runCLI(t, "local-login", "status", "-data", dir); code != 1 ||
+		!strings.Contains(errOut, filepath.Join(dir, "config.json")+" not found: pass the data directory of the status page with -data DIR") {
 		t.Errorf("without configuration: %d %q", code, errOut)
 	}
 }

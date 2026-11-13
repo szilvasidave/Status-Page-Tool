@@ -52,7 +52,7 @@
     <div class="checkbox-list">
       {{- range .Groups}}
       <label class="checkbox"><input type="checkbox" name="groups" value="{{.ID}}"{{if containsID $ids .ID}} checked{{end}}>
-        <span>{{.DisplayName}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
+        <span>{{.DisplayName}}{{if .Provisioned}} <span class="badge">Provisioned</span>{{end}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
       {{- end}}
     </div>
     {{- else if not .Other}}
@@ -71,7 +71,8 @@
     </details>
     {{- end}}
     <p class="help" id="groups-help">Members of these groups are e-mailed about incidents and maintenance of this service. Groups appear
-      automatically after their members sign in, or can be added on the <a href="/admin/groups">Groups</a> page.</p>
+      after their members sign in or when Microsoft Entra ID provisions them, or can be added on the
+      <a href="/admin/groups">Groups</a> page.</p>
   </fieldset>
   <div class="form-actions">
     <button type="submit" class="btn-primary">{{if .IsNew}}Create service{{else}}Save service{{end}}</button>

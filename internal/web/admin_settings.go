@@ -4,7 +4,7 @@ package web
 //
 //	admin_settings_general.go  General (site name, base URL, time zone, public access)
 //	admin_settings_sso.go      Single sign-on (OpenID Connect)
-//	admin_settings_sync.go     Group members from the identity provider
+//	admin_settings_sync.go     Users and groups from Microsoft Entra ID (SCIM provisioning)
 //	admin_settings_mail.go     E-mail delivery (+ the test e-mail)
 //
 // with the matching template partials in templates/partials/settings_*.html.

@@ -23,7 +23,7 @@
   {{template "csrf" $}}
   <div class="field">
     <label for="name">Display name</label>
-    <input id="name" name="name" type="text" value="{{.Group.Name}}" maxlength="200" placeholder="{{.Group.ExternalID}}"{{if .Errors.name}} aria-invalid="true"{{end}} aria-describedby="name-help">
+    <input id="name" name="name" type="text" value="{{.Group.Name}}" maxlength="256" placeholder="{{.Group.ExternalID}}"{{if .Errors.name}} aria-invalid="true"{{end}} aria-describedby="name-help">
     <span class="help" id="name-help">Shown in the admin pages. Empty shows the group ID.{{if .Group.Provisioned}} Provisioning replaces it with the name from Microsoft Entra ID.{{end}}</span>
     {{template "field-error" .Errors.name}}
   </div>
@@ -78,6 +78,9 @@
       </tbody>
     </table>
   </div>
+  {{- else if .Group.Provisioned}}
+  <p class="notice">No members yet. Microsoft Entra ID provisions the direct members of this group (changes arrive about every
+    40 minutes; members of nested groups are not provisioned).</p>
   {{- else}}
   <p class="notice">No known members yet. Members are recorded when they sign in with single sign-on, or when Microsoft Entra ID
     provisions the group.</p>

@@ -35,15 +35,18 @@
       <p class="muted">No token – provisioning is off.</p>
       {{- end}}
       <div class="row">
-        <button type="submit" form="scim-token-form">{{if .Sync.Enabled}}Generate new token{{else}}Generate token{{end}}</button>
+        <button type="submit" form="scim-token-form" aria-describedby="scim_token_help">{{if .Sync.Enabled}}Generate new token{{else}}Generate token{{end}}</button>
         {{- if .Sync.Enabled}}
-        <button type="submit" form="scim-off-form" class="btn-danger">Turn off provisioning</button>
+        <button type="submit" form="scim-off-form" class="btn-danger" aria-describedby="scim_token_help">Turn off provisioning</button>
         {{- end}}
       </div>
-      {{- if .Sync.Enabled}}
-      <span class="help">A new token replaces the current one at once. Turning provisioning off deletes the token; sign-ins
-        then update the members of all groups again.</span>
-      {{- end}}
+      <span class="help" id="scim_token_help">
+        {{- if .Sync.Enabled}}A new token replaces the current one at once. Turning provisioning off deletes the token; sign-ins
+        then update the members of all groups again. Save your changes first: these buttons reload the page with the saved
+        settings.
+        {{- else}}Save your changes first: generating a token reloads the page with the saved settings. If provisioning was on
+        before, enter the new token in Microsoft Entra ID and then use <em>Restart provisioning</em> there, so that it sends
+        all users, groups and members again.{{end}}</span>
     </div>
   </fieldset>
 {{end}}
@@ -56,7 +59,7 @@
 </form>
 {{- if .D.Sync.Enabled}}
 <form id="scim-off-form" method="post" action="/admin/settings/scim-token/delete" class="inline"
-  data-confirm="Turn off provisioning? Microsoft Entra ID can then no longer change users and groups, and sign-ins update the members of all groups again.">
+  data-confirm="Turn off provisioning? Microsoft Entra ID can then no longer change users and groups, and sign-ins update the members of all groups again. To turn it on again later, generate a new token and use Restart provisioning in Microsoft Entra ID.">
   {{template "csrf" .P}}
 </form>
 {{- end}}

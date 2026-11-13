@@ -71,7 +71,7 @@
         </div>
         <div class="field">
           <label for="name">Display name <span class="muted">(optional)</span></label>
-          <input id="name" name="name" type="text" value="{{.Name}}" maxlength="200"{{if .Errors.name}} aria-invalid="true"{{end}}>
+          <input id="name" name="name" type="text" value="{{.Name}}" maxlength="256"{{if .Errors.name}} aria-invalid="true"{{end}}>
           {{template "field-error" .Errors.name}}
         </div>
         <div class="form-actions"><button type="submit" class="btn-primary">Add group</button></div>

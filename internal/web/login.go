@@ -19,10 +19,12 @@ type loginData struct {
 }
 
 // Messages of the sign-in page while sign-in with the local administrator
-// account is turned off.
+// account is turned off. The page is public, so it names the data directory
+// only in general; Admin → Settings shows the exact command for the server.
 const (
 	loginLocalOff = "Sign-in with the local administrator account is turned off. Please sign in with single sign-on. " +
-		"If single sign-on is unavailable, an administrator can turn the local sign-in on again on the server with the command “statuspage local-login enable”."
+		"If single sign-on is unavailable, an administrator can turn the local sign-in on again on the server with the command " +
+		"“statuspage local-login enable -data <data directory>”."
 	loginLocalSignedOut = "Sign-in with the local administrator account has been turned off, so you were signed out. " +
 		"Sign in with single sign-on."
 )

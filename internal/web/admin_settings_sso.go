@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
+	"runtime"
 	"strings"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
@@ -16,17 +18,37 @@ import (
 
 // adminSSOData is the view data of the single sign-on section.
 type adminSSOData struct {
-	CallbackURL string
-	HasSecret   bool   // a client secret is stored
-	newSecret   string // secret entered in a form that failed validation
+	CallbackURL       string
+	HasSecret         bool   // a client secret is stored
+	LocalLoginCommand string // turns the local sign-in on again on this server
+	newSecret         string // secret entered in a form that failed validation
 }
 
 func (s *Server) adminSSOView(r *http.Request, cur *store.Settings, d *adminSettingsData) {
 	d.SSO.CallbackURL = auth.CallbackURL(r, d.St.BaseURL)
 	d.SSO.HasSecret = cur.OIDCClientSecret != ""
+	exe, _ := os.Executable()
+	d.SSO.LocalLoginCommand = localLoginCommand(runtime.GOOS, exe, s.DataDir)
 	// Show a newly entered secret again so it need not be retyped; the
 	// stored secret is never sent to the browser.
 	d.St.OIDCClientSecret = d.SSO.newSecret
+}
+
+// localLoginCommand returns the command that turns the sign-in with the
+// local administrator account on again on this server: with its data
+// directory and, on Windows, whose installer does not put the program folder
+// on the PATH, with the path of the executable. Only administrators see it;
+// the public sign-in page shows the general form.
+func localLoginCommand(goos, exe, dataDir string) string {
+	cmd := "statuspage"
+	if goos == "windows" && exe != "" {
+		cmd = `"` + exe + `"`
+	}
+	cmd += " local-login enable"
+	if dataDir != "" {
+		cmd += ` -data "` + dataDir + `"`
+	}
+	return cmd
 }
 
 func (s *Server) adminSSOSave(r *http.Request, cur, st *store.Settings, d *adminSettingsData) {
@@ -51,8 +73,10 @@ func (s *Server) adminSSOSave(r *http.Request, cur, st *store.Settings, d *admin
 		st.OIDCButtonLabel = store.DefaultSettings().OIDCButtonLabel
 	}
 	s.adminLocalLoginSave(r, st, d)
-	// The OIDC fields are hidden while single sign-on is off, so they are
-	// only checked when it is enabled.
+	// The fields are only checked while sign-in is enabled. The issuer,
+	// client ID and client secret are always shown, because e-mail with
+	// Microsoft Graph uses them, too (adminGraphAppProblem checks them for
+	// it); the other fields are hidden while sign-in is off.
 	if !st.OIDCEnabled {
 		return
 	}

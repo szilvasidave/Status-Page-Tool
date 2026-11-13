@@ -546,15 +546,27 @@ func TestAdminUsers(t *testing.T) {
 		"Dora Directory", "Directory Group", "Never signed in", "never",
 		"come from the identity provider")
 
-	// SSO and directory users can be removed, the local administrator not.
-	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "next sign-in or when they are provisioned again")
-	if n := strings.Count(r.Body, `/delete"`); n != 2 {
-		t.Errorf("%d remove buttons, want 2 (not for the local administrator)", n)
+	// SSO users can be removed. Provisioned users are managed in Entra ID
+	// (one removed here would come back at the next sign-in without the
+	// provisioned groups), and the local administrator cannot be removed.
+	doraRemove := `action="/admin/users/` + strconv.FormatInt(dora.ID, 10) + `/delete"`
+	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "they come back at their next sign-in.",
+		"Provisioned users are managed in Microsoft Entra ID", `<span class="small muted">Managed in Entra ID</span>`)
+	if n := strings.Count(r.Body, `/delete"`); n != 1 || strings.Contains(r.Body, doraRemove) {
+		t.Errorf("%d remove buttons, want 1 (not for the provisioned user or the local administrator)", n)
+	}
+	if strings.Contains(r.Body, "provisioned again") {
+		t.Error("the page still says that removed users come back when they are provisioned again")
 	}
 	r = adminFollow(t, e, e.post("/admin/users/"+strconv.FormatInt(u.ID, 10)+"/delete", nil))
 	mustContain(t, r.Body, "“Sam SSO” has been removed.", "Dora Directory")
 	if strings.Contains(r.Body, "sso@example.com") {
 		t.Error("the removed user is still listed")
+	}
+	r = adminFollow(t, e, e.post("/admin/users/"+strconv.FormatInt(dora.ID, 10)+"/delete", nil))
+	mustContain(t, r.Body, "flash-error", "“Dora Directory” is provisioned by Microsoft Entra ID and cannot be removed here")
+	if _, err := e.Store.GetUser(ctx, dora.ID); err != nil {
+		t.Errorf("the provisioned user was removed: %v", err)
 	}
 	if members, _ := e.Store.GroupMembers(ctx, g.ID); len(members) != 1 {
 		t.Errorf("directory group members: %+v", members)
@@ -573,6 +585,19 @@ func TestAdminUsers(t *testing.T) {
 	if users, _ := e.Store.ListUsers(ctx); len(users) != 2 {
 		t.Errorf("%d users left, want 2", len(users))
 	}
+
+	// Once provisioning is turned off, nobody is provisioned any more and
+	// the former provisioned user can be removed.
+	if err := e.Store.SetSCIMToken(ctx, "", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	r = e.get("/admin/users")
+	mustContain(t, r.Body, doraRemove)
+	if strings.Contains(r.Body, "Managed in Entra ID") {
+		t.Error("a user is still shown as managed in Entra ID after provisioning was turned off")
+	}
+	r = adminFollow(t, e, e.post("/admin/users/"+strconv.FormatInt(dora.ID, 10)+"/delete", nil))
+	mustContain(t, r.Body, "“Dora Directory” has been removed.")
 }
 
 func TestAdminNotifications(t *testing.T) {
@@ -637,15 +662,15 @@ func TestAdminLengthLimitsCountCharacters(t *testing.T) {
 	}
 	mustContain(t, r.Body, "The name is too long (at most 100 characters).")
 
-	r = e.post("/admin/groups", url.Values{"external_id": {o(255)}, "name": {o(200)}})
+	r = e.post("/admin/groups", url.Values{"external_id": {o(255)}, "name": {o(256)}})
 	if r.Status != http.StatusSeeOther {
-		t.Fatalf("add group with 200 characters: %d %s", r.Status, r.Body)
+		t.Fatalf("add group with a 256-character name: %d %s", r.Status, r.Body)
 	}
-	r = e.post("/admin/groups", url.Values{"external_id": {o(256)}, "name": {o(201)}})
+	r = e.post("/admin/groups", url.Values{"external_id": {o(256)}, "name": {o(257)}})
 	if r.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("group with too long fields: %d", r.Status)
 	}
-	mustContain(t, r.Body, "The group ID is too long", "The display name is too long")
+	mustContain(t, r.Body, "The group ID is too long", "The display name is too long (at most 256 characters).")
 }
 
 // TestAdminSettingsLocalhostBaseURL: a base URL that only works on the server

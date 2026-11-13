@@ -56,7 +56,8 @@ installer/             Inno Setup script → StatusPageSetup.exe
 SQL outside `internal/store` is limited to the migrations (`internal/db`),
 the connection and privilege checks of `internal/setup` and `tools/devseed`.
 The former `internal/directory` (a Microsoft Graph pull of group members) was
-removed; migration 2 deletes its setting.
+removed; migration 2 deletes its setting and adds the provisioning columns,
+migration 3 adds `users.email_from_user_name`.
 
 ## Key decisions
 
@@ -69,8 +70,11 @@ removed; migration 2 deletes its setting.
   UI. Everything else (site name, OIDC, e-mail, provisioning token, …) lives
   in the `settings` table and is edited at `/admin/settings`; `GetSettings`
   caches it for 10 seconds, so a change made by another process (the CLI) is
-  picked up within that time. Re-running `statuspage setup` only replaces the
-  database settings (and the listen address if `-listen` is given).
+  picked up within that time. The provisioning token settings are written
+  only by `SetSCIMToken`; `SaveSettings` skips them, so that saving an older
+  copy of the settings cannot bring back a replaced or deleted token.
+  Re-running `statuspage setup` only replaces the database settings (and the
+  listen address if `-listen` is given).
 * **Data directory**: `%ProgramData%\StatusPage` on Windows, `./data` next to
   the binary elsewhere; override with `-data` or `STATUSPAGE_DATA`. It holds
   secrets, so `config.EnsureDataDir` (used by `app.Run`, `setup.Apply` and
@@ -117,13 +121,24 @@ removed; migration 2 deletes its setting.
   turned off while the switch is off. While off: `auth.LoginLocal` returns
   `ErrLocalLoginOff` (POST /login → 403) before the limiter and the password
   check; `loadIdentity` ignores sessions of local admins; the sign-in page
-  shows only SSO (`?local=1` shows a note), and when it sees a browser that
-  holds a local-admin session it ends that session and explains why.
-  `statuspage local-login enable|disable|status` writes only that key
-  (`store.SetLocalLoginEnabled`) and deletes the local-admin sessions when
-  the value changes; a running server picks it up through the settings cache.
-  Turning it on again in the web page does not delete sessions, so a
-  local-admin session that is less than 12 hours old works again.
+  shows only SSO (`?local=1` shows a note with the general form of the
+  command; Admin → Settings shows the exact one, with the data directory
+  and, on Windows, the program path), and when it sees a browser that holds
+  a local-admin session it ends that session and explains why. While it is
+  off, Admin → Groups refuses to take the admin role from, or delete, the
+  only group that has it (`store.AdminGroupCount`; 422 on save, error flash
+  on delete). `statuspage local-login enable|disable|status` writes only
+  that key (`store.SetLocalLoginEnabled`) and deletes the local-admin
+  sessions when the value changes; a running server picks it up through the
+  settings cache. The settings page deletes them too when it turns the
+  switch on again (`store.DeleteLocalAdminSessions`, before saving), so no
+  session from before the switch-off comes back; while it is off they are
+  only ignored, so that the sign-in page can explain the sign-out to each
+  browser. `local-login status` also prints the user name of the local
+  administrator account, and `reset-password` names it when the given name
+  is unknown (`store.LocalAdminUsernames`), because the name can be changed
+  on `/account`. Without `config.json` in the data directory, the commands
+  ask for the `-data` of the service.
 * **Identity: users and groups from the IdP.** Two sources that work
   together:
   * **SCIM provisioning** (Microsoft Entra ID, `internal/scim`): Entra ID
@@ -133,18 +148,29 @@ removed; migration 2 deletes its setting.
     if they never signed in. Users: SCIM `userName` ↔ `users.principal_name`
     (as sent), `externalId` ↔ `scim_external_id`, e-mail = the work address,
     else the primary, else the first, else a `userName` that is an address
-    (not for guests' `#EXT#` names), lower-cased; name = `displayName`, else
-    `name.formatted`, else given + family name; `active` ↔ `active`. Every
-    SCIM write sets `provisioned`. `active = false` means no e-mails
+    (not for guests' `#EXT#` names), lower-cased; an address derived from
+    the `userName` follows its renames (`users.email_from_user_name`), one
+    that was sent does not; name = `displayName`, else `name.formatted`,
+    else given + family name; `active` ↔ `active`. Every SCIM write sets
+    `provisioned`. `active = false` means no e-mails
     (`RecipientsForServices` skips the user), no sign-in, and the user's
-    sessions are deleted; DELETE removes the user (memberships and sessions
-    cascade). POST /Users takes over a user who is not provisioned yet (e.g.
-    created by a sign-in), matched by user name (case-insensitive), then by
-    e-mail, instead of creating a duplicate. Groups: SCIM `id` =
-    `idp_groups.id`, `displayName` ↔ name, `externalId` ↔ `external_id` (the
-    Entra object ID, the same value as in the groups claim; GUIDs
-    lower-cased; a group without one gets a generated `scim:…` id), members ↔
-    `user_groups`. Every write sets `provisioned` and `last_synced_at`. POST
+    sessions are deleted; `loadIdentity` also refuses and deletes any later
+    session of a deactivated user (e.g. of a sign-in that finished right
+    after the deactivation). Activating a user again also clears
+    `oidc_subject` and `directory_id` and deletes the sessions: the next
+    sign-in links the user again by user name or e-mail (the user name may
+    belong to another person by now). DELETE removes the user (memberships
+    and sessions cascade). POST /Users takes over a user who is not
+    provisioned yet (e.g. created by a sign-in), matched by user name
+    (case-insensitive), then by e-mail, instead of creating a duplicate.
+    Groups: SCIM `id` = `idp_groups.id`, `displayName` ↔ name, `externalId`
+    ↔ `external_id` (the Entra object ID, the same value as in the groups
+    claim; GUIDs lower-cased; a group without one gets a generated `scim:…`
+    id, which the first real one replaces; provisioning never changes a real
+    one, because it decides who gets the group's role), members ↔
+    `user_groups`. Every write sets `provisioned` and `last_synced_at` (the
+    group page shows it only for provisioned groups: an upgraded
+    installation may still hold the time of the removed directory sync). POST
     /Groups takes over an existing group with the same external id (from
     sign-ins or added by an admin) with its role and services and replaces
     its members; DELETE removes all memberships and clears `provisioned` but
@@ -156,40 +182,57 @@ removed; migration 2 deletes its setting.
     names among provisioned users (409 `uniqueness`).
   * **Sign-in** (`internal/auth/oidc.go`, any OIDC provider): the user is
     matched by `oidc_subject`, then `directory_id` (Entra `oid`), then
-    `principal_name` (`preferred_username`, else `upn`; case-insensitive),
-    then e-mail; with an `oid`, name and e-mail matches only take rows
-    without a directory id. A sign-in never overwrites the name, e-mail or
-    principal name of a provisioned user and never takes a provisioned
-    user's e-mail address; a deactivated user is refused ("your account has
-    been deactivated by your organisation's user provisioning"). The
-    configured groups claim (default `groups`, from the ID token, else from
-    userinfo) replaces the user's memberships, except memberships of
-    provisioned groups, which only SCIM changes; unknown groups are created
-    (`ON CONFLICT DO NOTHING`). An absent claim means *no groups* (the IdP
-    must be configured to send it). Memberships stay unchanged only on Entra
-    group overage (`_claim_names`/`hasgroups`) or when the userinfo request
-    failed. A claim of an unexpected type is logged and treated as no
-    groups.
+    `principal_name` (`preferred_username`, else `upn`; case-insensitive;
+    only rows without a subject, or provisioned rows, because user names
+    are reused), then e-mail; with an `oid`, name and e-mail matches only
+    take rows without a directory id. A sign-in never overwrites the name,
+    e-mail or principal name of a provisioned user and never takes a
+    provisioned user's e-mail address; a deactivated user is refused ("your
+    account has been deactivated by your organisation's user
+    provisioning"). The configured groups claim (default `groups`, from the
+    ID token, else from userinfo) replaces the user's memberships, except
+    memberships of provisioned groups, which only SCIM changes; unknown
+    groups are created (`ON CONFLICT DO NOTHING`). An absent claim means *no
+    groups* (the IdP must be configured to send it). Memberships stay
+    unchanged only on Entra group overage (`_claim_names`/`hasgroups`) or
+    when the userinfo request failed. A claim of an unexpected type is
+    logged and treated as no groups.
   * Without provisioning only users who signed in at least once are known
     (and notified), with the groups of their last sign-in. Admins can remove
-    an SSO/provisioned user on Admin → Users (not the local admin); it is
-    recreated at the next sign-in or when provisioning creates it again.
+    a user who is not provisioned on Admin → Users (not the local admin); it
+    is recreated at the next sign-in. Provisioned users cannot be removed
+    there (the page shows "Managed in Entra ID", the handler refuses): Entra
+    ID deactivates and deletes them, and one removed by hand would come back
+    at its next sign-in without the memberships of provisioned groups, which
+    Entra ID sends again only after *Restart provisioning*. After turning
+    provisioning off nobody is provisioned, so all can be removed.
   * Admins can pre-register a group by its id/name before anybody signed in
-    or before provisioning takes it over.
+    or before provisioning takes it over. The Groups page and the service
+    form list provisioned groups even without a role or services; group
+    display names have at most 256 characters, like in Entra ID and SCIM.
 * **SCIM endpoint** (`/scim/v2`, Tenant URL `<Base URL>/scim/v2`): bearer
-  token only – 32 random bytes base64url, generated in Admin → Settings and
-  shown once on the rendered response (never in a redirect, cookie or log),
+  token only – 32 random bytes base64url, generated in Admin → Settings,
   stored as SHA-256 hex (`Settings.SCIMTokenHash`) and compared in constant
-  time. No token = provisioning off = 401 (with `WWW-Authenticate`). The auth
-  middleware and the setup redirect let `/scim/` through untouched (no
-  cookies, sessions or CSRF). Responses are `application/scim+json`;
-  requests may be `application/scim+json` or `application/json` (≤ 2 MiB,
-  values ≤ 256 characters). Filters: `eq` and `and` only – users by
-  `userName`, `externalId`, `id`, `emails.value` and
-  `emails[type eq "work"].value`, groups by `displayName`, `externalId` and
-  `id`; anything else is 400 `invalidFilter`; no match is an empty
-  ListResponse. Paging: `startIndex` (1-based), `count` (default 100, max
-  500). PATCH accepts both request styles of Entra ID (with and without
+  time. It is shown once with Post/Redirect/Get: `POST
+  /admin/settings/scim-token` keeps it in memory for at most 5 minutes, for
+  the administrator who generated it, and redirects to
+  `/admin/settings?new-token=<slot id>#provisioning`, which shows it and
+  forgets it; reloading neither shows it again nor generates another one.
+  It is never in a URL, cookie or log. No token = provisioning off = 401
+  (with `WWW-Authenticate`). The auth middleware and the setup redirect let
+  `/scim/` through untouched (no cookies, sessions or CSRF). Responses are
+  `application/scim+json`; requests may be `application/scim+json` or
+  `application/json` (≤ 2 MiB, values ≤ 256 characters). Filters: `eq` and
+  `and` only – users by `userName`, `externalId`, `id`, `emails.value` and
+  `emails[type eq "work"].value`, groups by `displayName`, `externalId`,
+  `id` and `members`/`members.value` (a user id: a membership check on the
+  real state); comparisons of the manager (`manager`, `manager.value`, the
+  enterprise extension's) match no user, because Entra ID may check the
+  manager before changing it and it is not stored; anything else is 400
+  `invalidFilter`, as are values that are not valid UTF-8 or contain
+  control characters; no match is an empty ListResponse. Paging:
+  `startIndex` (1-based), `count` (default 100, max 500). PATCH accepts
+  both request styles of Entra ID (with and without
   `aadOptscim062020`): case-insensitive `op`, operations with or without
   `path`, `active` as bool or `"True"`/`"False"`, members added, removed by
   value list or `members[value eq "id"]`, or replaced; member values that
@@ -202,9 +245,18 @@ removed; migration 2 deletes its setting.
   or groups up before creating or changing them (SCIM writes, sign-ins, group
   claims) take an advisory lock first, so that two of them cannot both decide
   that a user does not exist yet (SQLite serialises writers anyway).
-  Revoking the token clears `provisioned` on all groups and
-  users, so sign-ins manage memberships, names and e-mail addresses again;
-  deactivated users stay deactivated.
+  Revoking the token clears `provisioned` on all groups and users, so
+  sign-ins manage memberships, names and e-mail addresses again;
+  deactivated users stay deactivated. `SetSCIMToken` takes the same lock,
+  and every SCIM write checks the token of its request again inside its
+  transaction (`store.WithSCIMToken`; a deleted or replaced token gives
+  401), so no write that was authenticated before provisioning was turned
+  off can set the provisioned flags again. Turning provisioning on again
+  needs *Restart provisioning* in Entra ID: Entra ID keeps the ids of the
+  groups it provisioned before and sends only changes, while the status
+  page no longer treats those groups as provisioned (a group is found again
+  by its display name and taken over by POST, which replaces its members);
+  a restart sends all users, groups and members again.
 * **Service status** is derived, never set by hand: worst impact of all open
   incidents on the service, or "maintenance" while a maintenance window is in
   progress. Severity: operational < maintenance < degraded < partial outage <
@@ -245,34 +297,45 @@ removed; migration 2 deletes its setting.
   method.
   * **Microsoft Graph** (`internal/msgraph`, `notify/graph.go`): uses the SSO
     app registration (issuer, client ID, client secret – SSO itself need not
-    be enabled); the tenant comes from the Entra issuer
+    be enabled, so the settings page shows these three fields also while
+    sign-in is off and checks them for Graph); the tenant comes from the
+    Entra issuer
     (`login.microsoftonline.com/{tenant}/v2.0` or `sts.windows.net/{tenant}/`),
     other issuers are rejected when saving. Client-credentials token for
-    `https://graph.microsoft.com/.default` (cached by the oauth2 token
-    source), 30 s timeouts, redirects never followed. `POST
-    /v1.0/users/{sender}/sendMail` (sender path-escaped) with one recipient,
-    the HTML body and `saveToSentItems: false`; 202 = accepted. Needs the
-    application permission Mail.Send, or Exchange Online RBAC for
+    `https://graph.microsoft.com/.default` (cached by the client and renewed
+    10 s before it expires; requested with the caller's context, so stopping
+    the service does not wait for it), 30 s timeouts, redirects never
+    followed. `POST /v1.0/users/{sender}/sendMail` (sender path-escaped; a
+    sender that begins with `$` is addressed as `/users('{sender}')`,
+    because Microsoft Graph answers `/users/$…` with HTTP 400) with one
+    recipient, the HTML body and `saveToSentItems: false`; 202 = accepted.
+    Needs the application permission Mail.Send, or Exchange Online RBAC for
     Applications scoped to the sender mailbox. Error classes: 429/503/504
     pause the delivery for Retry-After (1 minute without one, at most
     10 minutes) and the throttled message keeps its attempts; token and
     network errors, 401, 403, 404 and other 5xx count one attempt for every
     remaining message of the batch; any other 4xx (e.g. 400 invalid
     recipient) fails only that message. Errors carry hints (Mail.Send/RBAC
-    for 403, the mailbox for 404). The worker keeps its client and access
-    token until the settings change or a failure other than throttling; a
-    test e-mail always uses a new token.
+    for 403, the mailbox for 404); a failed access token request names
+    Microsoft Entra ID ("could not reach Microsoft Entra ID to get an access
+    token", "… did not respond within 30s …"), a failed e-mail request
+    Microsoft Graph. The worker keeps its client and access token until the
+    settings change or a failure other than throttling; a test e-mail always
+    uses a new token.
   * **SMTP** (go-mail): one connection per batch; a temporary error that is
     not about the recipient pauses the delivery for a minute; a closed
     connection is reopened at once.
 * **Web UI**: server-rendered `html/template` pages in one layout, one
   stylesheet (`static/style.css`, its class vocabulary is documented at the
   top and checked by a test), light and dark mode via `prefers-color-scheme`.
-  `static/app.js` only adds delete confirmations (`data-confirm`), field
-  toggling (`data-show-when`) and, in the setup wizard, the browser's time
-  zone as the default (`data-browser-timezone`, with a small map of renamed
-  zones that browsers report under old names); pages stay usable without
-  JavaScript. The settings page has one handler file and one template
+  `static/app.js` only adds delete confirmations (`data-confirm`), a
+  confirmation when a button that submits another form (`form="…"`, e.g.
+  the provisioning token buttons) would lose changes made in the settings
+  form (`data-unsaved`), field toggling (`data-show-when`) and, in the
+  setup wizard, the browser's time zone as the default
+  (`data-browser-timezone`, with a small map of renamed zones that browsers
+  report under old names); pages stay usable without JavaScript. The
+  settings page has one handler file and one template
   partial per section (`admin_settings_{general,sso,sync,mail}.go`,
   `partials/settings_*.html`), each with a view and a save function.
   Flash messages: success, info, warning (done, but e.g. the e-mails could
@@ -299,9 +362,11 @@ Auth: `/login`, `/auth/oidc/login`, `/auth/oidc/callback`, `/logout`,
 `/account`, `POST /account/profile` (local administrator: display name and
 user name), `POST /account/password`.
 Editors: `/manage…`. Admins: `/admin/settings` (also `POST
-/admin/settings/test-email`, `POST /admin/settings/scim-token` – generate and
-show a provisioning token – and `POST /admin/settings/scim-token/delete` –
-turn provisioning off), `/admin/services`, `/admin/groups`, `/admin/users`,
+/admin/settings/test-email`, `POST /admin/settings/scim-token` – generate a
+provisioning token and redirect to the settings page, which shows it once –
+and `POST /admin/settings/scim-token/delete` – turn provisioning off),
+`/admin/services`, `/admin/groups`, `/admin/users` (`POST
+/admin/users/{id}/delete` removes a user who is not provisioned),
 `/admin/notifications`.
 Provisioning: `/scim/v2/…` (`Users`, `Groups`, `ServiceProviderConfig`,
 `ResourceTypes`, `Schemas`) with the bearer token, outside the session, CSRF

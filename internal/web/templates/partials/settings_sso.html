@@ -11,26 +11,28 @@
       <code class="code-box">{{.SSO.CallbackURL}}</code>
       <span class="help">Register this redirect (callback) URI for the application at your identity provider.{{if not .St.BaseURL}} It is derived from the address of this page – set the base URL above so that it does not change.{{end}}</span>
     </div>
-    <div id="oidc-fields"{{if not .St.OIDCEnabled}} hidden{{end}}>
+    <div class="field">
+      <label for="oidc_issuer">Issuer URL</label>
+      <input id="oidc_issuer" name="oidc_issuer" type="url" value="{{.St.OIDCIssuer}}" placeholder="https://login.microsoftonline.com/<tenant ID>/v2.0" spellcheck="false"{{if .Errors.oidc_issuer}} aria-invalid="true"{{end}}>
+      <span class="help">Entra ID: <code>https://login.microsoftonline.com/&lt;tenant ID&gt;/v2.0</code> · Keycloak: <code>https://keycloak.example.com/realms/&lt;realm&gt;</code></span>
+      {{template "field-error" .Errors.oidc_issuer}}
+    </div>
+    <div class="field-row">
       <div class="field">
-        <label for="oidc_issuer">Issuer URL</label>
-        <input id="oidc_issuer" name="oidc_issuer" type="url" value="{{.St.OIDCIssuer}}" placeholder="https://login.microsoftonline.com/<tenant ID>/v2.0" spellcheck="false"{{if .Errors.oidc_issuer}} aria-invalid="true"{{end}}>
-        <span class="help">Entra ID: <code>https://login.microsoftonline.com/&lt;tenant ID&gt;/v2.0</code> · Keycloak: <code>https://keycloak.example.com/realms/&lt;realm&gt;</code></span>
-        {{template "field-error" .Errors.oidc_issuer}}
+        <label for="oidc_client_id">Client ID</label>
+        <input id="oidc_client_id" name="oidc_client_id" type="text" value="{{.St.OIDCClientID}}" autocomplete="off" spellcheck="false"{{if .Errors.oidc_client_id}} aria-invalid="true"{{end}}>
+        {{template "field-error" .Errors.oidc_client_id}}
       </div>
-      <div class="field-row">
-        <div class="field">
-          <label for="oidc_client_id">Client ID</label>
-          <input id="oidc_client_id" name="oidc_client_id" type="text" value="{{.St.OIDCClientID}}" autocomplete="off" spellcheck="false"{{if .Errors.oidc_client_id}} aria-invalid="true"{{end}}>
-          {{template "field-error" .Errors.oidc_client_id}}
-        </div>
-        <div class="field">
-          <label for="oidc_client_secret">Client secret</label>
-          <input id="oidc_client_secret" name="oidc_client_secret" type="password" value="{{.St.OIDCClientSecret}}" autocomplete="new-password"{{if .SSO.HasSecret}} placeholder="•••••••• (stored)"{{end}}{{if .Errors.oidc_client_secret}} aria-invalid="true"{{end}}>
-          <span class="help">{{if .SSO.HasSecret}}A secret is stored. Leave empty to keep it.{{else}}The secret value from the application registration.{{end}}</span>
-          {{template "field-error" .Errors.oidc_client_secret}}
-        </div>
+      <div class="field">
+        <label for="oidc_client_secret">Client secret</label>
+        <input id="oidc_client_secret" name="oidc_client_secret" type="password" value="{{.St.OIDCClientSecret}}" autocomplete="new-password"{{if .SSO.HasSecret}} placeholder="•••••••• (stored)"{{end}}{{if .Errors.oidc_client_secret}} aria-invalid="true"{{end}}>
+        <span class="help">{{if .SSO.HasSecret}}A secret is stored. Leave empty to keep it.{{else}}The secret value from the application registration.{{end}}</span>
+        {{template "field-error" .Errors.oidc_client_secret}}
       </div>
+    </div>
+    <p class="help">E-mail with Microsoft Graph (see <a href="#email">E-mail</a>) uses this app registration of Microsoft
+      Entra ID, even while sign-in with OpenID Connect is not enabled.</p>
+    <div id="oidc-fields"{{if not .St.OIDCEnabled}} hidden{{end}}>
       <div class="field-row">
         <div class="field">
           <label for="oidc_scopes">Scopes</label>
@@ -55,7 +57,8 @@
       <label class="checkbox"><input type="checkbox" name="local_login_enabled" aria-describedby="local_login_help"{{if .St.LocalLoginEnabled}} checked{{end}}{{if .Errors.local_login_enabled}} aria-invalid="true"{{end}}> Allow sign-in with the local administrator account</label>
       <span class="help" id="local_login_help">The break-glass login for when single sign-on is unavailable, at <a href="/login?local=1">/login?local=1</a>.
         It can only be turned off while single sign-on is set up and a group has the Administrator role; turning it off signs the
-        local administrator out. To turn it on again without signing in, run <code class="nowrap">statuspage local-login enable</code> on the server.</span>
+        local administrator out. To turn it on again without signing in, run this command on the server as administrator or
+        root – note it down for emergencies: <code class="code-box">{{.SSO.LocalLoginCommand}}</code></span>
       {{template "field-error" .Errors.local_login_enabled}}
     </div>
   </fieldset>

@@ -2,7 +2,7 @@
 {{with .Data}}
 <h1>Settings</h1>
 
-<form method="post" action="/admin/settings" class="form">
+<form method="post" action="/admin/settings" class="form" data-unsaved="Your changes to the settings have not been saved and will be lost. Continue?">
   {{template "error-summary" .Errors}}
   {{template "csrf" $}}
   {{template "settings-general" .}}

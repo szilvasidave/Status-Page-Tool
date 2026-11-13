@@ -18,6 +18,13 @@ type adminGroupsData struct {
 	Errors     adminFormErrors
 }
 
+// adminGroupNameMax is the longest display name of a group (characters):
+// the same as provisioning accepts, which is the limit of Microsoft Entra ID,
+// so that a provisioned name can be saved unchanged with the group's role.
+const adminGroupNameMax = 256
+
+const adminGroupNameTooLong = "The display name is too long (at most 256 characters)."
+
 // adminSplitGroups splits groups into the groups in use (with a role or
 // services, or for which keep returns true) and the others. Every group of
 // every user's groups claim is recorded at sign-in, so with Microsoft Entra
@@ -63,8 +70,8 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	case tooLong(d.ExternalID, 255):
 		d.Errors.add("external_id", "The group ID is too long (at most 255 characters).")
 	}
-	if tooLong(d.Name, 200) {
-		d.Errors.add("name", "The display name is too long (at most 200 characters).")
+	if tooLong(d.Name, adminGroupNameMax) {
+		d.Errors.add("name", adminGroupNameTooLong)
 	}
 	if len(d.Errors) > 0 {
 		s.adminRenderGroups(w, r, http.StatusUnprocessableEntity, d)
@@ -182,8 +189,8 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 			f.Errors.add("role", adminLastAdminGroupMsg)
 		}
 	}
-	if tooLong(f.Group.Name, 200) {
-		f.Errors.add("name", "The display name is too long (at most 200 characters).")
+	if tooLong(f.Group.Name, adminGroupNameMax) {
+		f.Errors.add("name", adminGroupNameTooLong)
 	}
 	if len(f.Errors) > 0 {
 		s.adminRenderGroupForm(w, r, http.StatusUnprocessableEntity, f)

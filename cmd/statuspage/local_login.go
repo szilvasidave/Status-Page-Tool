@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -125,7 +126,14 @@ func cmdLocalLogin(args []string, stdout, stderr io.Writer) error {
 func openStore(ctx context.Context, dir string) (st *store.Store, closeDB func(), err error) {
 	cfg, err := config.Load(dir)
 	if errors.Is(err, config.ErrNotConfigured) {
-		return nil, nil, fmt.Errorf("the status page is not configured yet (%s not found); finish the setup in the browser first", config.Path(dir))
+		// Usually the data directory was not given: without -data it is the
+		// default one, e.g. next to the program, not that of the service.
+		example := " (e.g. -data /var/lib/statuspage)"
+		if runtime.GOOS == "windows" {
+			example = ""
+		}
+		return nil, nil, fmt.Errorf("%s not found: pass the data directory of the status page with -data DIR, the one the service uses%s; "+
+			"if the setup is not finished yet, finish it in the browser first", config.Path(dir), example)
 	}
 	if err != nil {
 		return nil, nil, err

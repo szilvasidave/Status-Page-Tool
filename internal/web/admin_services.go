@@ -120,7 +120,11 @@ func (s *Server) adminRenderServiceForm(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	slices.SortStableFunc(f.Categories, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
-	f.Groups, f.Other = adminSplitGroups(groups, func(g *store.Group) bool { return slices.Contains(f.Service.GroupIDs, g.ID) })
+	// Like the Groups page, provisioned groups are listed even without a
+	// role or services: they were assigned to the provisioning app on purpose.
+	f.Groups, f.Other = adminSplitGroups(groups, func(g *store.Group) bool {
+		return g.Provisioned || slices.Contains(f.Service.GroupIDs, g.ID)
+	})
 	if f.Errors == nil {
 		f.Errors = adminFormErrors{}
 	}

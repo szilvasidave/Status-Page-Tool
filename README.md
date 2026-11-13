@@ -262,8 +262,10 @@ The redirect (callback) URI to register at the identity provider is always
 
 In **Admin → Settings → Single sign-on (OpenID Connect)** tick *Enable sign-in
 with OpenID Connect* and enter the **issuer URL**, **client ID** and **client
-secret**. **Scopes** default to `openid profile email`, the **groups claim**
-to `groups`; the **button label** is the text of the sign-in button.
+secret** (these three are shown also while sign-in is off, because
+[e-mail with Microsoft Graph](#microsoft-365-microsoft-graph) uses them too).
+**Scopes** default to `openid profile email`, the **groups claim** to
+`groups`; the **button label** is the text of the sign-in button.
 
 **Group memberships at sign-in.** At every sign-in the user's group
 memberships are replaced by the groups in the groups claim of the ID token
@@ -369,15 +371,24 @@ default) turns this sign-in off:
   `/login?local=1` shows a note instead of the form, local sign-in attempts
   are refused, and sessions of the local administrator stop working at once.
   If you turn it off while signed in as the local administrator, you are
-  signed out and the sign-in page tells you why.
+  signed out and the sign-in page tells you why. Turning it on again, in
+  Admin → Settings or on the command line, does not bring those sessions
+  back: the local administrator signs in again.
+- While it is off, the only group with the Administrator role cannot be
+  given another role or deleted in **Admin → Groups**; give another group
+  the Administrator role first.
 - **When single sign-on fails** (identity provider outage, expired client
   secret, no administrator group left), turn the local sign-in on again on
   the server, as administrator or root, e.g.
   `sudo statuspage local-login enable -data /var/lib/statuspage`, or on
-  Windows `"C:\Program Files\Status Page\statuspage.exe" local-login enable`.
-  A running status page applies it within about 10 seconds, without a
-  restart; then sign in at `/login?local=1`. Changing the setting on the
-  command line also signs out all sessions of the local administrator.
+  Windows `"C:\Program Files\Status Page\statuspage.exe" local-login enable`
+  in an administrator command prompt. The help below the checkbox shows the
+  exact command for your server (with its data directory): note it down
+  before you turn the local sign-in off. A running status page applies it
+  within about 10 seconds, without a restart; then sign in at
+  `/login?local=1`. `statuspage local-login status` shows the user name of
+  the local administrator account (it may have been changed on the account
+  page).
 
 ## How users and groups get into the status page
 
@@ -412,16 +423,17 @@ are not provisioned.
 
 ### Set up provisioning in Microsoft Entra ID
 
-You need the [base URL](#general-settings) set, an HTTPS address that Entra
-ID can reach (see [Connectivity](#connectivity)), and Microsoft Entra ID P1 or
-P2 to assign groups to an application.
+You need the [base URL](#general-settings) set and saved, an HTTPS address
+that Entra ID can reach (see [Connectivity](#connectivity)), and Microsoft
+Entra ID P1 or P2 to assign groups to an application.
 
 1. **Token.** In the status page open **Admin → Settings**, section *Users
    and groups from Microsoft Entra ID (SCIM provisioning)*. Note the **Tenant
    URL**, `<Base URL>/scim/v2` (e.g. `https://status.example.com/scim/v2`),
    click **Generate token** and copy the token now: it is shown only once.
    The status page keeps only a hash of it; if it is lost, generate a new
-   one.
+   one. The button reloads the page with the saved settings, so save other
+   changes first (the page asks before it discards them).
 2. **Application.** In the [Microsoft Entra admin center](https://entra.microsoft.com)
    open **Entra ID → Enterprise apps → New application → Create your own
    application**, enter a name (e.g. "Status Page provisioning"), choose
@@ -452,13 +464,14 @@ P2 to assign groups to an application.
    | not IsSoftDeleted | `active` | false (disabled, deleted or unassigned): no e-mails, no sign-in |
    | mailNickname | `externalId` | stored only |
    | group displayName | `displayName` | group name (unique among provisioned groups) |
-   | group objectId | `externalId` | group ID – the same value as in the groups claim |
+   | group objectId | `externalId` | group ID – the same value as in the groups claim; set when the group is created or taken over and never changed by provisioning later (it decides who gets the group's role) |
    | group members | `members` | group members |
 
    Other attributes (job title, phone numbers, manager, …) are ignored.
-   Without a `mail` value, a user name that is an e-mail address is used
-   (not for guests, whose user names contain `#EXT#`). The Tenant URL flag
-   `?aadOptscim062020` is not needed: both styles of requests are understood.
+   Without a `mail` value, a user name that is an e-mail address is used,
+   and it changes with the user name (not for guests, whose user names
+   contain `#EXT#`). The Tenant URL flag `?aadOptscim062020` is not needed:
+   both styles of requests are understood.
 6. **Optional:** test a single user with **Provision on demand**, and under
    **Overview → Properties** enter a notification e-mail address for failures
    and set up the accidental deletion prevention.
@@ -468,9 +481,10 @@ P2 to assign groups to an application.
    one, the reason the status page gave; the status page logs the changes in
    `statuspage.log`.
 8. **Roles and services.** The provisioned groups appear in **Admin →
-   Groups** with the badge *Provisioned*, even before they have a role or
-   services. Open each one and choose its role and the services its members
-   are notified about (see [Roles and groups](#roles-and-groups)).
+   Groups** and in the service form with the badge *Provisioned*, even
+   before they have a role or services. Open each one and choose its role
+   and the services its members are notified about (see
+   [Roles and groups](#roles-and-groups)).
 
 Users and groups the status page knows already are taken over instead of
 being created twice: users who signed in before (found by user name, then by
@@ -512,9 +526,11 @@ above.
 - **Deactivated users** – disabled, deleted or unassigned in Entra ID – get
   no e-mails, are signed out at once and cannot sign in ("Sign-in failed:
   your account has been deactivated by your organisation's user
-  provisioning"). Assigning or enabling them again activates them. Users that
+  provisioning"). Assigning or enabling them again activates them; their
+  next sign-in links them again by user name or e-mail address. Users that
   Entra ID deletes for good (30 days after deletion) are removed from the
-  status page.
+  status page. Provisioned users cannot be removed on **Admin → Users**:
+  Entra ID manages them.
 - **Groups.** Only provisioning changes the members of a provisioned group:
   sign-ins neither add nor remove these memberships. The group name comes
   from Entra ID. When Entra ID deletes a group, the group loses its members
@@ -522,17 +538,25 @@ above.
   members back when Entra ID provisions it again.
 - **The local administrator** is never visible to provisioning.
 
-### New token, turning provisioning off
+### New token, turning provisioning off and on again
 
 - **Generate new token** replaces the token at once, e.g. when the old one
   may have been exposed. Enter the new token as *Secret Token* in the
-  provisioning configuration of the Entra application.
+  provisioning configuration of the Entra application. Reloading the page
+  that shows the token does not generate another one, but it no longer
+  shows the token either.
 - **Turn off provisioning** deletes the token, so the status page refuses
-  Entra ID's requests from then on; stop provisioning in Entra ID as well.
-  All groups and users stop being provisioned: sign-ins manage group
-  memberships, names and e-mail addresses again, and existing memberships
-  stay until the user's next sign-in. Deactivated users stay deactivated;
-  remove them on **Admin → Users** if they should be able to sign in again.
+  Entra ID's requests from then on, including those it is processing at
+  that moment; stop provisioning in Entra ID as well. All groups and users
+  stop being provisioned: sign-ins manage group memberships, names and
+  e-mail addresses again, and existing memberships stay until the user's
+  next sign-in. Deactivated users stay deactivated; remove them on
+  **Admin → Users** if they should be able to sign in again.
+- **Turning provisioning on again:** generate a token, enter it as *Secret
+  Token* in the Entra application and then use **Restart provisioning** on
+  the application's provisioning overview, so that Entra ID sends all
+  users, groups and members again. Without a restart, the groups that were
+  provisioned before stay incomplete: Entra ID sends only changes.
 
 ## Roles and groups
 
@@ -557,9 +581,12 @@ ID, Keycloak group name); provisioning takes such a group over.
 **Admin → Users** lists the known users with their groups, role, sign-in
 (*SSO*, *Never signed in* or *Local administrator*) and last sign-in, marked
 *Provisioned* or *Deactivated* where it applies. Administrators can remove a
-user there, e.g. someone who left the company, to stop their e-mails; the
-local administrator cannot be removed. A removed user comes back at their
-next sign-in or when provisioning creates them again.
+user who is not provisioned, e.g. someone who left the company, to stop their
+e-mails; a removed user comes back at their next sign-in. Provisioned users
+are managed in Microsoft Entra ID and cannot be removed here (*Managed in
+Entra ID*): Entra ID deactivates them when they are disabled, deleted or
+unassigned, and removes them when it deletes them for good. The local
+administrator cannot be removed.
 
 ## Services and notifications
 
@@ -617,7 +644,8 @@ Graph.
 Microsoft Graph uses the [single sign-on app registration](#microsoft-entra-id):
 its issuer (`https://login.microsoftonline.com/<tenant ID>/v2.0`), client ID
 and client secret from the single sign-on settings – sign-in itself does not
-have to be enabled. With another identity provider, use SMTP.
+have to be enabled (the three fields are shown also while it is off). With
+another identity provider, use SMTP.
 
 1. **Sender mailbox:** a user or shared mailbox in Exchange Online, e.g.
    `status@example.com` (a shared mailbox needs no licence). E-mails are sent
@@ -671,7 +699,10 @@ How Microsoft Graph delivers:
   ID or client secret, expired secret), HTTP 401, 403 (permission missing),
   404 (unknown sender or no Exchange Online mailbox), unreachable or a server
   error: every e-mail of the batch counts one failed attempt, as with an
-  unreachable SMTP server. The error message says what to check.
+  unreachable SMTP server. The error message says what to check: it names
+  Microsoft Entra ID (`login.microsoftonline.com`) when no access token
+  could be obtained, and Microsoft Graph (`graph.microsoft.com`) when
+  sending failed.
 - An e-mail Microsoft Graph rejects on its own (e.g. an invalid recipient
   address, HTTP 400) fails alone and is retried like any other.
 - The server needs outbound HTTPS to `login.microsoftonline.com` and
@@ -819,25 +850,28 @@ statuspage service install|uninstall|start|stop|restart|status [-data DIR]
 statuspage reset-password -username NAME [-data DIR]
     Set a new password for a local administrator account and sign out all
     its sessions. The password is read from standard input (asked twice,
-    hidden, in a terminal). If the sign-in with the local administrator
-    account is turned off, it reminds you to turn it on with
-    "statuspage local-login enable".
+    hidden, in a terminal). If there is no local account named NAME, the
+    error names the local administrator account. If the sign-in with the
+    local administrator account is turned off, it reminds you to turn it on
+    with "statuspage local-login enable".
 
 statuspage local-login enable|disable|status [-data DIR]
     Turn the sign-in with the local administrator account on or off, or show
-    whether it is on. "enable" always works: use it when single sign-on is
-    unavailable. "disable" works only while single sign-on is enabled and
-    configured and at least one group has the Administrator role. Changing it
-    signs out all sessions of the local administrator account. A running
-    status page applies the change within about 10 seconds; no restart is
-    needed.
+    whether it is on and the user name of the local administrator account.
+    "enable" always works: use it when single sign-on is unavailable.
+    "disable" works only while single sign-on is enabled and configured and
+    at least one group has the Administrator role. Changing it signs out all
+    sessions of the local administrator account. A running status page
+    applies the change within about 10 seconds; no restart is needed.
 
 statuspage version
 ```
 
 `reset-password` and `local-login` work directly on the database: run them on
-the server, as administrator or root, with the same `-data` as the service.
-Write the action of `local-login` first: `statuspage local-login enable -data DIR`.
+the server, as administrator or root, with the same `-data` as the service
+(in a data directory without `config.json`, e.g. the default one when the
+service uses another, they say so and ask for `-data`). Write the action of
+`local-login` first: `statuspage local-login enable -data DIR`.
 
 Exit codes: 0 on success (also when `local-login` finds the setting as
 requested already), 1 on an error (e.g. `local-login disable` refused), 2 for
