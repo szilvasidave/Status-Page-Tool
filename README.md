@@ -1073,4 +1073,7 @@ development (see the comment in `tools/devseed/main.go`).
 GitHub Actions (`.github/workflows/build.yml`) runs the tests, builds binaries
 for Windows, Linux (amd64, arm64) and macOS (arm64) and the installer, and
 publishes them as a release for tags `v*`; the release notes start with the
-version's section of [`CHANGELOG.md`](CHANGELOG.md).
+version's section of [`CHANGELOG.md`](CHANGELOG.md). To release without
+pushing a tag, run the workflow by hand (**Actions → build → Run workflow**)
+on `main` with the version, e.g. `1.0.0`: it creates the tag `v1.0.0` on that
+commit and the release.
