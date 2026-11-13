@@ -143,6 +143,25 @@ CREATE TABLE sessions (
 );
 CREATE INDEX sessions_user_idx ON sessions (user_id);
 `,
+	// 2: user provisioning (SCIM) and the end of the Graph directory sync.
+	//   users.principal_name   user name at the identity provider (Entra
+	//                          userPrincipalName / preferred_username,
+	//                          SCIM userName), as sent
+	//   users.scim_external_id SCIM externalId (Entra: mailNickname by default)
+	//   users.active           false = deactivated by provisioning: no
+	//                          e-mails, no sign-in
+	//   users.provisioned      created or updated by SCIM provisioning
+	//   idp_groups.provisioned memberships are managed by SCIM provisioning
+	`
+ALTER TABLE users ADD COLUMN principal_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN scim_external_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN active {{BOOL}} NOT NULL DEFAULT {{TRUE}};
+ALTER TABLE users ADD COLUMN provisioned {{BOOL}} NOT NULL DEFAULT {{FALSE}};
+CREATE INDEX users_principal_name_idx ON users (LOWER(principal_name));
+CREATE INDEX users_scim_external_id_idx ON users (scim_external_id);
+ALTER TABLE idp_groups ADD COLUMN provisioned {{BOOL}} NOT NULL DEFAULT {{FALSE}};
+DELETE FROM settings WHERE key = 'directory_sync_enabled';
+`,
 }
 
 func (d *DB) dialect(sql string) string {

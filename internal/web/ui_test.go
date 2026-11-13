@@ -135,7 +135,7 @@ func TestUIAccountEmailNotice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SMTPHost, st.SMTPFrom = "localhost", "status@example.com"
+	st.SMTPHost, st.SMTPFrom, st.MailMethod = "localhost", "status@example.com", store.MailSMTP
 	if err := e.Store.SaveSettings(ctx, st); err != nil {
 		t.Fatal(err)
 	}

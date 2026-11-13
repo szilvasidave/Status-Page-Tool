@@ -1,0 +1,55 @@
+{{/* Settings page section; see internal/web/admin_settings_sso.go. Dot is the *adminSettingsData. */}}
+{{define "settings-sso"}}
+  <fieldset class="box" id="sso">
+    <legend>Single sign-on (OpenID Connect)</legend>
+    <div class="field">
+      <label class="checkbox"><input type="checkbox" name="oidc_enabled" data-show-when="on" data-target="#oidc-fields"{{if .St.OIDCEnabled}} checked{{end}}> Enable sign-in with OpenID Connect</label>
+      <span class="help">Works with Microsoft Entra ID, Keycloak and any provider that supports OpenID Connect discovery. The local administrator can always sign in at <a href="/login?local=1">/login</a>.</span>
+    </div>
+    <div class="field">
+      <span class="label">Redirect URI</span>
+      <code class="code-box">{{.SSO.CallbackURL}}</code>
+      <span class="help">Register this redirect (callback) URI for the application at your identity provider.{{if not .St.BaseURL}} It is derived from the address of this page – set the base URL above so that it does not change.{{end}}</span>
+    </div>
+    <div id="oidc-fields"{{if not .St.OIDCEnabled}} hidden{{end}}>
+      <div class="field">
+        <label for="oidc_issuer">Issuer URL</label>
+        <input id="oidc_issuer" name="oidc_issuer" type="url" value="{{.St.OIDCIssuer}}" placeholder="https://login.microsoftonline.com/<tenant ID>/v2.0" spellcheck="false"{{if .Errors.oidc_issuer}} aria-invalid="true"{{end}}>
+        <span class="help">Entra ID: <code>https://login.microsoftonline.com/&lt;tenant ID&gt;/v2.0</code> · Keycloak: <code>https://keycloak.example.com/realms/&lt;realm&gt;</code></span>
+        {{template "field-error" .Errors.oidc_issuer}}
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="oidc_client_id">Client ID</label>
+          <input id="oidc_client_id" name="oidc_client_id" type="text" value="{{.St.OIDCClientID}}" autocomplete="off" spellcheck="false"{{if .Errors.oidc_client_id}} aria-invalid="true"{{end}}>
+          {{template "field-error" .Errors.oidc_client_id}}
+        </div>
+        <div class="field">
+          <label for="oidc_client_secret">Client secret</label>
+          <input id="oidc_client_secret" name="oidc_client_secret" type="password" value="{{.St.OIDCClientSecret}}" autocomplete="new-password"{{if .SSO.HasSecret}} placeholder="•••••••• (stored)"{{end}}{{if .Errors.oidc_client_secret}} aria-invalid="true"{{end}}>
+          <span class="help">{{if .SSO.HasSecret}}A secret is stored. Leave empty to keep it.{{else}}The secret value from the application registration.{{end}}</span>
+          {{template "field-error" .Errors.oidc_client_secret}}
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="oidc_scopes">Scopes</label>
+          <input id="oidc_scopes" name="oidc_scopes" type="text" value="{{.St.OIDCScopes}}" spellcheck="false"{{if .Errors.oidc_scopes}} aria-invalid="true"{{end}}>
+          <span class="help">Separated by spaces; default <code>openid profile email</code>.</span>
+          {{template "field-error" .Errors.oidc_scopes}}
+        </div>
+        <div class="field">
+          <label for="oidc_groups_claim">Groups claim</label>
+          <input id="oidc_groups_claim" name="oidc_groups_claim" type="text" value="{{.St.OIDCGroupsClaim}}" spellcheck="false">
+          <span class="help">The ID token claim that lists the user's groups; default <code>groups</code>.</span>
+        </div>
+      </div>
+      <div class="field">
+        <label for="oidc_button_label">Button label</label>
+        <input id="oidc_button_label" name="oidc_button_label" type="text" value="{{.St.OIDCButtonLabel}}" maxlength="60"{{if .Errors.oidc_button_label}} aria-invalid="true"{{end}}>
+        <span class="help">Text of the sign-in button, e.g. “Sign in with Microsoft”.</span>
+        {{template "field-error" .Errors.oidc_button_label}}
+      </div>
+    </div>
+  </fieldset>
+{{end}}

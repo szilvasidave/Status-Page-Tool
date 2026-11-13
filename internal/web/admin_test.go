@@ -161,6 +161,7 @@ func TestAdminSettingsSave(t *testing.T) {
 		OIDCGroupsClaim: "groups", OIDCButtonLabel: "Sign in with Microsoft", DirectorySyncEnabled: true,
 		SMTPHost: "smtp.example.com", SMTPPort: 465, SMTPSecurity: "tls", SMTPUsername: "mailer",
 		SMTPPassword: "mail-pass-1", SMTPFrom: "IT Status <status@example.com>",
+		LocalLoginEnabled: true, MailMethod: store.MailSMTP,
 	}
 	if *st != want {
 		t.Fatalf("stored settings:\n got %+v\nwant %+v", *st, want)
@@ -330,7 +331,7 @@ func TestAdminTestEmail(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	st := adminSettings(t, e)
-	st.SMTPHost, st.SMTPPort, st.SMTPSecurity, st.SMTPFrom = "127.0.0.1", port, "none", "status@example.com"
+	st.SMTPHost, st.SMTPPort, st.SMTPSecurity, st.SMTPFrom, st.MailMethod = "127.0.0.1", port, "none", "status@example.com", store.MailSMTP
 	if err := e.Store.SaveSettings(context.Background(), st); err != nil {
 		t.Fatal(err)
 	}
@@ -609,7 +610,7 @@ func TestAdminNotifications(t *testing.T) {
 		}
 	}
 	st := adminSettings(t, e)
-	st.SMTPHost, st.SMTPFrom = "smtp.example.com", "status@example.com"
+	st.SMTPHost, st.SMTPFrom, st.MailMethod = "smtp.example.com", "status@example.com", store.MailSMTP
 	_ = e.Store.SaveSettings(ctx, st)
 
 	r = e.get("/admin/notifications")
@@ -653,7 +654,7 @@ func TestAdminDirectoryTemplates(t *testing.T) {
 
 	body = render("admin_groups", &adminGroupsData{DirectoryEnabled: true, Errors: adminFormErrors{}})
 	mustContain(t, body, `action="/admin/groups/search"`, `action="/admin/groups/sync"`, "Sync now")
-	body = render("admin_settings", &adminSettingsData{St: store.DefaultSettings(), DirectoryEnabled: true, Errors: adminFormErrors{}})
+	body = render("admin_settings", &adminSettingsData{St: store.DefaultSettings(), Sync: adminSyncData{DirectoryEnabled: true}, Errors: adminFormErrors{}})
 	mustContain(t, body, `form="directory-sync-form"`, `id="directory-sync-form"`, `name="next" value="/admin/settings"`)
 }
 

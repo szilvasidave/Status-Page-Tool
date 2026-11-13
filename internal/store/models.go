@@ -86,13 +86,38 @@ type Settings struct {
 	// credentials.
 	DirectorySyncEnabled bool
 
+	// LocalLoginEnabled allows the local administrator account to sign in.
+	// It can only be turned off while single sign-on works; the command
+	// "statuspage local-login enable" turns it on again.
+	LocalLoginEnabled bool
+
+	// MailMethod selects how e-mails are sent: MailGraph (Microsoft 365 via
+	// Microsoft Graph, the default) or MailSMTP.
+	MailMethod string
+	// GraphSender is the mailbox e-mails are sent from with Microsoft
+	// Graph, e.g. status@example.com. Uses the single sign-on app
+	// registration (issuer, client ID, client secret).
+	GraphSender string
+
 	SMTPHost     string
 	SMTPPort     int
 	SMTPSecurity string // "starttls", "tls" or "none"
 	SMTPUsername string
 	SMTPPassword string // secret
 	SMTPFrom     string // e.g. "IT Status <status@example.com>"
+
+	// SCIMTokenHash is the SHA-256 (hex) of the bearer token the identity
+	// provider uses for SCIM provisioning; "" turns provisioning off.
+	SCIMTokenHash string
+	// SCIMTokenCreatedAt is when the current SCIM token was generated.
+	SCIMTokenCreatedAt time.Time
 }
+
+// E-mail delivery methods (Settings.MailMethod).
+const (
+	MailGraph = "graph"
+	MailSMTP  = "smtp"
+)
 
 // DefaultSettings returns the settings used for keys that are not stored yet.
 func DefaultSettings() Settings {
@@ -105,6 +130,9 @@ func DefaultSettings() Settings {
 		OIDCButtonLabel: "Sign in with SSO",
 		SMTPPort:        587,
 		SMTPSecurity:    "starttls",
+
+		LocalLoginEnabled: true,
+		MailMethod:        MailGraph,
 	}
 }
 
@@ -125,6 +153,28 @@ func (s *Settings) SMTPConfigured() bool {
 	return s != nil && s.SMTPHost != "" && s.SMTPFrom != ""
 }
 
+// GraphMailConfigured reports whether e-mail can be sent with Microsoft
+// Graph: a sender mailbox and the app registration (issuer, client ID,
+// client secret) of the single sign-on settings.
+func (s *Settings) GraphMailConfigured() bool {
+	return s != nil && s.GraphSender != "" && s.OIDCIssuer != "" && s.OIDCClientID != "" && s.OIDCClientSecret != ""
+}
+
+// MailConfigured reports whether e-mail notifications can be sent with the
+// selected method.
+func (s *Settings) MailConfigured() bool {
+	if s == nil {
+		return false
+	}
+	if s.MailMethod == MailSMTP {
+		return s.SMTPConfigured()
+	}
+	return s.GraphMailConfigured()
+}
+
+// SCIMEnabled reports whether SCIM provisioning is turned on (a token exists).
+func (s *Settings) SCIMEnabled() bool { return s != nil && s.SCIMTokenHash != "" }
+
 // OIDCConfigured reports whether single sign-on is enabled and complete.
 func (s *Settings) OIDCConfigured() bool {
 	return s != nil && s.OIDCEnabled && s.OIDCIssuer != "" && s.OIDCClientID != ""
@@ -143,6 +193,19 @@ type User struct {
 	IsLocalAdmin bool
 	LastLoginAt  *time.Time
 	CreatedAt    time.Time
+
+	// PrincipalName is the user name at the identity provider (Entra
+	// userPrincipalName, the preferred_username claim, SCIM userName), as
+	// sent; may be empty.
+	PrincipalName string
+	// SCIMExternalID is the SCIM externalId (Entra default: mailNickname).
+	SCIMExternalID string
+	// Active is false when provisioning deactivated the user: no e-mails,
+	// no sign-in. Always true for users that are not provisioned.
+	Active bool
+	// Provisioned reports that the user was created or updated by SCIM
+	// provisioning.
+	Provisioned bool
 }
 
 // DisplayName returns the best available human readable name.
@@ -173,8 +236,11 @@ type Group struct {
 	Role         Role   // RoleNone (members are viewers), RoleEditor or RoleAdmin
 	MemberCount  int
 	ServiceIDs   []int64
-	LastSyncedAt *time.Time
+	LastSyncedAt *time.Time // last change by provisioning
 	CreatedAt    time.Time
+	// Provisioned reports that the group's members are managed by SCIM
+	// provisioning (sign-in does not change them).
+	Provisioned bool
 }
 
 // DisplayName returns Name or ExternalID.

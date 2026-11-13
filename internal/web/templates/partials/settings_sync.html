@@ -1,0 +1,26 @@
+{{/* Settings page section; see internal/web/admin_settings_sync.go. Dot is the *adminSettingsData. */}}
+{{define "settings-sync"}}
+  <fieldset class="box" id="directory">
+    <legend>Directory sync (Microsoft Entra ID)</legend>
+    <div class="field">
+      <label class="checkbox"><input type="checkbox" name="directory_sync_enabled"{{if .St.DirectorySyncEnabled}} checked{{end}}{{if .Errors.directory_sync_enabled}} aria-invalid="true"{{end}}> Synchronise group members from Microsoft Entra ID</label>
+      <span class="help">Every hour the members of all groups that have a role or services are read from Microsoft Graph, so they
+        are notified even if they never signed in, and groups can be searched by name. Uses the single sign-on client ID and
+        secret; the app registration needs the Microsoft Graph <em>application</em> permissions
+        <strong>GroupMember.Read.All</strong> and <strong>User.Read.All</strong> with admin consent.</span>
+      {{template "field-error" .Errors.directory_sync_enabled}}
+    </div>
+    {{if .Sync.DirectoryEnabled}}
+    <div class="field">
+      <button type="submit" form="directory-sync-form" class="btn-small">Sync now</button>
+    </div>
+    {{end}}
+  </fieldset>
+{{end}}
+
+{{/* Forms outside the main settings form. Dot: (dict "D" <*adminSettingsData> "P" <*Page>). */}}
+{{define "settings-sync-forms"}}
+<form id="directory-sync-form" method="post" action="/admin/groups/sync" class="inline">
+  {{template "csrf" .P}}<input type="hidden" name="next" value="/admin/settings">
+</form>
+{{end}}

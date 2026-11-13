@@ -79,7 +79,7 @@
     {{- else}}
     <p class="muted">None of your groups is assigned to a service, so you do not receive notification e-mails.</p>
     {{- end}}
-    {{- if and .User.Email .Services (not $.Settings.SMTPConfigured)}}
+    {{- if and .User.Email .Services (not $.Settings.MailConfigured)}}
     {{template "email-off" $}}
     {{- end}}
   </div>

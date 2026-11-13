@@ -1,0 +1,33 @@
+{{/* Settings page section; see internal/web/admin_settings_general.go. Dot is the *adminSettingsData. */}}
+{{define "settings-general"}}
+  <fieldset class="box" id="general">
+    <legend>General</legend>
+    <div class="field">
+      <label for="site_name">Site name</label>
+      <input id="site_name" name="site_name" type="text" value="{{.St.SiteName}}" required maxlength="100"{{if .Errors.site_name}} aria-invalid="true"{{end}}>
+      <span class="help">Shown in the header and in e-mails.</span>
+      {{template "field-error" .Errors.site_name}}
+    </div>
+    <div class="field">
+      <label for="base_url">Base URL</label>
+      <input id="base_url" name="base_url" type="url" value="{{.St.BaseURL}}" placeholder="https://status.example.com"{{if .Errors.base_url}} aria-invalid="true"{{end}}>
+      <span class="help">The address users open, without a trailing slash. Used for links in e-mails and for the single sign-on redirect URI – recommended.</span>
+      {{template "field-error" .Errors.base_url}}
+      {{- if .General.LocalBaseURL}}
+      <p class="flash flash-warning">This address only works on the server itself (localhost): links in e-mails and single sign-on
+        fail for everybody else. Enter the name under which users reach the server.</p>
+      {{- end}}
+    </div>
+    <div class="field">
+      <label for="timezone">Time zone</label>
+      <input id="timezone" name="timezone" type="text" list="timezones" value="{{.St.Timezone}}" autocomplete="off" spellcheck="false"{{if .Errors.timezone}} aria-invalid="true"{{end}}>
+      {{template "admin-tz-datalist" .General.Timezones}}
+      <span class="help">Times are shown and entered in this time zone, e.g. Europe/Berlin or America/New_York.</span>
+      {{template "field-error" .Errors.timezone}}
+    </div>
+    <div class="field">
+      <label class="checkbox"><input type="checkbox" name="public_access"{{if .St.PublicAccess}} checked{{end}}> Public access</label>
+      <span class="help">When on, the status pages can be viewed without signing in. When off, everybody has to sign in.</span>
+    </div>
+  </fieldset>
+{{end}}

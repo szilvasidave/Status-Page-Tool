@@ -233,7 +233,7 @@ func (s *Server) manageNotify(r *http.Request, event string, fn func(context.Con
 		return "1 notification e-mail queued.", false
 	case n > 1:
 		return fmt.Sprintf("%d notification e-mails queued.", n), false
-	case !s.settings(r).SMTPConfigured():
+	case !s.settings(r).MailConfigured():
 		return "E-mail is not configured, so no notifications were sent.", false
 	}
 	return "No notification e-mails were sent: no member of the groups assigned to the affected services has an e-mail address.", false

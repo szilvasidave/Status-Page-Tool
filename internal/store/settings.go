@@ -48,6 +48,23 @@ func boolField(key string, p func(*Settings) *bool) settingField {
 	}
 }
 
+func timeField(key string, p func(*Settings) *time.Time) settingField {
+	return settingField{
+		key: key,
+		encode: func(st *Settings) string {
+			if t := *p(st); !t.IsZero() {
+				return strconv.FormatInt(t.Unix(), 10)
+			}
+			return ""
+		},
+		decode: func(st *Settings, v string) {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+				*p(st) = time.Unix(n, 0).UTC()
+			}
+		},
+	}
+}
+
 func intField(key string, p func(*Settings) *int) settingField {
 	return settingField{
 		key:    key,
@@ -77,12 +94,19 @@ var settingFields = []settingField{
 	strField("oidc_button_label", func(s *Settings) *string { return &s.OIDCButtonLabel }),
 	boolField("directory_sync_enabled", func(s *Settings) *bool { return &s.DirectorySyncEnabled }),
 
+	boolField("local_login_enabled", func(s *Settings) *bool { return &s.LocalLoginEnabled }),
+
+	strField("mail_method", func(s *Settings) *string { return &s.MailMethod }),
+	strField("graph_sender", func(s *Settings) *string { return &s.GraphSender }),
 	strField("smtp_host", func(s *Settings) *string { return &s.SMTPHost }),
 	intField("smtp_port", func(s *Settings) *int { return &s.SMTPPort }),
 	strField("smtp_security", func(s *Settings) *string { return &s.SMTPSecurity }),
 	strField("smtp_username", func(s *Settings) *string { return &s.SMTPUsername }),
 	secretField("smtp_password", func(s *Settings) *string { return &s.SMTPPassword }),
 	strField("smtp_from", func(s *Settings) *string { return &s.SMTPFrom }),
+
+	strField("scim_token_hash", func(s *Settings) *string { return &s.SCIMTokenHash }),
+	timeField("scim_token_created_at", func(s *Settings) *time.Time { return &s.SCIMTokenCreatedAt }),
 }
 
 // trimBaseURL removes surrounding spaces and trailing slashes.
@@ -145,6 +169,13 @@ func (s *Store) loadSettings(ctx context.Context) (*Settings, error) {
 		f.decode(&st, v)
 	}
 	st.BaseURL = trimBaseURL(st.BaseURL)
+	if _, ok := stored["mail_method"]; !ok && st.SMTPHost != "" {
+		// Installed before Microsoft Graph was added: keep using SMTP.
+		st.MailMethod = MailSMTP
+	}
+	if st.MailMethod != MailSMTP {
+		st.MailMethod = MailGraph
+	}
 	return &st, nil
 }
 

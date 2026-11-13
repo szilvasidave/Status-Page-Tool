@@ -12,7 +12,7 @@ import (
 
 // groupCols are the columns read by scanGroup (table alias g).
 const groupCols = `g.id, g.external_id, g.name, g.role, g.last_synced_at, g.created_at,
-	(SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id)`
+	(SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id), g.provisioned`
 
 const groupOrderSQL = "LOWER(COALESCE(NULLIF(g.name, ''), g.external_id)), g.id"
 
@@ -23,7 +23,7 @@ func scanGroup(sc scanner) (Group, error) {
 		synced  sql.NullInt64
 		created int64
 	)
-	err := sc.Scan(&g.ID, &g.ExternalID, &g.Name, &role, &synced, &created, &g.MemberCount)
+	err := sc.Scan(&g.ID, &g.ExternalID, &g.Name, &role, &synced, &created, &g.MemberCount, &g.Provisioned)
 	g.Role = ParseRole(role)
 	g.LastSyncedAt = fromNullUnix(synced)
 	g.CreatedAt = fromUnix(created)

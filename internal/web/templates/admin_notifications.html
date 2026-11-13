@@ -1,7 +1,7 @@
 {{define "content"}}
 {{with .Data}}
 <h1>Notifications</h1>
-{{- if not .SMTPConfigured}}
+{{- if not .MailConfigured}}
 {{template "email-off" $}}
 {{- end}}
 <p class="lead">The latest {{.Limit}} e-mails of the outbox. A failed delivery is retried after 1, 5 and 15 minutes

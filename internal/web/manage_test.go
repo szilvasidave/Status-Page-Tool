@@ -299,7 +299,7 @@ func TestManageIncidentNotifications(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SMTPHost, st.SMTPFrom = "localhost", "status@example.com"
+	st.SMTPHost, st.SMTPFrom, st.MailMethod = "localhost", "status@example.com", store.MailSMTP
 	if err := e.Store.SaveSettings(ctx, st); err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestManageMaintenanceNotifyOnChange(t *testing.T) {
 	ctx := context.Background()
 	erp, _ := manageServices(t, e)
 	st, _ := e.Store.GetSettings(ctx)
-	st.SMTPHost, st.SMTPFrom = "localhost", "status@example.com"
+	st.SMTPHost, st.SMTPFrom, st.MailMethod = "localhost", "status@example.com", store.MailSMTP
 	if err := e.Store.SaveSettings(ctx, st); err != nil {
 		t.Fatal(err)
 	}

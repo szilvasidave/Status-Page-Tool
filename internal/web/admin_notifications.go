@@ -13,7 +13,7 @@ const adminNotificationsLimit = 200
 type adminNotificationsData struct {
 	Notifications  []store.Notification
 	Limit          int
-	SMTPConfigured bool
+	MailConfigured bool
 }
 
 func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +31,6 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "admin_notifications", "Notifications", &adminNotificationsData{
 		Notifications:  list,
 		Limit:          adminNotificationsLimit,
-		SMTPConfigured: st.SMTPConfigured(),
+		MailConfigured: st.MailConfigured(),
 	})
 }

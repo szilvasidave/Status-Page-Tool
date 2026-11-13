@@ -13,7 +13,8 @@ import (
 
 // userCols are the columns read by scanUser (table alias u).
 const userCols = `u.id, u.email, u.name, u.oidc_subject, u.directory_id, u.username,
-	u.password_hash, u.is_local_admin, u.last_login_at, u.created_at`
+	u.password_hash, u.is_local_admin, u.last_login_at, u.created_at,
+	u.principal_name, u.scim_external_id, u.active, u.provisioned`
 
 // userOrderSQL orders users by display name (table alias u).
 var userOrderSQL = "LOWER(" + displayNameSQL("u") + "), u.id"
@@ -25,7 +26,8 @@ func scanUser(sc scanner) (User, error) {
 		lastLogin                 sql.NullInt64
 		created                   int64
 	)
-	err := sc.Scan(&u.ID, &u.Email, &u.Name, &subject, &dir, &uname, &hash, &u.IsLocalAdmin, &lastLogin, &created)
+	err := sc.Scan(&u.ID, &u.Email, &u.Name, &subject, &dir, &uname, &hash, &u.IsLocalAdmin, &lastLogin, &created,
+		&u.PrincipalName, &u.SCIMExternalID, &u.Active, &u.Provisioned)
 	if err != nil {
 		return u, err
 	}

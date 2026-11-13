@@ -142,7 +142,7 @@ func (n *Notifier) mailSettings(ctx context.Context, about string) (*store.Setti
 	if err != nil {
 		return nil, err
 	}
-	if !st.SMTPConfigured() {
+	if !st.MailConfigured() {
 		n.log.Debug("e-mail is not configured, no notification sent", "about", about)
 		return nil, nil
 	}
@@ -269,7 +269,7 @@ func (n *Notifier) deliver(ctx context.Context) {
 			n.logError(ctx, "deliver e-mails", err)
 			return
 		}
-		if !st.SMTPConfigured() {
+		if !st.MailConfigured() {
 			return // queued e-mails wait until e-mail is configured again
 		}
 		due, err := n.store.DueNotifications(ctx, n.now(), batchSize)
@@ -395,7 +395,7 @@ func (n *Notifier) checkMaintenances(ctx context.Context) {
 		// start flag set.
 		if !ended || !m.NotifiedEnd {
 			about := fmt.Sprintf("maintenance %d (%s)", m.ID, ev)
-			if !st.SMTPConfigured() {
+			if !st.MailConfigured() {
 				n.log.Debug("e-mail is not configured, no notification sent", "about", about)
 			} else if _, err := n.queue(ctx, about, m.ServiceIDs(), RenderMaintenance(st, m, ev)); err != nil {
 				n.logError(ctx, "queue maintenance e-mails", err)

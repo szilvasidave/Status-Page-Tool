@@ -31,6 +31,6 @@
 {{- end}}
 
 {{/* Shown where notifications matter while e-mail (SMTP) is not configured.
-     Usage: {{if not .Settings.SMTPConfigured}}{{template "email-off" $}}{{end}} with the *Page. */}}
+     Usage: {{if not .Settings.MailConfigured}}{{template "email-off" $}}{{end}} with the *Page. */}}
 {{define "email-off"}}<p class="flash flash-warning">E-mail is not configured, so no notifications are sent.
   {{- if .IsAdmin}} <a href="/admin/settings#email">Set up e-mail</a> in the settings.{{else}} An administrator can set it up in the settings.{{end}}</p>{{end}}

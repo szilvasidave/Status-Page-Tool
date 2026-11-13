@@ -57,7 +57,7 @@
 <div class="field">
   <label class="checkbox"><input type="checkbox" name="notify" value="on"{{if .Checked}} checked{{end}} aria-describedby="notify-help"> Send e-mail notifications</label>
   <span class="help" id="notify-help">{{.Help}}</span>
-  {{- if not .Page.Settings.SMTPConfigured}}
+  {{- if not .Page.Settings.MailConfigured}}
   {{template "email-off" .Page}}
   {{- end}}
 </div>

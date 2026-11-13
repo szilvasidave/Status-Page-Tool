@@ -300,6 +300,7 @@ func smtpSettings(host string, port int, security string) *store.Settings {
 	st.SMTPPort = port
 	st.SMTPSecurity = security
 	st.SMTPFrom = "IT Status <status@example.com>"
+	st.MailMethod = store.MailSMTP
 	return &st
 }
 

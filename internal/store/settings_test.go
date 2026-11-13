@@ -34,6 +34,11 @@ func fullSettings() Settings {
 		SMTPUsername:         "mailer",
 		SMTPPassword:         "p@ss word",
 		SMTPFrom:             "IT Status <status@example.com>",
+		LocalLoginEnabled:    true,
+		MailMethod:           MailSMTP,
+		GraphSender:          "status@example.com",
+		SCIMTokenHash:        "0123abcd",
+		SCIMTokenCreatedAt:   time.Unix(1700000000, 0).UTC(),
 	}
 }
 
@@ -144,5 +149,31 @@ func TestSettingsWrongKey(t *testing.T) {
 		bad := New(s.DB(), []byte("short"))
 		wantError(t, "save with invalid key", bad.SaveSettings(ctx, &in))
 		wantError(t, "save nil", s.SaveSettings(ctx, nil))
+	})
+}
+
+// TestSettingsMailMethodUpgrade: installations from before Microsoft Graph
+// mail (no mail_method stored) keep sending with their SMTP server; new
+// installations default to Microsoft Graph.
+func TestSettingsMailMethodUpgrade(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		st, err := s.GetSettings(ctx)
+		check(t, err)
+		equal(t, "default method", st.MailMethod, MailGraph)
+
+		_, err = s.DB().ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('smtp_host', 'smtp.example.com')`)
+		check(t, err)
+		s.settingsMu.Lock()
+		s.settingsCache = nil
+		s.settingsMu.Unlock()
+		st, err = s.GetSettings(ctx)
+		check(t, err)
+		equal(t, "method of an SMTP installation", st.MailMethod, MailSMTP)
+
+		st.MailMethod = "bogus"
+		check(t, s.SaveSettings(ctx, st))
+		st, err = s.GetSettings(ctx)
+		check(t, err)
+		equal(t, "unknown method", st.MailMethod, MailGraph)
 	})
 }
