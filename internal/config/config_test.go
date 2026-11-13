@@ -30,6 +30,32 @@ func TestLoadBOM(t *testing.T) {
 	}
 }
 
+// TestSetupListen: the installer's setup-listen.txt, possibly saved with a
+// byte order mark and a line break; anything but host:port is ignored.
+func TestSetupListen(t *testing.T) {
+	dir := t.TempDir()
+	if got := SetupListen(dir); got != "" {
+		t.Errorf("no file: %q", got)
+	}
+	for content, want := range map[string]string{
+		"\xef\xbb\xbf:9090\r\n": ":9090",
+		"127.0.0.1:9091":        "127.0.0.1:9091",
+		"[::1]:9092":            "[::1]:9092",
+		"9090":                  "",
+		":http":                 "",
+		":0":                    "",
+		":70000":                "",
+		"":                      "",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, SetupListenFile), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := SetupListen(dir); got != want {
+			t.Errorf("SetupListen(%q) = %q, want %q", content, got, want)
+		}
+	}
+}
+
 func TestLoadTLS(t *testing.T) {
 	dir := t.TempDir()
 	key := NewSecretKey()

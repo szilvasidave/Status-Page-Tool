@@ -24,7 +24,7 @@ const (
 	// keepNotifications is how long sent and failed e-mails are kept.
 	keepNotifications = 90 * 24 * time.Hour
 	// pauseAfterStop is how long the delivery waits after the SMTP server
-	// throttled it (temporary error) or closed the connection.
+	// throttled it (temporary error).
 	pauseAfterStop = time.Minute
 )
 
@@ -260,8 +260,8 @@ func (n *Notifier) Run(ctx context.Context) {
 
 // deliver sends due e-mails in batches until none are left. It stops early
 // when the SMTP server cannot be reached; the next run tries again. After
-// the server throttled the delivery or closed the connection it waits
-// pauseAfterStop.
+// the server throttled the delivery it waits pauseAfterStop; after the
+// server closed the connection it reconnects at once.
 func (n *Notifier) deliver(ctx context.Context) {
 	for ctx.Err() == nil && !n.now().Before(n.pausedUntil) {
 		st, err := n.store.GetSettings(ctx)
@@ -277,7 +277,7 @@ func (n *Notifier) deliver(ctx context.Context) {
 			n.logError(ctx, "deliver e-mails", err)
 			return
 		}
-		if len(due) == 0 || !n.sendBatch(ctx, st, due) || len(due) < batchSize {
+		if len(due) == 0 || !n.sendBatch(ctx, st, due) {
 			return
 		}
 	}
@@ -287,7 +287,10 @@ func (n *Notifier) deliver(ctx context.Context) {
 // the result of each one right away, so that after a crash at most one
 // delivered e-mail is sent again. E-mails that were not tried (the server
 // throttled the delivery or closed the connection, or shutdown) keep their
-// attempts. It reports whether the delivery may go on with the next batch.
+// attempts; if the server could not be reached or rejected the sign-in,
+// every e-mail counts a failed attempt. It reports whether the delivery may
+// go on right away: the batch was full, or the server closed the connection
+// after at least one e-mail (which was recorded, so this makes progress).
 func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []store.Notification) bool {
 	msgs := make([]Message, len(due))
 	for i, d := range due {
@@ -331,13 +334,18 @@ func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []stor
 	case err == nil:
 	case ctx.Err() != nil:
 		// Shutting down: the rest is sent after the restart.
+	case errors.Is(err, errConnClosed):
+		// The rest is sent over a new connection.
+		n.log.Debug("SMTP server closed the connection, reconnecting", "not_tried", len(due)-tried, "err", err)
 	case errors.Is(err, errStopped):
 		n.pausedUntil = n.now().Add(pauseAfterStop)
-		n.log.Warn("SMTP server throttled the delivery or closed the connection, pausing e-mail delivery",
+		n.log.Warn("SMTP server throttled the delivery, pausing e-mail delivery",
 			"pause", pauseAfterStop, "not_tried", len(due)-tried, "err", err)
 	default:
 		// Could not connect or sign in: a failed attempt for every e-mail,
-		// logged once.
+		// logged once. During a longer outage the e-mails are given up
+		// after the last retry, as outdated status e-mails are of little
+		// use.
 		n.log.Warn("e-mails not delivered, will retry", "count", len(due)-tried, "err", err)
 		for _, d := range due[tried:] {
 			record(d, err, false)
@@ -346,7 +354,7 @@ func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []stor
 	if sent > 0 {
 		n.log.Info("e-mails sent", "count", sent, "failed", failed)
 	}
-	return ok && err == nil
+	return ok && (err == nil && len(due) == batchSize || errors.Is(err, errConnClosed))
 }
 
 // nextAttempt returns when to retry after the given number of failed

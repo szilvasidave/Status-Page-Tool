@@ -12,11 +12,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 const FileName = "config.json"
@@ -214,6 +216,29 @@ const SetupTokenFile = "setup-token.txt"
 // SetupListenFile is the name of an optional file in the data directory with
 // the listen address (e.g. ":9090") to use while the server runs in setup
 // mode. The Windows installer writes it when its database setup failed, so
-// that the web setup runs on the port chosen in the installer. It is deleted
-// when the setup is complete.
+// that the web setup runs on the port chosen in the installer, and
+// "statuspage setup" without -listen writes that address to config.json. It
+// is deleted when the setup is complete.
 const SetupListenFile = "setup-listen.txt"
+
+// SetupListen returns the address in SetupListenFile in dataDir, or "" if
+// the file does not exist or does not hold a valid address (see ValidListen).
+func SetupListen(dataDir string) string {
+	b, err := os.ReadFile(filepath.Join(dataDir, SetupListenFile))
+	if err != nil {
+		return ""
+	}
+	if listen := strings.TrimSpace(string(TrimBOM(b))); ValidListen(listen) {
+		return listen
+	}
+	return ""
+}
+
+// ValidListen reports whether listen is an address the web server can listen
+// on: host:port with a port number from 1 to 65535, e.g. ":8080" or
+// "127.0.0.1:8080".
+func ValidListen(listen string) bool {
+	_, port, err := net.SplitHostPort(listen)
+	n, perr := strconv.Atoi(port)
+	return err == nil && perr == nil && n >= 1 && n <= 65535
+}

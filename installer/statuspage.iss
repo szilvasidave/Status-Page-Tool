@@ -456,7 +456,8 @@ begin
     if not RunSetup(ExpandConstant('{app}\statuspage.exe'), False, ErrorMsg) then
     begin
       { The service starts in setup mode; this file makes it listen on the
-        chosen port (instead of 8080) until the setup is completed. }
+        chosen port (instead of 8080) until the setup is completed, and the
+        setup (in the browser or "statuspage setup") keeps that port. }
       SaveStringToFile(DataDir() + '\setup-listen.txt', ':' + GetPort(), False);
       SuppressibleMsgBox('The database could not be set up:' + #13#10#13#10 + ErrorMsg + #13#10#13#10 +
         'You can complete the database setup in the browser at ' + GetBaseURL('') + '/setup ' +
