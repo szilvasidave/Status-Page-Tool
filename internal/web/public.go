@@ -101,7 +101,7 @@ func (s *Server) handleStatusPage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	from := publicStartOfDay(now.In(loc)).AddDate(0, 0, 1-publicHistoryDays)
+	from := store.AddDays(now.In(loc), 1-publicHistoryDays)
 	incidents, err := s.Store.ListIncidentsBetween(ctx, from, now)
 	if err != nil {
 		s.serverError(w, r, err)
@@ -175,10 +175,6 @@ func publicHistoryBar(days []store.DayStatus) ([]publicHistoryDay, string) {
 	return out, summary
 }
 
-func publicStartOfDay(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-}
-
 // ------------------------------------------------------------------ history
 
 type publicHistoryData struct {
@@ -206,19 +202,22 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	loc := s.settings(r).Location()
 	// The window is [from, to) in whole days; the current window ends at the
 	// end of today.
-	latest := publicStartOfDay(time.Now().In(loc)).AddDate(0, 0, 1)
+	latest := store.AddDays(time.Now().In(loc), 1)
 	to := latest
 	if v := strings.TrimSpace(r.URL.Query().Get("before")); v != "" {
-		d, err := time.ParseInLocation(publicDateLayout, v, loc)
+		p, err := time.Parse(publicDateLayout, v)
 		if err != nil {
 			s.badRequest(w, r, fmt.Sprintf("Invalid date %q. Please use the format YYYY-MM-DD.", truncate(v, 40)))
 			return
 		}
+		// Start of that day in the display time zone (also correct where
+		// daylight saving time starts at midnight).
+		d := store.AddDays(time.Date(p.Year(), p.Month(), p.Day(), 12, 0, 0, 0, loc), 0)
 		if d.Before(latest) {
 			to = d
 		}
 	}
-	from := to.AddDate(0, 0, -publicHistoryDays)
+	from := store.AddDays(to, -publicHistoryDays)
 
 	incidents, err := s.Store.ListIncidentsBetween(ctx, from, to)
 	if err != nil {
@@ -246,12 +245,12 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 
 	data := &publicHistoryData{
 		From:     from,
-		Last:     to.AddDate(0, 0, -1),
+		Last:     store.AddDays(to, -1),
 		OlderURL: "/history?before=" + from.Format(publicDateLayout),
 	}
 	if to.Before(latest) {
 		data.NewerURL = "/history"
-		if newer := to.AddDate(0, 0, publicHistoryDays); newer.Before(latest) {
+		if newer := store.AddDays(to, publicHistoryDays); newer.Before(latest) {
 			data.NewerURL += "?before=" + newer.Format(publicDateLayout)
 		}
 	}

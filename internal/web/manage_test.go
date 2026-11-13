@@ -355,7 +355,7 @@ func TestManageIncidentNotifications(t *testing.T) {
 	r = e.post("/manage/incidents", url.Values{"title": {"VPN down"}, "status": {"investigating"}, "message": {"m"},
 		manageImpactField(vpn): {"major_outage"}, "notify": {"on"}})
 	manageStatus(t, r, http.StatusSeeOther)
-	mustContain(t, e.get(r.Location).Body, "nobody is subscribed to the affected services")
+	mustContain(t, e.get(r.Location).Body, "no member of the groups assigned to the affected services has an e-mail address")
 	if count() != 4 {
 		t.Errorf("queued e-mails = %d, want 4", count())
 	}

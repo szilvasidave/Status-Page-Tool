@@ -101,7 +101,7 @@ func (s *Server) adminGroupByExternalID(ctx context.Context, externalID string) 
 		return nil, err
 	}
 	for i := range groups {
-		if groups[i].ExternalID == externalID {
+		if store.NormExternalID(groups[i].ExternalID) == store.NormExternalID(externalID) {
 			return &groups[i], nil
 		}
 	}

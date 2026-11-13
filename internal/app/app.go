@@ -155,6 +155,7 @@ func Run(ctx context.Context, opts Options) error {
 	case <-ctx.Done():
 	}
 	a.log.Info("shutting down")
+	a.stopWork() // stop sending e-mails and syncing first
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)

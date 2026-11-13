@@ -437,7 +437,6 @@ connections from the status page server.
 The connection is entered in the Windows installer, the web setup or with
 `statuspage setup -db postgres …`, and stored in `config.json`. SSL modes:
 `disable`, `allow`, `prefer` (default), `require`, `verify-ca`,
-`verify-full`; the web setup offers `disable`, `prefer`, `require` and
 `verify-full`.
 
 To change the connection later (e.g. a new password), run `statuspage setup`

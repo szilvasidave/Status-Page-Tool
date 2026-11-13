@@ -273,7 +273,7 @@ func TestPostgres(t *testing.T) {
 	if err := Check(ctx, dataDir, p); err != nil {
 		t.Fatal(err)
 	}
-	if config.Exists(dataDir) {
+	if _, err := os.Stat(config.Path(dataDir)); err == nil {
 		t.Fatal("Check wrote config.json")
 	}
 	d, err := openPostgres(ctx, pg)

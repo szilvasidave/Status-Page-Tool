@@ -236,7 +236,7 @@ func (s *Server) manageNotify(r *http.Request, event string, fn func(context.Con
 	case !s.settings(r).SMTPConfigured():
 		return "E-mail is not configured, so no notifications were sent.", false
 	}
-	return "No notification e-mails were sent: nobody is subscribed to the affected services.", false
+	return "No notification e-mails were sent: no member of the groups assigned to the affected services has an e-mail address.", false
 }
 
 // manageDone redirects to target with a flash message made of msg and the

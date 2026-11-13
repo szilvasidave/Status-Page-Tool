@@ -150,6 +150,20 @@ func isSafeMethod(m string) bool {
 // sameOrigin checks the Origin (or Referer) header, if the browser sent one,
 // against the request host and the configured base URL.
 func (m *Manager) sameOrigin(r *http.Request) bool {
+	if CheckOrigin(r, "") {
+		return true
+	}
+	if st, err := m.store.GetSettings(r.Context()); err == nil && st.BaseURL != "" {
+		return CheckOrigin(r, st.BaseURL)
+	}
+	return false
+}
+
+// CheckOrigin reports whether the Origin (or, without it, the Referer) header
+// of a state-changing request belongs to this site: the request host or the
+// host of baseURL (may be empty). Requests without either header (non-browser
+// clients) pass; the CSRF token still applies to them.
+func CheckOrigin(r *http.Request, baseURL string) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "null" {
 		// Sent after a cross-origin redirect and from sandboxed frames; also
@@ -161,7 +175,7 @@ func (m *Manager) sameOrigin(r *http.Request) bool {
 		origin = r.Header.Get("Referer")
 	}
 	if origin == "" {
-		return true // non-browser client; the CSRF token still applies
+		return true
 	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
@@ -170,8 +184,8 @@ func (m *Manager) sameOrigin(r *http.Request) bool {
 	if strings.EqualFold(u.Host, r.Host) {
 		return true
 	}
-	if st, err := m.store.GetSettings(r.Context()); err == nil && st.BaseURL != "" {
-		if b, err := url.Parse(st.BaseURL); err == nil && strings.EqualFold(b.Host, u.Host) {
+	if baseURL != "" {
+		if b, err := url.Parse(baseURL); err == nil && strings.EqualFold(b.Host, u.Host) {
 			return true
 		}
 	}

@@ -79,12 +79,6 @@ func DefaultDataDir() string {
 // Path returns the config file path inside dataDir.
 func Path(dataDir string) string { return filepath.Join(dataDir, FileName) }
 
-// Exists reports whether a config file exists in dataDir.
-func Exists(dataDir string) bool {
-	_, err := os.Stat(Path(dataDir))
-	return err == nil
-}
-
 // Load reads config.json from dataDir. Returns ErrNotConfigured if missing.
 func Load(dataDir string) (*Config, error) {
 	b, err := os.ReadFile(Path(dataDir))

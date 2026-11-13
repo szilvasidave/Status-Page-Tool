@@ -19,7 +19,6 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -117,7 +116,7 @@ func (s *Server) setupModeCSRF(w http.ResponseWriter, r *http.Request) (*http.Re
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, auth.MaxFormBytes)
 		sent := r.PostFormValue(auth.CSRFField)
-		if token == "" || sent == "" || subtle.ConstantTimeCompare([]byte(sent), []byte(token)) != 1 || !setupSameOrigin(r) {
+		if token == "" || sent == "" || subtle.ConstantTimeCompare([]byte(sent), []byte(token)) != 1 || !auth.CheckOrigin(r, "") {
 			return r, false
 		}
 	} else if token == "" {
@@ -128,20 +127,6 @@ func (s *Server) setupModeCSRF(w http.ResponseWriter, r *http.Request) (*http.Re
 		})
 	}
 	return r.WithContext(auth.WithCSRFToken(r.Context(), token)), true
-}
-
-// setupSameOrigin checks the Origin (or Referer) header, if the browser sent
-// one, against the request host.
-func setupSameOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" || origin == "null" {
-		origin = r.Header.Get("Referer")
-	}
-	if origin == "" {
-		return true // non-browser client; the CSRF token still applies
-	}
-	u, err := url.Parse(origin)
-	return err == nil && u.Host != "" && strings.EqualFold(u.Host, r.Host)
 }
 
 // ------------------------------------------------------------------ step 1: database
@@ -161,7 +146,7 @@ type setupDBData struct {
 	Error             string
 }
 
-var setupSSLModes = []string{"disable", "prefer", "require", "verify-full"}
+var setupSSLModes = setup.SSLModes
 
 func (s *Server) handleSetupDatabase(w http.ResponseWriter, r *http.Request) {
 	r, ok := s.setupModeCSRF(w, r)
