@@ -204,6 +204,16 @@ func (m *Manager) loadIdentity(r *http.Request) *Identity {
 		return nil
 	}
 	ctx := r.Context()
+	if !user.Active {
+		// Deactivated by provisioning after this session was started: a
+		// deactivation deletes only the sessions that exist at that moment,
+		// not the one of a sign-in that is just finishing. Deleted, so that
+		// it does not come back if the user is activated again.
+		if err := m.store.DeleteSession(ctx, sess.ID); err != nil {
+			m.log.Error("delete session", "err", err)
+		}
+		return nil
+	}
 	if user.IsLocalAdmin && !m.localLoginEnabled(ctx) {
 		// Sign-in with the local administrator account was turned off: its
 		// sessions stop working at once, as if signed out.

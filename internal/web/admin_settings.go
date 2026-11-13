@@ -85,6 +85,17 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		s.renderStatus(w, r, http.StatusUnprocessableEntity, "admin_settings", "Settings", d)
 		return
 	}
+	if st.LocalLoginEnabled && !cur.LocalLoginEnabled {
+		// Turned on again: sessions of the local administrator from before
+		// it was turned off must not come back to life (like "statuspage
+		// local-login enable"). While it is off they are only ignored, so
+		// that the sign-in page can tell each browser why it was signed
+		// out. Deleted before saving: no new ones can start while it is off.
+		if err := s.Store.DeleteLocalAdminSessions(ctx); err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+	}
 	if err := s.Store.SaveSettings(ctx, &st); err != nil {
 		s.serverError(w, r, err)
 		return
