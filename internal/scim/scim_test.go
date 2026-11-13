@@ -134,7 +134,7 @@ func TestRequestErrors(t *testing.T) {
 			{"filter attribute", "GET", filterPath("/scim/v2/Users", `title eq "Boss"`), "", 400, "invalidFilter"},
 			{"filter trailing and", "GET", filterPath("/scim/v2/Users", `userName eq "a" and`), "", 400, "invalidFilter"},
 			{"filter quote", "GET", filterPath("/scim/v2/Users", `userName eq "a`), "", 400, "invalidFilter"},
-			{"group filter attribute", "GET", filterPath("/scim/v2/Groups", `members.value eq "1"`), "", 400, "invalidFilter"},
+			{"group filter attribute", "GET", filterPath("/scim/v2/Groups", `members.display eq "1"`), "", 400, "invalidFilter"},
 			{"count", "GET", "/scim/v2/Users?count=many", "", 400, "invalidValue"},
 			{"method", "PATCH", "/scim/v2/Users", `{}`, 405, ""},
 			{"method on a user", "POST", "/scim/v2/Users/" + id, `{}`, 405, ""},

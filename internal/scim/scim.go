@@ -128,7 +128,8 @@ type errorJSON struct {
 }
 
 // writeError writes err as a SCIM error response. Errors of the store are
-// mapped to 404 (not found), 409 (uniqueness) and 500 (logged).
+// mapped to 404 (not found), 409 (uniqueness), 401 (the token was deleted or
+// replaced meanwhile) and 500 (logged).
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var (
 		e        *apiError
@@ -140,6 +141,9 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 		e = errorf(http.StatusNotFound, "", "The resource does not exist.")
 	case errors.As(err, &conflict):
 		e = errorf(http.StatusConflict, "uniqueness", "%s", conflict.Detail)
+	case errors.Is(err, store.ErrProvisioningOff):
+		e = errorf(http.StatusUnauthorized, "",
+			"Provisioning was turned off, or the token was replaced, while this request was processed. Enter the current token from Admin → Settings of the status page as Secret Token in Microsoft Entra ID.")
 	default:
 		h.log.Error("SCIM request failed", "method", r.Method, "path", r.URL.Path, "err", err)
 		e = errorf(http.StatusInternalServerError, "", "Internal error of the status page; details are in its log file.")
@@ -180,6 +184,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, e)
 		return
 	}
+	// The writes check that the token is still valid when they happen
+	// (store.ErrProvisioningOff).
+	r = r.WithContext(store.WithSCIMToken(r.Context(), st.SCIMTokenHash))
 	req := &request{w: w, r: r, base: EndpointURL(r, st.BaseURL)}
 	if err := h.route(req); err != nil {
 		h.writeError(w, r, err)

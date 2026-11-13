@@ -201,6 +201,10 @@ type User struct {
 	// Provisioned reports that the user was created or updated by SCIM
 	// provisioning.
 	Provisioned bool
+	// EmailFromUserName reports that provisioning sent no e-mail address and
+	// Email was derived from PrincipalName (the SCIM userName): it changes
+	// with the user name.
+	EmailFromUserName bool
 }
 
 // DisplayName returns the best available human readable name.

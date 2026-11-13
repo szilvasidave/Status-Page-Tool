@@ -18,6 +18,7 @@ const settingsTTL = 10 * time.Second
 type settingField struct {
 	key    string
 	secret bool // stored encrypted
+	own    bool // written only by its own method (SetSCIMToken), never by SaveSettings
 	encode func(st *Settings) string
 	decode func(st *Settings, v string)
 }
@@ -33,6 +34,14 @@ func strField(key string, p func(*Settings) *string) settingField {
 func secretField(key string, p func(*Settings) *string) settingField {
 	f := strField(key, p)
 	f.secret = true
+	return f
+}
+
+// ownField marks a setting that has its own writer: SaveSettings leaves it
+// alone, so that saving the settings form never writes back an older value
+// (e.g. a provisioning token that was replaced or deleted meanwhile).
+func ownField(f settingField) settingField {
+	f.own = true
 	return f
 }
 
@@ -104,8 +113,8 @@ var settingFields = []settingField{
 	secretField("smtp_password", func(s *Settings) *string { return &s.SMTPPassword }),
 	strField("smtp_from", func(s *Settings) *string { return &s.SMTPFrom }),
 
-	strField("scim_token_hash", func(s *Settings) *string { return &s.SCIMTokenHash }),
-	timeField("scim_token_created_at", func(s *Settings) *time.Time { return &s.SCIMTokenCreatedAt }),
+	ownField(strField("scim_token_hash", func(s *Settings) *string { return &s.SCIMTokenHash })),
+	ownField(timeField("scim_token_created_at", func(s *Settings) *time.Time { return &s.SCIMTokenCreatedAt })),
 }
 
 // trimBaseURL removes surrounding spaces and trailing slashes.
@@ -180,7 +189,8 @@ func (s *Store) loadSettings(ctx context.Context) (*Settings, error) {
 
 // SaveSettings stores all fields of st (secrets encrypted with the key) in
 // one transaction and invalidates the settings cache. A trailing "/" is
-// removed from BaseURL.
+// removed from BaseURL. The provisioning token (SCIMTokenHash,
+// SCIMTokenCreatedAt) is not stored: only SetSCIMToken changes it.
 func (s *Store) SaveSettings(ctx context.Context, st *Settings) error {
 	if st == nil {
 		return fmt.Errorf("save settings: no settings given")
@@ -201,6 +211,9 @@ func (s *Store) SaveSettings(ctx context.Context, st *Settings) error {
 	}
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		for i, f := range settingFields {
+			if f.own {
+				continue
+			}
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO settings (key, value) VALUES (?, ?)
 				 ON CONFLICT (key) DO UPDATE SET value = excluded.value`, f.key, values[i]); err != nil {

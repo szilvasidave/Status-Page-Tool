@@ -57,7 +57,8 @@ const provisioningLockID = 7395000
 
 // lockProvisioning serialises the transactions that find users or groups by
 // name before creating or changing them (provisioning and sign-ins), so that
-// two of them cannot both decide that a user does not exist yet. PostgreSQL
+// two of them cannot both decide that a user does not exist yet, and the
+// provisioning writes with SetSCIMToken (see lockSCIMWrite). PostgreSQL
 // needs a lock for that; SQLite runs writing transactions one at a time
 // anyway (BEGIN IMMEDIATE). Call it first in the transaction.
 func (s *Store) lockProvisioning(ctx context.Context, tx *db.Tx) error {
@@ -66,6 +67,45 @@ func (s *Store) lockProvisioning(ctx context.Context, tx *db.Tx) error {
 	}
 	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(?)`, provisioningLockID)
 	return err
+}
+
+// ErrProvisioningOff is returned by the provisioning writes of a request
+// whose token was deleted ("Turn off provisioning") or replaced after the
+// request was authenticated.
+var ErrProvisioningOff = errors.New("provisioning was turned off or its token was replaced")
+
+type scimTokenKey struct{}
+
+// WithSCIMToken returns a context for the provisioning writes of a request
+// that was authenticated with the token of this hash: they fail with
+// ErrProvisioningOff unless it is still the stored token.
+func WithSCIMToken(ctx context.Context, hash string) context.Context {
+	return context.WithValue(ctx, scimTokenKey{}, hash)
+}
+
+// lockSCIMWrite starts the transaction of a provisioning write: it calls
+// lockProvisioning and then checks the token of the request (WithSCIMToken)
+// against the stored one. SetSCIMToken takes the same lock, so once turning
+// provisioning off has cleared the provisioned flags, no request that was
+// authenticated before can set them again. Without WithSCIMToken (tests,
+// tools) there is no token to check.
+func (s *Store) lockSCIMWrite(ctx context.Context, tx *db.Tx) error {
+	if err := s.lockProvisioning(ctx, tx); err != nil {
+		return err
+	}
+	want, ok := ctx.Value(scimTokenKey{}).(string)
+	if !ok {
+		return nil
+	}
+	var stored string
+	err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, "scim_token_hash").Scan(&stored)
+	if err = notFound(err); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	if stored == "" || stored != want {
+		return ErrProvisioningOff
+	}
+	return nil
 }
 
 // inTxRetry runs fn in a transaction and repeats it when PostgreSQL reports a
@@ -148,6 +188,9 @@ type SCIMUserData struct {
 	Email      string // stored in lower case; "" = none
 	Name       string
 	Active     bool
+	// EmailFromUserName: no address was sent, Email was derived from
+	// UserName (User.EmailFromUserName).
+	EmailFromUserName bool
 }
 
 func (in SCIMUserData) clean() SCIMUserData {
@@ -170,7 +213,7 @@ func (s *Store) CreateSCIMUser(ctx context.Context, in SCIMUserData) (u *User, a
 	}
 	err = s.inTxRetry(ctx, func(tx *db.Tx) error {
 		adopted = false
-		if err := s.lockProvisioning(ctx, tx); err != nil {
+		if err := s.lockSCIMWrite(ctx, tx); err != nil {
 			return err
 		}
 		const notAdmin = " AND u.is_local_admin = ?"
@@ -188,12 +231,13 @@ func (s *Store) CreateSCIMUser(ctx context.Context, in SCIMUserData) (u *User, a
 			return err
 		}
 		var id int64
+		wasActive := true // a new row
 		if existing != nil {
-			id, adopted = existing.ID, true
+			id, adopted, wasActive = existing.ID, true, existing.Active
 		} else if err := tx.QueryRowContext(ctx, `INSERT INTO users (created_at) VALUES (?) RETURNING id`, db.Now()).Scan(&id); err != nil {
 			return err
 		}
-		if err := writeSCIMUser(ctx, tx, id, in); err != nil {
+		if err := writeSCIMUser(ctx, tx, id, wasActive, in); err != nil {
 			return err
 		}
 		u, err = findUser(ctx, tx, "u.id = ?", id)
@@ -218,7 +262,7 @@ func (s *Store) UpdateSCIMUser(ctx context.Context, id int64, change func(cur *U
 	)
 	err := s.inTxRetry(ctx, func(tx *db.Tx) error {
 		changeErr = nil
-		if err := s.lockProvisioning(ctx, tx); err != nil {
+		if err := s.lockSCIMWrite(ctx, tx); err != nil {
 			return err
 		}
 		cur, err := findUser(ctx, tx, "u.id = ? AND u.is_local_admin = ?", id, false)
@@ -240,7 +284,7 @@ func (s *Store) UpdateSCIMUser(ctx context.Context, id int64, change func(cur *U
 		} else if !errors.Is(err, ErrNotFound) {
 			return err
 		}
-		if err := writeSCIMUser(ctx, tx, id, in); err != nil {
+		if err := writeSCIMUser(ctx, tx, id, cur.Active, in); err != nil {
 			return err
 		}
 		out, err = findUser(ctx, tx, "u.id = ?", id)
@@ -257,10 +301,14 @@ func (s *Store) UpdateSCIMUser(ctx context.Context, id int64, change func(cur *U
 	return out, nil
 }
 
-// writeSCIMUser stores the provisioned attributes of user id. The e-mail
-// address is taken from any other user that still has it (provisioning is
-// authoritative for it). Deactivating a user ends their sessions.
-func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, in SCIMUserData) error {
+// writeSCIMUser stores the provisioned attributes of user id (wasActive: its
+// active value before). The e-mail address is taken from any other user that
+// still has it (provisioning is authoritative for it). Deactivating a user
+// ends their sessions. Activating a user again also unlinks the sign-in
+// identity (subject and directory id): Microsoft Entra ID finds users by
+// their user name, which may belong to another person by now, so the next
+// sign-in links the user again by user name or e-mail address.
+func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, wasActive bool, in SCIMUserData) error {
 	if in.Email != "" {
 		// The repeated "email <> ''" lets SQLite use users_email_idx.
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND email <> '' AND id <> ?`, in.Email, id); err != nil {
@@ -268,11 +316,17 @@ func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, in SCIMUserData) er
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE users SET principal_name = ?, scim_external_id = ?, email = ?, name = ?, active = ?, provisioned = ? WHERE id = ?`,
-		in.UserName, in.ExternalID, in.Email, in.Name, in.Active, true, id); err != nil {
+		`UPDATE users SET principal_name = ?, scim_external_id = ?, email = ?, email_from_user_name = ?, name = ?, active = ?, provisioned = ?
+		 WHERE id = ?`,
+		in.UserName, in.ExternalID, in.Email, in.EmailFromUserName && in.Email != "", in.Name, in.Active, true, id); err != nil {
 		return err
 	}
-	if !in.Active {
+	if in.Active && !wasActive {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET oidc_subject = NULL, directory_id = NULL WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	if !in.Active || !wasActive {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
 			return err
 		}
@@ -285,9 +339,10 @@ func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, in SCIMUserData) er
 // SCIMGroupQuery selects provisioned groups; every non-empty field must
 // match.
 type SCIMGroupQuery struct {
-	ID          int64  // 0 = any
-	DisplayName string // case-insensitive
-	ExternalID  string // see NormExternalID
+	ID          int64   // 0 = any
+	DisplayName string  // case-insensitive
+	ExternalID  string  // see NormExternalID
+	MemberIDs   []int64 // users who are all members
 }
 
 func (q SCIMGroupQuery) where() (string, []any) {
@@ -304,6 +359,10 @@ func (q SCIMGroupQuery) where() (string, []any) {
 	if q.ExternalID != "" {
 		conds = append(conds, "g.external_id = ?")
 		args = append(args, NormExternalID(q.ExternalID))
+	}
+	for _, uid := range q.MemberIDs {
+		conds = append(conds, "EXISTS (SELECT 1 FROM user_groups ug WHERE ug.group_id = g.id AND ug.user_id = ?)")
+		args = append(args, uid)
 	}
 	return strings.Join(conds, " AND "), args
 }
@@ -401,7 +460,7 @@ func (s *Store) CreateSCIMGroup(ctx context.Context, in SCIMGroupData) (g *Group
 		ext = SCIMGeneratedIDPrefix + secret.RandomToken(12)
 	}
 	err = s.inTxRetry(ctx, func(tx *db.Tx) error {
-		if err := s.lockProvisioning(ctx, tx); err != nil {
+		if err := s.lockSCIMWrite(ctx, tx); err != nil {
 			return err
 		}
 		var existing int64
@@ -448,10 +507,11 @@ func (s *Store) CreateSCIMGroup(ctx context.Context, in SCIMGroupData) (g *Group
 
 // UpdateSCIMGroup changes a provisioned group (PUT, PATCH): change gets the
 // current attributes and members and modifies them; its error is returned
-// unchanged and nothing is stored. Returns ErrNotFound for an unknown or not
-// provisioned group, and an error wrapping ErrSCIMConflict if another
-// provisioned group has the new display name or another group has the new
-// external id.
+// unchanged and nothing is stored. The external id is only changed if it was
+// generated (SCIMGeneratedIDPrefix); a real one is kept. Returns ErrNotFound
+// for an unknown or not provisioned group, and an error wrapping
+// ErrSCIMConflict if another provisioned group has the new display name or
+// another group has the new external id.
 func (s *Store) UpdateSCIMGroup(ctx context.Context, id int64, change func(g *SCIMGroupData) error) (*Group, error) {
 	var (
 		out       *Group
@@ -459,7 +519,7 @@ func (s *Store) UpdateSCIMGroup(ctx context.Context, id int64, change func(g *SC
 	)
 	err := s.inTxRetry(ctx, func(tx *db.Tx) error {
 		changeErr = nil
-		if err := s.lockProvisioning(ctx, tx); err != nil {
+		if err := s.lockSCIMWrite(ctx, tx); err != nil {
 			return err
 		}
 		cur, err := scimGroup(ctx, tx, id)
@@ -488,7 +548,10 @@ func (s *Store) UpdateSCIMGroup(ctx context.Context, id int64, change func(g *SC
 			return err
 		}
 		ext := NormExternalID(data.ExternalID)
-		if ext == "" {
+		if ext == "" || !strings.HasPrefix(cur.ExternalID, SCIMGeneratedIDPrefix) {
+			// The external id is the group's id in the groups claim: it
+			// decides who gets the group's role once provisioning ends. Only
+			// a generated one is replaced (by the first one sent).
 			ext = cur.ExternalID
 		}
 		if ext != cur.ExternalID {
@@ -526,7 +589,7 @@ func (s *Store) UpdateSCIMGroup(ctx context.Context, id int64, change func(g *SC
 // ErrNotFound for an unknown or not provisioned group.
 func (s *Store) DeleteSCIMGroup(ctx context.Context, id int64) error {
 	err := s.inTxRetry(ctx, func(tx *db.Tx) error {
-		if err := s.lockProvisioning(ctx, tx); err != nil {
+		if err := s.lockSCIMWrite(ctx, tx); err != nil {
 			return err
 		}
 		if _, err := scimGroup(ctx, tx, id); err != nil {
@@ -588,16 +651,21 @@ func setSCIMMembers(ctx context.Context, tx *db.Tx, groupID int64, members []int
 // ===================================================================== token
 
 // SetSCIMToken stores the hash of the provisioning token and when it was
-// created (Settings.SCIMTokenHash, SCIMTokenCreatedAt). An empty hash turns
-// provisioning off: all groups and users are then no longer provisioned, so
-// that sign-ins manage the group memberships, names and e-mail addresses
-// again.
+// created (Settings.SCIMTokenHash, SCIMTokenCreatedAt; SaveSettings does not
+// store them). An empty hash turns provisioning off: all groups and users are
+// then no longer provisioned, so that sign-ins manage the group memberships,
+// names and e-mail addresses again. Provisioning writes of requests that were
+// authenticated with the previous token fail from then on (lockSCIMWrite).
 func (s *Store) SetSCIMToken(ctx context.Context, hash string, created time.Time) error {
 	if hash == "" {
 		created = time.Time{}
 	}
 	st := Settings{SCIMTokenHash: hash, SCIMTokenCreatedAt: created}
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
+		// Waits for running provisioning writes (see lockSCIMWrite).
+		if err := s.lockProvisioning(ctx, tx); err != nil {
+			return err
+		}
 		for _, f := range settingFields {
 			if f.key != "scim_token_hash" && f.key != "scim_token_created_at" {
 				continue

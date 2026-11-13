@@ -162,6 +162,11 @@ CREATE INDEX users_scim_external_id_idx ON users (scim_external_id);
 ALTER TABLE idp_groups ADD COLUMN provisioned {{BOOL}} NOT NULL DEFAULT {{FALSE}};
 DELETE FROM settings WHERE key = 'directory_sync_enabled';
 `,
+	// 3: users.email_from_user_name – provisioning sent no e-mail address, so
+	//    the address was derived from the SCIM userName and follows renames.
+	`
+ALTER TABLE users ADD COLUMN email_from_user_name {{BOOL}} NOT NULL DEFAULT {{FALSE}};
+`,
 }
 
 func (d *DB) dialect(sql string) string {
