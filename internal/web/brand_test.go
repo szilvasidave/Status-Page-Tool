@@ -7,20 +7,25 @@ package web
 import (
 	"bytes"
 	"context"
+	"html/template"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io/fs"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
+	"github.com/szilvasidave/status-page-tool/internal/config"
+	"github.com/szilvasidave/status-page-tool/internal/db"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 	"github.com/szilvasidave/status-page-tool/internal/theme"
 )
@@ -161,7 +166,8 @@ func TestBrandPageAccess(t *testing.T) {
 		`placeholder="Default (#ffffff)"`, `placeholder="Default (#151b23)"`,
 		`<input type="color" data-color-for="accent_light" aria-label="Accent colour for light mode: colour picker" hidden>`,
 		`<label for="header_dark">Header background</label>`,
-		`class="brand-preview-page" style="--bg:#f5f7fa;`, `color-scheme:dark"`,
+		`class="brand-preview-page" style="--bg:#f5f7fa;`, `--primary-text:#ffffff;--primary-ui:#1f5bd8;--link:#1f5bd8;`,
+		`--primary-ui:#2f6be0;--link:#7aa9ff;`, `color-scheme:dark"`,
 		`action="/admin/branding/reset" data-confirm=`, "Default icon")
 	if strings.Contains(r.Body, "_remove") {
 		t.Error("remove checkboxes shown without stored images")
@@ -223,7 +229,7 @@ func TestBrandSave(t *testing.T) {
 	light, _ := theme.Resolve(st.ThemeColors())
 	mustContain(t, r.Body, `<html lang="en" data-theme="dark">`, `<meta name="color-scheme" content="dark">`,
 		"<style>"+theme.CSS(st.ThemeColors())+"</style>",
-		`--primary:#ffd400;--primary-hover:#dbb600;--primary-text:#111111;--link:#856e00;`,
+		`--primary:#ffd400;--primary-hover:#ffda24;--primary-text:#111111;--primary-ui:#a38800;--link:#856e00;`,
 		`<link rel="icon" href="/brand/favicon?v=cffd400" type="image/svg+xml">`,
 		`<a class="brand brand-with-logo" href="/"><img class="brand-logo" src="/brand/logo-dark?v=`+st.LogoDark+`" alt=""><span class="brand-name">Status</span></a>`)
 	if light.Primary != "#ffd400" {
@@ -253,7 +259,7 @@ func TestBrandSave(t *testing.T) {
 		`<img class="brand-logo" src="/brand/logo-light?v=`+st.LogoLight+`" alt="Status"></a>`,
 		`<span class="brand-image-chip" style="background:#c8102e"><img src="/brand/logo-light?v=`+st.LogoLight+`" alt="Current logo for light mode">`,
 		`style="background:#660000"><img src="/brand/logo-dark?v=`+st.LogoDark+`"`,
-		`name="logo_light_remove"`, `name="logo_dark_remove"`,
+		`name="logo_light_remove"> Remove the logo for light mode</label>`, `name="logo_dark_remove"> Remove the logo for dark mode</label>`,
 		`<span class="brand-image-chip" style="background:#f3f5f8"><img src="/brand/favicon?v=cffd400" alt="Current favicon">`,
 		"Links use the darker shade #856e00 so that they stay readable.",
 		`value="#ffd400"`, `<option value="light" selected>Always light</option>`,
@@ -266,6 +272,7 @@ func TestBrandSave(t *testing.T) {
 	brandStatus(t, "save favicon", brandPost(t, e, "/admin/branding", f, map[string]brandFile{"favicon": {"icon.png", logo}}), http.StatusSeeOther)
 	st = brandSettings(t, e)
 	mustContain(t, e.get("/").Body, `<link rel="icon" href="/brand/favicon?v=`+st.Favicon+`">`)
+	mustContain(t, e.get("/admin/branding").Body, `name="favicon_remove"> Remove the favicon</label>`)
 }
 
 // The site name is shown next to a logo unless turned off; a logo uploaded
@@ -322,9 +329,16 @@ func TestBrandSaveInvalid(t *testing.T) {
 			"accent_dark", "Enter a colour as a hex code such as #1f5bd8, or leave the field empty for the default."},
 		{"mode", func(f url.Values) { f.Set("theme_mode", "sepia") }, nil, "theme_mode", "Choose one of the offered appearances."},
 		{"script", nil, map[string]brandFile{"logo_dark": {"logo.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`)}},
-			"logo_dark", "This SVG contains scripts or event handlers, which are not allowed. Export it again as a plain SVG, or use a PNG."},
+			"logo_dark", brandMsgSVGActive},
 		{"onload", nil, map[string]brandFile{"logo_light": {"logo.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>`)}},
-			"logo_light", "This SVG contains scripts or event handlers"},
+			"logo_light", brandMsgSVGActive},
+		// A document type declaration with an internal subset can give the
+		// root a default onload attribute.
+		{"doctype subset", nil, map[string]brandFile{"favicon": {"icon.svg", []byte(`<?xml version="1.0"?>` + "\n" +
+			`<!DOCTYPE svg [<!ATTLIST svg onload CDATA "alert(1)">]>` + "\n" + `<svg xmlns="http://www.w3.org/2000/svg"/>`)}},
+			"favicon", brandMsgSVGActive},
+		{"no namespace", nil, map[string]brandFile{"logo_light": {"logo.svg", []byte(`<svg viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`)}},
+			"logo_light", template.HTMLEscapeString(brandMsgSVGNamespace)},
 		{"invalid svg", nil, map[string]brandFile{"logo_light": {"logo.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><g></svg>`)}},
 			"logo_light", "This file is not a valid SVG image."},
 		{"too large", nil, map[string]brandFile{"logo_light": {"logo.png", big}, "favicon": {"icon.png", logo}},
@@ -360,6 +374,14 @@ func TestBrandSaveInvalid(t *testing.T) {
 		})
 	}
 }
+
+// The messages for SVG images that theme.CheckImage refuses.
+const (
+	brandMsgSVGActive = "This SVG contains active content (scripts, event handlers, embedded documents, entity or document " +
+		"type declarations, or style sheet links), which is not allowed. Export it again as a plain SVG, or use a PNG."
+	brandMsgSVGNamespace = `This SVG has no xmlns="http://www.w3.org/2000/svg" on its svg element, so browsers would not ` +
+		"show it. Add it, or export the file again."
+)
 
 // brandJPEG returns a small JPEG image.
 func brandJPEG(t *testing.T) []byte {
@@ -436,13 +458,136 @@ func TestBrandRemoveAndReset(t *testing.T) {
 	mustContain(t, e.get(r.Location).Body, "The default branding is restored.")
 	st3 := brandSettings(t, e)
 	if st3.ThemeMode != theme.ModeAuto || st3.ThemeAccentLight != "" || st3.ThemeHeaderDark != "" || !st3.ThemeShowSiteName ||
-		st3.LogoLight != "" || st3.LogoDark != "" || st3.Favicon != "" || st3.SiteName != st.SiteName {
+		st3.LogoLight != "" || st3.LogoDark != "" || st3.Favicon != "" {
 		t.Fatalf("after reset: %+v", st3)
 	}
 	e.logout()
 	r = e.get("/")
 	mustContain(t, r.Body, `<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">`, `<span class="brand-mark" aria-hidden="true"></span>`)
 	publicMustNotContain(t, r.Body, "<style", "data-theme")
+}
+
+// brandOtherProcess returns a store on the database of e with a cache of
+// its own, like the command "statuspage local-login" in another process:
+// what it changes, the server sees only after its settings cache expires.
+func brandOtherProcess(t *testing.T, e *testEnv) (*store.Store, *db.DB) {
+	t.Helper()
+	d, err := db.Open(context.Background(), config.DriverSQLite, filepath.Join(e.DataDir, "statuspage.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return store.New(d, nil), d // no key: only SetLocalLoginEnabled is used
+}
+
+// brandOtherRows returns the stored settings rows (key → value as stored,
+// secrets encrypted) except those of the branding.
+func brandOtherRows(t *testing.T, d *db.DB) map[string]string {
+	t.Helper()
+	rows, err := d.QueryContext(context.Background(), `SELECT key, value FROM settings`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	m := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(k, "theme_") && !strings.HasPrefix(k, "brand_") {
+			m[k] = v
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// Saving and restoring the branding writes only the branding settings. The
+// other settings stay exactly as stored (secrets are not encrypted again),
+// also when the server still has an older copy of them in its settings
+// cache: here the local sign-in is switched by the command line after the
+// branding page was loaded.
+func TestBrandKeepsOtherSettings(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	publicSetSettings(t, e, func(st *store.Settings) {
+		st.SiteName, st.BaseURL, st.PublicAccess = "ACME Status", "https://status.example.com", false
+		st.MailMethod, st.SMTPHost, st.SMTPPassword = store.MailSMTP, "smtp.example.com", "smtp-secret"
+		st.OIDCClientSecret = "oidc-secret"
+	})
+	// An administrator from single sign-on: switching the local sign-in
+	// ends the sessions of the local administrator account.
+	e.loginAs("brand-admin@example.com", store.RoleAdmin)
+	cli, d := brandOtherProcess(t, e)
+	check := func(what string, rows map[string]string, localLogin bool) {
+		t.Helper()
+		st := brandSettings(t, e)
+		if st.SiteName != "ACME Status" || st.BaseURL != "https://status.example.com" || st.PublicAccess ||
+			st.MailMethod != store.MailSMTP || st.SMTPHost != "smtp.example.com" || st.SMTPPassword != "smtp-secret" ||
+			st.OIDCClientSecret != "oidc-secret" || st.LocalLoginEnabled != localLogin {
+			t.Errorf("%s changed other settings: %+v", what, st)
+		}
+		if got := brandOtherRows(t, d); !maps.Equal(got, rows) {
+			t.Errorf("%s rewrote other settings rows:\n%v\nwant\n%v", what, got, rows)
+		}
+	}
+
+	brandStatus(t, "branding page", e.get("/admin/branding"), http.StatusOK) // loads the settings into the cache
+	if changed, err := cli.SetLocalLoginEnabled(ctx, false); err != nil || !changed {
+		t.Fatalf("local-login disable: %v %v", changed, err)
+	}
+	if st := brandSettings(t, e); !st.LocalLoginEnabled {
+		t.Fatal("the server's settings cache was not stale: the test does not check what it should")
+	}
+	rows := brandOtherRows(t, d)
+	f := brandFields(brandSettings(t, e))
+	f.Set("accent_light", "#c8102e")
+	f.Set("theme_mode", "dark")
+	brandStatus(t, "save", brandPost(t, e, "/admin/branding", f, nil), http.StatusSeeOther)
+	check("saving the branding", rows, false)
+	if st := brandSettings(t, e); st.ThemeAccentLight != "#c8102e" || st.ThemeMode != theme.ModeDark {
+		t.Fatalf("branding not saved: %+v", st)
+	}
+
+	brandStatus(t, "branding page", e.get("/admin/branding"), http.StatusOK)
+	if changed, err := cli.SetLocalLoginEnabled(ctx, true); err != nil || !changed {
+		t.Fatalf("local-login enable: %v %v", changed, err)
+	}
+	rows = brandOtherRows(t, d)
+	brandStatus(t, "reset", e.post("/admin/branding/reset", nil), http.StatusSeeOther)
+	check("restoring the default branding", rows, true)
+	if st := brandSettings(t, e); st.ThemeAccentLight != "" || st.ThemeMode != theme.ModeAuto {
+		t.Fatalf("branding not reset: %+v", st)
+	}
+}
+
+// The dark accent field carries what static/app.js needs to update its
+// default while the light accent is edited; the default the page shows is
+// the one of package theme.
+func TestBrandDarkAccentFallback(t *testing.T) {
+	e := newTestEnv(t)
+	e.loginAdmin()
+	_, defDark := theme.Resolve(theme.Colors{})
+	field := regexp.MustCompile(`<input id="accent_dark"[^>]*>`)
+	for _, accent := range []string{"", "#ffd400", "#002855", "#c8102e"} {
+		f := brandFields(brandSettings(t, e))
+		f.Set("accent_light", accent)
+		brandStatus(t, "save "+accent, brandPost(t, e, "/admin/branding", f, nil), http.StatusSeeOther)
+		body := e.get("/admin/branding").Body
+		_, dark := theme.Resolve(theme.Colors{AccentLight: accent})
+		tag := field.FindString(body)
+		mustContain(t, tag, `placeholder="Default (`+dark.Primary+`)" data-default="`+dark.Primary+`"`,
+			` data-fallback-for="accent_light" data-fallback-default="`+defDark.Primary+`" data-fallback-bg="`+defDark.Bg+`"`)
+		if n := strings.Count(body, "data-fallback-for="); n != 1 {
+			t.Errorf("%d fields with data-fallback-for", n)
+		}
+	}
+	if defDark.Primary != "#2f6be0" || defDark.Bg != "#0d1117" {
+		t.Errorf("default dark accent %s on %s", defDark.Primary, defDark.Bg)
+	}
 }
 
 func TestBrandImages(t *testing.T) {
@@ -550,19 +695,39 @@ func brandResolve(v string, vars map[string]string) string {
 	return v
 }
 
-// The defaults of package theme are the tokens of static/style.css, and the
-// two dark blocks of style.css (following the device, forced) agree.
-func TestBrandCSSSync(t *testing.T) {
+// brandStyleCSS returns static/style.css without comments.
+func brandStyleCSS(t *testing.T) string {
+	t.Helper()
 	b, err := fs.ReadFile(assets, "static/style.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	css := regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(string(b), "")
+	return regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(string(b), "")
+}
+
+// The media queries and selectors of the dark tokens, in style.css and in
+// theme.CSS: only on screen (printing uses the light tokens), following the
+// device unless forced to light mode, or forced to dark mode.
+const (
+	brandDarkAuto   = `@media screen and (prefers-color-scheme: dark) {` + "\n" + `  :root:not([data-theme="light"])`
+	brandDarkForced = `@media screen {` + "\n" + `  :root[data-theme="dark"]`
+)
+
+// The defaults of package theme are the tokens of static/style.css, the
+// two dark blocks of style.css (following the device, forced) agree, and
+// theme.CSS uses the selectors of style.css.
+func TestBrandCSSSync(t *testing.T) {
+	css := brandStyleCSS(t)
 	root := brandCSSBlock(t, css, ":root")
-	auto := brandCSSBlock(t, css, `@media (prefers-color-scheme: dark) {`+"\n"+`  :root:not([data-theme="light"])`)
-	forced := brandCSSBlock(t, css, `:root[data-theme="dark"]`)
+	auto := brandCSSBlock(t, css, brandDarkAuto)
+	forced := brandCSSBlock(t, css, brandDarkForced)
 	if len(auto) < 10 || !slices.Equal(auto, forced) {
 		t.Fatalf("the dark blocks differ:\n%v\n%v", auto, forced)
+	}
+	// No dark tokens outside these two blocks (e.g. a forced block without
+	// the screen media query).
+	if n := strings.Count(css, "--bg: #0d1117;"); n != 2 {
+		t.Errorf("style.css sets the dark --bg %d times", n)
 	}
 
 	lightVars, darkVars := map[string]string{}, map[string]string{}
@@ -581,7 +746,7 @@ func TestBrandCSSSync(t *testing.T) {
 			"--bg": m.p.Bg, "--surface": m.p.Surface, "--surface-2": m.p.Surface2, "--surface-hover": m.p.SurfaceHover,
 			"--border": m.p.Border, "--text": m.p.Text, "--text-muted": m.p.TextMuted,
 			"--primary": m.p.Primary, "--primary-hover": m.p.PrimaryHover, "--primary-text": m.p.PrimaryText, "--link": m.p.Link,
-			"--header-bg": m.p.HeaderBg, "--header-text": m.p.HeaderText, "--header-text-muted": m.p.HeaderTextMuted,
+			"--primary-ui": m.p.PrimaryUI, "--header-bg": m.p.HeaderBg, "--header-text": m.p.HeaderText, "--header-text-muted": m.p.HeaderTextMuted,
 			"--header-hover": m.p.HeaderHover, "--header-current": m.p.HeaderCurrent, "--header-line": m.p.HeaderLine,
 		} {
 			if got := brandResolve(m.vars[name], m.vars); got != want {
@@ -601,6 +766,14 @@ func TestBrandCSSSync(t *testing.T) {
 		if len(lines) != 3 {
 			t.Fatalf("theme.CSS: %q", lines)
 		}
+		// The same selectors and media queries as style.css (without the
+		// white space), so that the block after the stylesheet wins.
+		compact := strings.NewReplacer("\n", "", "  ", "", " {", "{")
+		for i, sel := range []string{":root", brandDarkAuto, brandDarkForced} {
+			if want := compact.Replace(sel) + "{"; !strings.HasPrefix(lines[i], want) {
+				t.Errorf("theme.CSS line %d = %.80q…, want the prefix %q", i, lines[i], want)
+			}
+		}
 		n := 0
 		for _, m := range regexp.MustCompile(`(--[\w-]+):([^;]+);`).FindAllStringSubmatch(lines[c.block], -1) {
 			n++
@@ -611,8 +784,64 @@ func TestBrandCSSSync(t *testing.T) {
 				t.Errorf("theme.CSS default %s = %q, style.css %q", m[1], m[2], got)
 			}
 		}
-		if n < 11 {
+		if n < 12 {
 			t.Errorf("theme.CSS block %d sets %d tokens", c.block, n)
+		}
+	}
+}
+
+// brandCSSRules returns the rules of css (comments removed) whose selector
+// list, with white space collapsed, is sel: the declarations of each, also
+// of rules inside media queries.
+func brandCSSRules(css, sel string) []string {
+	var decls []string
+	for _, m := range regexp.MustCompile(`([^{};]+)\{([^{}]*)\}`).FindAllStringSubmatch(css, -1) {
+		if strings.Join(strings.Fields(m[1]), " ") == sel {
+			decls = append(decls, m[2])
+		}
+	}
+	return decls
+}
+
+// The <style> block of the branding follows the stylesheet (so it wins at
+// equal specificity), and the rules of style.css use the tokens it sets:
+// the header the --header-* tokens, focus outlines, the border of a focused
+// input and the marker of the current admin section --primary-ui.
+func TestBrandCSSTokensUsed(t *testing.T) {
+	e := newTestEnv(t)
+	publicSetSettings(t, e, func(st *store.Settings) { st.ThemeAccentLight = "#ffd400" })
+	body := e.get("/").Body
+	link, style := strings.Index(body, `<link rel="stylesheet" href="/static/style.css">`), strings.Index(body, "<style>")
+	if link < 0 || style < link || style > strings.Index(body, "</head>") {
+		t.Errorf("the <style> block (at %d) does not follow the stylesheet link (at %d) in the head", style, link)
+	}
+
+	css := brandStyleCSS(t)
+	focus := `button:focus-visible, .btn:focus-visible, a:focus-visible, summary:focus-visible, .table-wrap:focus-visible, ` +
+		`input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible`
+	for _, c := range []struct{ sel, want string }{
+		{".site-header", "background: var(--header-bg);"},
+		{".site-header", "border-bottom: 1px solid var(--header-line);"},
+		{".brand", "color: var(--header-text);"},
+		{".site-nav a", "color: var(--header-text-muted);"},
+		{`.site-nav a[aria-current="page"]`, "background: var(--header-current);"},
+		{".site-nav a:hover", "background: var(--header-hover);"},
+		{".site-header a:focus-visible, .site-header button:focus-visible", "outline-color: var(--header-text);"},
+		{focus, "outline: 2px solid var(--primary-ui);"},
+		{"input:focus, select:focus, textarea:focus", "border-color: var(--primary-ui);"},
+		{`.subnav a[aria-current="page"]`, "border-bottom-color: var(--primary-ui);"},
+		{`.subnav a[aria-current="page"]`, "border-color: var(--primary-ui); box-shadow: inset 0 0 0 1px var(--primary-ui);"},
+	} {
+		rules := brandCSSRules(css, c.sel)
+		if !slices.ContainsFunc(rules, func(d string) bool { return strings.Contains(d, c.want) }) {
+			t.Errorf("style.css: no rule %q with %q (rules: %q)", c.sel, c.want, rules)
+		}
+	}
+	// Outlines and the marker of the current section never use the plain
+	// accent, which may be too light (or too dark) to be seen.
+	for _, m := range regexp.MustCompile(`([^{};]+)\{([^{}]*)\}`).FindAllStringSubmatch(css, -1) {
+		if (strings.Contains(m[1], ":focus") || strings.Contains(m[1], ".subnav")) && strings.Contains(m[2], "var(--primary)") {
+			t.Errorf("style.css: %s uses var(--primary): %s", strings.TrimSpace(m[1]), strings.TrimSpace(m[2]))
 		}
 	}
 }

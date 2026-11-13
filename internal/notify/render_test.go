@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/szilvasidave/status-page-tool/internal/store"
+	"github.com/szilvasidave/status-page-tool/internal/theme"
 )
 
 func renderSettings() *store.Settings {
@@ -256,4 +257,98 @@ func TestRenderButtonColor(t *testing.T) {
 		assertContains(t, tc.accent+" maintenance html", e.HTML,
 			`bgcolor="`+tc.bg+`" style="background-color:`+tc.bg+`;`, `style="color:`+tc.text+`;text-decoration:none;font-weight:bold;">View maintenance</a>`)
 	}
+}
+
+// testEmailBeforeBranding is the HTML of the test e-mail for renderSettings()
+// (sent with Microsoft Graph, no sender) as commit f1e2884, the last one
+// before branding, rendered it with renderTestEmail.
+const testEmailBeforeBranding = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>[Acme IT] Test e-mail</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f6f7f9;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f6f7f9" style="background-color:#f6f7f9;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="width:600px;max-width:600px;background-color:#ffffff;border:1px solid #e2e5ea;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:22px;color:#1c2430;">
+<tr><td style="padding:16px 24px;border-bottom:1px solid #e2e5ea;font-size:14px;font-weight:bold;color:#5f6b7a;">Acme IT</td></tr>
+<tr><td style="padding:24px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+<td bgcolor="#1f9d55" style="background-color:#1f9d55;color:#ffffff;font-size:13px;line-height:18px;font-weight:bold;padding:4px 10px;border-radius:4px;">Test</td>
+</tr></table>
+<h1 style="margin:12px 0 6px 0;font-size:20px;line-height:26px;color:#1c2430;">Test e-mail</h1>
+<p style="margin:0 0 16px 0;color:#5f6b7a;">E-mail delivery works. Notifications will be sent with these settings.</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;">
+<tr><td style="padding:2px 16px 2px 0;color:#5f6b7a;vertical-align:top;white-space:nowrap;">Sent with</td><td style="padding:2px 0;vertical-align:top;">Microsoft 365 (Microsoft Graph)</td></tr>
+<tr><td style="padding:2px 16px 2px 0;color:#5f6b7a;vertical-align:top;white-space:nowrap;">Sender</td><td style="padding:2px 0;vertical-align:top;"></td></tr>
+</table>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 0 0;"><tr>
+<td bgcolor="#1d5fd1" style="background-color:#1d5fd1;border-radius:6px;padding:10px 18px;"><a href="https://status.example.com/" style="color:#ffffff;text-decoration:none;font-weight:bold;">Open the status page</a></td>
+</tr></table>
+</td></tr>
+<tr><td style="padding:16px 24px;border-top:1px solid #e2e5ea;font-size:12px;line-height:18px;color:#5f6b7a;">You receive this e-mail because an administrator sent a test e-mail from the settings page.</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
+`
+
+// testEmailButton returns the link button of the test e-mail for
+// renderSettings() with the colours bg and text.
+func testEmailButton(bg, text string) string {
+	return `<td bgcolor="` + bg + `" style="background-color:` + bg + `;border-radius:6px;padding:10px 18px;">` +
+		`<a href="https://status.example.com/" style="color:` + text + `;text-decoration:none;font-weight:bold;">Open the status page</a></td>`
+}
+
+// TestRenderTestEmailButton: the test e-mail has the link button in the
+// light-mode accent colour, like the notifications; without an accent it is
+// byte for byte the test e-mail of before branding.
+func TestRenderTestEmailButton(t *testing.T) {
+	st := renderSettings()
+	html := renderTestEmail(st).HTML
+	if html != testEmailBeforeBranding {
+		t.Errorf("default test e-mail differs from the one of before branding:\n got %s\nwant %s", html, testEmailBeforeBranding)
+	}
+	defaultButton := testEmailButton("#1d5fd1", "#ffffff")
+	assertContains(t, "default test e-mail", html, defaultButton)
+
+	tests := []struct{ accent, bg, text string }{
+		{"#ffd400", "#ffd400", "#111111"}, // light accent: dark text
+		{"#002855", "#002855", "#ffffff"}, // dark accent: white text
+		{"#0077EE", "#0077ee", "#000000"}, // neither white nor #111111 reaches 4.5
+	}
+	for _, tc := range tests {
+		st.ThemeAccentLight = tc.accent
+		html := renderTestEmail(st).HTML
+		button := testEmailButton(tc.bg, tc.text)
+		assertContains(t, tc.accent+" test e-mail", html, button)
+		assertNotContains(t, tc.accent+" test e-mail", html, "#1d5fd1", "ZgotmplZ")
+		if c := theme.Contrast(tc.text, tc.bg); c < 4.5 {
+			t.Errorf("%s: button text %s has contrast %.2f", tc.accent, tc.text, c)
+		}
+		// Only the button differs.
+		if got := strings.Replace(html, button, defaultButton, 1); got != testEmailBeforeBranding {
+			t.Errorf("%s: test e-mail differs beyond the button:\n%s", tc.accent, html)
+		}
+	}
+}
+
+// TestRenderHTMLDefaultButton: a view without button colours (a renderer
+// that does not set them) gets the default button instead of one without a
+// background.
+func TestRenderHTMLDefaultButton(t *testing.T) {
+	v := emailView{
+		Subject: "Subject", Badge: "Test", BadgeColor: colorOperational, Title: "Title",
+		LinkURL: "https://status.example.com/", LinkText: "Open the status page", Footer: "Footer",
+	}
+	html := renderHTML(v)
+	assertContains(t, "html without button colours", html, testEmailButton("#1d5fd1", "#ffffff"))
+	assertNotContains(t, "html without button colours", html, `bgcolor=""`, "background-color:;", "color:;", "ZgotmplZ")
+
+	v.ButtonColor, v.ButtonText = "#002855", "#ffffff"
+	assertContains(t, "html with button colours", renderHTML(v), testEmailButton("#002855", "#ffffff"))
 }

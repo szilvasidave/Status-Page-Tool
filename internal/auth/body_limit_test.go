@@ -233,3 +233,40 @@ func TestMiddlewareBrandSkipsSession(t *testing.T) {
 		}
 	}
 }
+
+// TestMiddlewarePublicAssetsNoCookie: static files and brand images may be
+// kept in shared caches, so a GET or HEAD of them sets no CSRF cookie (pages
+// still do); a POST to such a path is still checked.
+func TestMiddlewarePublicAssetsNoCookie(t *testing.T) {
+	m, _ := authTestManager(t)
+	srv := csrfServer(t, m)
+	for _, c := range []struct {
+		method, path string
+		cookie       bool
+	}{
+		{http.MethodGet, "/", true},
+		{http.MethodGet, "/login", true},
+		{http.MethodGet, "/brandx", true},
+		{http.MethodGet, "/brand/logo-light", false},
+		{http.MethodHead, "/brand/favicon", false},
+		{http.MethodGet, "/static/style.css", false},
+	} {
+		req, _ := http.NewRequest(c.method, srv.URL+c.path, nil)
+		status, _, resp := authDo(t, req)
+		if status != http.StatusOK {
+			t.Errorf("%s %s: status %d", c.method, c.path, status)
+		}
+		got := false
+		for _, ck := range resp.Cookies() {
+			got = got || ck.Name == CSRFCookie
+		}
+		if got != c.cookie {
+			t.Errorf("%s %s: CSRF cookie set = %v, want %v", c.method, c.path, got, c.cookie)
+		}
+	}
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/brand/favicon", strings.NewReader("a=b"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if status, _, _ := authDo(t, req); status != http.StatusForbidden {
+		t.Errorf("POST /brand/favicon without token: status %d, want 403", status)
+	}
+}

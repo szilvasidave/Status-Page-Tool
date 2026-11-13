@@ -20,6 +20,7 @@ type settingField struct {
 	key    string
 	secret bool // stored encrypted
 	own    bool // written only by its own method (SetSCIMToken, SetBrandImage, …), never by SaveSettings
+	theme  bool // a branding setting (Admin → Branding): also written by SaveTheme
 	encode func(st *Settings) string
 	decode func(st *Settings, v string)
 }
@@ -44,6 +45,13 @@ func secretField(key string, p func(*Settings) *string) settingField {
 // meanwhile).
 func ownField(f settingField) settingField {
 	f.own = true
+	return f
+}
+
+// themeField marks a branding setting: SaveTheme writes these (and only
+// these); SaveSettings writes them too.
+func themeField(f settingField) settingField {
+	f.theme = true
 	return f
 }
 
@@ -118,12 +126,12 @@ var settingFields = []settingField{
 	ownField(strField("scim_token_hash", func(s *Settings) *string { return &s.SCIMTokenHash })),
 	ownField(timeField("scim_token_created_at", func(s *Settings) *time.Time { return &s.SCIMTokenCreatedAt })),
 
-	strField("theme_mode", func(s *Settings) *string { return &s.ThemeMode }),
-	strField("theme_accent_light", func(s *Settings) *string { return &s.ThemeAccentLight }),
-	strField("theme_accent_dark", func(s *Settings) *string { return &s.ThemeAccentDark }),
-	strField("theme_header_light", func(s *Settings) *string { return &s.ThemeHeaderLight }),
-	strField("theme_header_dark", func(s *Settings) *string { return &s.ThemeHeaderDark }),
-	boolField("theme_show_site_name", func(s *Settings) *bool { return &s.ThemeShowSiteName }),
+	themeField(strField("theme_mode", func(s *Settings) *string { return &s.ThemeMode })),
+	themeField(strField("theme_accent_light", func(s *Settings) *string { return &s.ThemeAccentLight })),
+	themeField(strField("theme_accent_dark", func(s *Settings) *string { return &s.ThemeAccentDark })),
+	themeField(strField("theme_header_light", func(s *Settings) *string { return &s.ThemeHeaderLight })),
+	themeField(strField("theme_header_dark", func(s *Settings) *string { return &s.ThemeHeaderDark })),
+	themeField(boolField("theme_show_site_name", func(s *Settings) *bool { return &s.ThemeShowSiteName })),
 	ownField(strField(brandSettingKeys[BrandLogoLight], func(s *Settings) *string { return &s.LogoLight })),
 	ownField(strField(brandSettingKeys[BrandLogoDark], func(s *Settings) *string { return &s.LogoDark })),
 	ownField(strField(brandSettingKeys[BrandFavicon], func(s *Settings) *string { return &s.Favicon })),
@@ -220,42 +228,66 @@ func (s *Store) loadSettings(ctx context.Context) (*Settings, error) {
 // (LogoLight, LogoDark, Favicon) are not stored: only SetSCIMToken,
 // SetBrandImage and DeleteBrandImage change them.
 func (s *Store) SaveSettings(ctx context.Context, st *Settings) error {
+	if err := s.saveFields(ctx, st, func(f settingField) bool { return !f.own }); err != nil {
+		return fmt.Errorf("save settings: %w", err)
+	}
+	return nil
+}
+
+// SaveTheme stores only the branding settings of st (ThemeMode,
+// ThemeAccentLight, ThemeAccentDark, ThemeHeaderLight, ThemeHeaderDark and
+// ThemeShowSiteName, normalised like SaveSettings does) in one transaction
+// and invalidates the settings cache. All other settings stay as they are
+// stored.
+//
+// The branding page uses it instead of SaveSettings, so that saving the
+// branding never writes back other settings from an older copy (e.g. a
+// local-login switch that the command line has just changed).
+func (s *Store) SaveTheme(ctx context.Context, st *Settings) error {
+	if err := s.saveFields(ctx, st, func(f settingField) bool { return f.theme }); err != nil {
+		return fmt.Errorf("save branding: %w", err)
+	}
+	return nil
+}
+
+// saveFields stores the fields of st for which include returns true (secrets
+// encrypted with the key) in one transaction and invalidates the settings
+// cache. BaseURL and the branding settings are normalised first; st itself
+// is not modified.
+func (s *Store) saveFields(ctx context.Context, st *Settings, include func(settingField) bool) error {
 	if st == nil {
-		return fmt.Errorf("save settings: no settings given")
+		return fmt.Errorf("no settings given")
 	}
 	c := *st
 	c.BaseURL = trimBaseURL(c.BaseURL)
 	normalizeTheme(&c)
-	values := make([]string, len(settingFields))
-	for i, f := range settingFields {
+	var keys, values []string
+	for _, f := range settingFields {
+		if !include(f) {
+			continue
+		}
 		v := f.encode(&c)
 		if f.secret {
 			enc, err := secret.Encrypt(s.key, v)
 			if err != nil {
-				return fmt.Errorf("save settings: encrypt %s: %w", f.key, err)
+				return fmt.Errorf("encrypt %s: %w", f.key, err)
 			}
 			v = enc
 		}
-		values[i] = v
+		keys, values = append(keys, f.key), append(values, v)
 	}
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
-		for i, f := range settingFields {
-			if f.own {
-				continue
-			}
+		for i, k := range keys {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO settings (key, value) VALUES (?, ?)
-				 ON CONFLICT (key) DO UPDATE SET value = excluded.value`, f.key, values[i]); err != nil {
-				return fmt.Errorf("%s: %w", f.key, err)
+				 ON CONFLICT (key) DO UPDATE SET value = excluded.value`, k, values[i]); err != nil {
+				return fmt.Errorf("%s: %w", k, err)
 			}
 		}
 		return nil
 	})
 	s.invalidateSettings()
-	if err != nil {
-		return fmt.Errorf("save settings: %w", err)
-	}
-	return nil
+	return err
 }
 
 // invalidateSettings drops the cached settings, so that the next

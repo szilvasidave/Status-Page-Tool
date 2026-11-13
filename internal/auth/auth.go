@@ -110,8 +110,10 @@ func New(st *store.Store, key []byte, log *slog.Logger) *Manager {
 // DELETE) without a valid CSRF token or with a foreign Origin. SCIM
 // provisioning (/scim/) passes through untouched: it is no browser, it
 // authenticates with its own bearer token and uses no cookies. Static files
-// (/static/) and the brand images (/brand/) are public, so no session is
-// looked up for them.
+// (/static/) and the brand images (/brand/) are public and cacheable: a GET
+// or HEAD of them passes through as well, without a session lookup and
+// without setting the CSRF cookie (a response that may be kept in a shared
+// cache must not carry a cookie of one visitor).
 //
 // The body of a state-changing request is limited to MaxFormBytes
 // (MaxUploadBytes for POST /admin/branding). Without a CSRF header the
@@ -120,7 +122,7 @@ func New(st *store.Store, key []byte, log *slog.Logger) *Manager {
 // CSRF error. The parsed form stays in the request for the handler.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/scim/") {
+		if strings.HasPrefix(r.URL.Path, "/scim/") || (isPublicAsset(r.URL.Path) && isSafeMethod(r.Method)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -138,7 +140,7 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		}
 		ctx = context.WithValue(ctx, csrfKey, token)
 
-		if !strings.HasPrefix(r.URL.Path, "/static/") && !strings.HasPrefix(r.URL.Path, "/brand/") {
+		if !isPublicAsset(r.URL.Path) {
 			if id := m.loadIdentity(r); id != nil {
 				ctx = WithIdentity(ctx, id)
 			}
@@ -167,6 +169,12 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isPublicAsset reports whether p is a static file or a brand image: public
+// and cacheable, no session needed.
+func isPublicAsset(p string) bool {
+	return strings.HasPrefix(p, "/static/") || strings.HasPrefix(p, "/brand/")
 }
 
 func isSafeMethod(m string) bool {

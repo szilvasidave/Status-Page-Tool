@@ -24,6 +24,10 @@ var (
 	ErrImageType     = errors.New("unsupported image type")
 	ErrSVGInvalid    = errors.New("not a valid SVG image")
 	ErrSVGActive     = errors.New("the SVG image contains scripts or event handlers")
+	// ErrSVGNamespace: the root svg element is not in the SVG namespace
+	// (no xmlns="http://www.w3.org/2000/svg"). Browsers do not draw such a
+	// file as an image.
+	ErrSVGNamespace = errors.New("the SVG image does not declare the SVG namespace")
 )
 
 // Content types returned by CheckImage.
@@ -42,7 +46,8 @@ const (
 // ErrImageType (empty, another type, a damaged PNG, JPEG, GIF or ICO file,
 // or markup whose root element is not svg, e.g. HTML), ErrSVGInvalid
 // (markup that is not well-formed XML, or has no root element or content
-// after it) and ErrSVGActive (scripts, event handlers and the like, see
+// after it), ErrSVGNamespace (an svg root element without the SVG
+// namespace) and ErrSVGActive (scripts, event handlers and the like, see
 // checkSVG).
 //
 // The type is taken from the content, never from a file name. PNG, JPEG and
@@ -138,21 +143,28 @@ var activeSchemes = []string{"javascript:", "vbscript:", "data:text/html"}
 
 // checkSVG checks that data is a well-formed SVG document without active
 // content. Before the svg root element there may be a UTF-8 byte order
-// mark, an XML declaration, comments, processing instructions and a
-// document type declaration (without entity declarations); after it
-// comments and white space.
+// mark, an XML declaration, comments and a plain document type declaration
+// (only a name and an external identifier, such as the public identifier of
+// SVG 1.1); after it comments and white space.
 //
 // ErrImageType: data does not start with markup, or its root element is not
 // svg (in the SVG namespace or without a namespace), e.g. an HTML file.
-// ErrSVGInvalid: not well-formed XML, or content outside the root element.
-// ErrSVGActive: an <!ENTITY declaration (entity expansion), a processing
-// instruction other than the XML declaration (e.g. an XSLT style sheet),
-// a script, foreignObject, handler, listener, iframe, embed or object
-// element or any element in the XHTML namespace, an attribute whose name
-// starts with "on" (event handlers), or an attribute value that starts
-// with javascript:, vbscript: or data:text/html (ignoring case, white space
-// and control characters; for href and also inside values such as those of
-// an animation).
+// ErrSVGNamespace: the svg root element has no namespace (a prefixed root
+// such as <s:svg xmlns:s="http://www.w3.org/2000/svg"> is in the SVG
+// namespace and passes).
+// ErrSVGInvalid: not well-formed XML, content outside the root element, or
+// a document type declaration (or another markup declaration) after it.
+// ErrSVGActive: an <!ENTITY declaration (entity expansion), a document type
+// declaration with an internal subset ("[" or "<" in it: it can declare
+// default attributes such as an onload handler, and quotes inside it are
+// read differently by encoding/xml and by browsers, which could hide markup
+// from these checks), a processing instruction other than the XML
+// declaration (e.g. an XSLT style sheet), a script, foreignObject, handler,
+// listener, iframe, embed or object element or any element in the XHTML
+// namespace, an attribute whose name starts with "on" (event handlers), or
+// an attribute value that starts with javascript:, vbscript: or
+// data:text/html (ignoring case, white space and control characters; for
+// href and also inside values such as those of an animation).
 func checkSVG(data []byte) error {
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	if !bytes.HasPrefix(bytes.TrimLeft(data, " \t\r\n"), []byte("<")) {
@@ -184,6 +196,9 @@ func checkSVG(data []byte) error {
 				if t.Name.Local != "svg" || (t.Name.Space != "" && t.Name.Space != nsSVG) {
 					return ErrImageType
 				}
+				if t.Name.Space == "" {
+					return ErrSVGNamespace
+				}
 			}
 			depth++
 			if err := checkSVGElement(t); err != nil {
@@ -202,6 +217,9 @@ func checkSVG(data []byte) error {
 		case xml.Directive:
 			if rootSeen {
 				return ErrSVGInvalid // a document type declaration after the root
+			}
+			if bytes.ContainsAny(t, "[<") {
+				return ErrSVGActive // an internal subset (see above)
 			}
 		}
 	}

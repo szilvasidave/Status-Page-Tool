@@ -231,7 +231,13 @@ func render(v emailView) Email {
 	return Email{Subject: v.Subject, Text: renderText(v), HTML: renderHTML(v)}
 }
 
+// renderHTML renders the HTML version of v. A view without ButtonColor
+// (a renderer that did not set it) gets the default button colours, so that
+// the link button is never drawn without a background.
 func renderHTML(v emailView) string {
+	if v.ButtonColor == "" {
+		v.ButtonColor, v.ButtonText = theme.EmailButton("")
+	}
 	var buf bytes.Buffer
 	if err := emailTemplate.Execute(&buf, v); err != nil {
 		// Only possible with a broken template; the text version is enough.

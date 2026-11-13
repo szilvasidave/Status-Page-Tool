@@ -40,7 +40,7 @@
     <legend>Logo and favicon</legend>
     <div class="field">
       <label for="logo_light">Logo for light mode</label>
-      {{template "brand-current" (dict "Image" .Images.LogoLight "Alt" "Current logo for light mode" "Remove" "logo_light_remove" "Checked" (index .Remove "logo_light_remove") "RemoveLabel" "Remove this logo")}}
+      {{template "brand-current" (dict "Image" .Images.LogoLight "Alt" "Current logo for light mode" "Remove" "logo_light_remove" "Checked" (index .Remove "logo_light_remove") "RemoveLabel" "Remove the logo for light mode")}}
       <input id="logo_light" name="logo_light" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.svg,image/png,image/jpeg,image/gif,image/webp,image/svg+xml" data-max-bytes="524288" aria-describedby="logo_light_help"{{if .Errors.logo_light}} aria-invalid="true"{{end}}>
       <span class="help" id="logo_light_help">PNG, JPEG, GIF, WebP or SVG, at most 512 KB. Shown 32 pixels high in the header of every page, instead of
         the default icon. A wide logo with a transparent background works best.</span>
@@ -48,7 +48,7 @@
     </div>
     <div class="field">
       <label for="logo_dark">Logo for dark mode <span class="muted">(optional)</span></label>
-      {{template "brand-current" (dict "Image" .Images.LogoDark "Alt" "Current logo for dark mode" "Remove" "logo_dark_remove" "Checked" (index .Remove "logo_dark_remove") "RemoveLabel" "Remove this logo")}}
+      {{template "brand-current" (dict "Image" .Images.LogoDark "Alt" "Current logo for dark mode" "Remove" "logo_dark_remove" "Checked" (index .Remove "logo_dark_remove") "RemoveLabel" "Remove the logo for dark mode")}}
       <input id="logo_dark" name="logo_dark" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.svg,image/png,image/jpeg,image/gif,image/webp,image/svg+xml" data-max-bytes="524288" aria-describedby="logo_dark_help"{{if .Errors.logo_dark}} aria-invalid="true"{{end}}>
       <span class="help" id="logo_dark_help">A variant for the dark header, e.g. with light text. Without it the logo for light mode is used in
         dark mode too (and a logo uploaded only here is used in both modes).</span>
@@ -56,11 +56,13 @@
     </div>
     <div class="field">
       <label class="checkbox"><input type="checkbox" name="show_site_name" aria-describedby="show_site_name_help"{{if .St.ThemeShowSiteName}} checked{{end}}> Show the site name next to the logo</label>
-      <span class="help" id="show_site_name_help">Turn this off if the logo already contains the name. Without a logo the name is always shown.</span>
+      <span class="help" id="show_site_name_help">Turn this off if the logo already contains the name. Next to a logo the name is shown
+        only where it fits completely: on phones, or with a long name or a wide logo, often only the logo is shown. A name that
+        must always be visible therefore belongs in the logo. Without a logo the name is always shown.</span>
     </div>
     <div class="field">
       <label for="favicon">Favicon <span class="muted">(optional)</span></label>
-      {{template "brand-current" (dict "Image" .Images.Favicon "Alt" "Current favicon" "Remove" "favicon_remove" "Checked" (index .Remove "favicon_remove") "RemoveLabel" "Remove this favicon")}}
+      {{template "brand-current" (dict "Image" .Images.Favicon "Alt" "Current favicon" "Remove" "favicon_remove" "Checked" (index .Remove "favicon_remove") "RemoveLabel" "Remove the favicon")}}
       <input id="favicon" name="favicon" type="file" accept=".png,.gif,.svg,.ico,image/png,image/gif,image/svg+xml,image/x-icon,image/vnd.microsoft.icon" data-max-bytes="524288" aria-describedby="favicon_help"{{if .Errors.favicon}} aria-invalid="true"{{end}}>
       <span class="help" id="favicon_help">PNG, GIF, SVG or ICO, at most 512 KB; square, at least 32 × 32 pixels. The icon of browser tabs and
         bookmarks. Without one, the default icon is used, drawn in the accent colour of light mode.</span>
@@ -101,7 +103,8 @@
         {{- $hint = ""}}{{if .Dark.LinkAdjusted}}{{$hint = printf "Links use the lighter shade %s so that they stay readable." .Dark.Link}}{{end}}
         {{template "brand-color-field" (dict "ID" "accent_dark" "Label" "Accent colour" "Picker" "Accent colour for dark mode: colour picker"
           "Value" .St.ThemeAccentDark "Default" .Defaults.AccentDark "Error" .Errors.accent_dark "Hint" $hint
-          "Help" "Empty: the accent colour of light mode, lightened where needed so that it stays visible on the dark background.")}}
+          "Help" "Empty: the accent colour of light mode, lightened where needed so that it stays visible on the dark background."
+          "Fallback" (dict "For" "accent_light" "Default" .DarkFallback.Default "Bg" .DarkFallback.Bg))}}
         {{template "brand-color-field" (dict "ID" "header_dark" "Label" "Header background" "Picker" "Header background for dark mode: colour picker"
           "Value" .St.ThemeHeaderDark "Default" .Defaults.HeaderDark "Error" .Errors.header_dark "Hint" ""
           "Help" "Empty: the default dark header. The header colour of light mode is not used in dark mode.")}}
@@ -143,13 +146,16 @@
 
 {{/* A colour field of the branding form: a hex text input and a colour picker that static/app.js shows and
      keeps in sync with it. Usage: {{template "brand-color-field" (dict "ID" "<field>" "Label" "…" "Picker" "…"
-     "Value" "…" "Default" "#rrggbb" "Error" "…" "Help" "…" "Hint" "…")}} */}}
+     "Value" "…" "Default" "#rrggbb" "Error" "…" "Help" "…" "Hint" "…")}}. Optional "Fallback" (dict "For" "<field>"
+     "Default" "#rrggbb" "Bg" "#rrggbb"): the default of an empty field follows the colour in field For, lightened
+     until it is visible on Bg (Default while For is empty); app.js updates it while For is edited. */}}
 {{define "brand-color-field"}}
 <div class="field">
   <label for="{{.ID}}">{{.Label}}</label>
   <div class="color-field">
     <input type="color" data-color-for="{{.ID}}" aria-label="{{.Picker}}" hidden>
-    <input id="{{.ID}}" name="{{.ID}}" type="text" value="{{.Value}}" maxlength="7" placeholder="Default ({{.Default}})" data-default="{{.Default}}" autocomplete="off" spellcheck="false" aria-describedby="{{.ID}}_help"{{if .Error}} aria-invalid="true"{{end}}>
+    <input id="{{.ID}}" name="{{.ID}}" type="text" value="{{.Value}}" maxlength="7" placeholder="Default ({{.Default}})" data-default="{{.Default}}"
+      {{- with .Fallback}} data-fallback-for="{{.For}}" data-fallback-default="{{.Default}}" data-fallback-bg="{{.Bg}}"{{end}} autocomplete="off" spellcheck="false" aria-describedby="{{.ID}}_help"{{if .Error}} aria-invalid="true"{{end}}>
   </div>
   <span class="help" id="{{.ID}}_help">{{.Help}}{{with .Hint}} {{.}}{{end}}</span>
   {{template "field-error" .Error}}

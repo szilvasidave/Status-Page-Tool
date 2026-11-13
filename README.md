@@ -266,16 +266,20 @@ optional; whatever is left empty keeps the default look.
   least 64 pixels high, which stays sharp on high-resolution screens.
 - **Logo for dark mode** – optional, same formats, e.g. a version with light
   lettering. Without it the light-mode logo is shown in dark mode too, so it
-  should then be readable on a dark header as well.
+  should then be readable on a dark header as well (and a logo uploaded only
+  for dark mode is shown in both modes).
 - **Show the site name next to the logo** – on by default. Turn it off when
   the logo already contains the name; screen readers then read the
-  [site name](#general-settings) as the logo's text.
+  [site name](#general-settings) as the logo's text. Next to a logo the name
+  is shown only where it fits completely: on phones, or with a long name or a
+  wide logo, often only the logo is shown. A name that must always be visible
+  therefore belongs in the logo.
 - **Favicon** – the icon in the browser tab: PNG, GIF, SVG or ICO, at most
   512 KB. Without one the default icon is used, drawn in the light-mode
   accent colour.
 - **Appearance** – *Follow the device setting* (the default: light or dark
   mode, as each viewer's operating system or browser is set), *Always light*
-  or *Always dark*.
+  or *Always dark*. Printed pages always use the light colours.
 - **Colours** – hex codes such as `#1f5bd8` (`#abc` is short for `#aabbcc`),
   typed in or chosen with the colour picker next to the field. An empty
   field shows the colour it falls back to:
@@ -287,18 +291,26 @@ optional; whatever is left empty keeps the default look.
   | Dark mode: **Accent colour** | the same in dark mode | the light-mode accent colour, lightened where needed so that it stands out on the dark background (contrast at least 3:1); without a light-mode accent colour either, the default blue `#2f6be0` |
   | Dark mode: **Header background** | the header in dark mode | the default dark header (the light-mode header colour is not used) |
 
-**Readability.** Whatever colours you choose, text stays readable:
+**Readability.** Whatever colours you choose, text stays readable and focus
+outlines stay visible:
 
-- Buttons get white or dark text, whichever contrasts more with the accent
-  colour; their hover shade is a little darker in light mode and a little
-  lighter in dark mode.
+- Buttons get white or near-black text, whichever contrasts more with the
+  accent colour (black where neither reaches 4.5:1). Their hover shade is a
+  little darker behind white text and a little lighter behind dark text, so
+  the text never gets harder to read.
 - Links are text on the page background, so they need a contrast of at least
   4.5:1 (WCAG AA). A light accent colour in light mode, or a dark one in dark
   mode, often does not reach it; links then use a darker (light mode) or
   lighter (dark mode) shade of it, which the branding page names.
+- Focus outlines, the border of the field being edited and the marker of the
+  active tab need a contrast of at least 3:1 on the page. Where the accent
+  colour does not reach it, they use a darker (light mode) or lighter (dark
+  mode) shade of it.
 - A header background gets white or dark text, whichever contrasts more (at
-  least 4.5:1); the muted text, the hover and the highlight of the current
-  page in the header are shades mixed from the two.
+  least 4.5:1). The muted text is mixed from the two and keeps at least 4.5:1
+  on the background; the hover and the highlight of the current page are
+  slightly lighter or darker shades of the background, on which the text
+  keeps at least 4.5:1 too.
 
 The branding page shows a **preview** of the header, a button, a link and some
 text in light and in dark mode, with the saved settings.
@@ -309,11 +321,16 @@ on the status page and in e-mails they must mean the same to everybody, and
 viewers recognise a status by its colour at a glance.
 
 **Saving.** Files are checked by their content, not by their name. SVG files
-must be plain images: files with scripts, event handlers, embedded web pages
-or entity declarations are refused (export the file again as a plain SVG, or
-use a PNG). If anything is wrong, nothing is saved and the page shows what to
-fix; files must then be chosen again. To remove an image, tick *Remove* next
-to it; a newly chosen file replaces the old one.
+must be plain images. Their `svg` element needs
+`xmlns="http://www.w3.org/2000/svg"`, without which browsers do not show the
+file. Files with active content are refused: scripts, event handlers,
+embedded documents (e.g. web pages), entity declarations, a document type
+declaration with its own definitions (`<!DOCTYPE svg [ … ]>`; a plain
+`<!DOCTYPE svg PUBLIC …>` is fine) and processing instructions such as style
+sheet links (`<?xml-stylesheet …?>`). Export such a file again as a plain
+SVG, or use a PNG. If anything is wrong, nothing is saved and the page shows
+what to fix; files must then be chosen again. To remove an image, tick
+*Remove* next to it; a newly chosen file replaces the old one.
 
 **The images are public.** Logos and favicon are served at
 `/brand/logo-light`, `/brand/logo-dark` and `/brand/favicon` to anybody who
@@ -323,10 +340,11 @@ a new address, so it appears at once. The images are stored in the database,
 so they are part of its [backup](#data-directory-backup-and-upgrade).
 
 **E-mails** use only the light-mode accent colour, for the *View incident*
-and *View maintenance* buttons (with white or dark text, whichever contrasts
-more); without one the buttons stay blue. Everything else in the e-mails
-stays as it is. They contain no logo, because mail clients block or proxy
-images from the internet.
+and *View maintenance* buttons and the *Open the status page* button of the
+test e-mail (with the same text colour as the buttons of the status page);
+without one the buttons stay blue. Everything else in the e-mails stays as
+it is. They contain no logo, because mail clients block or proxy images from
+the internet.
 
 **Restore defaults** (below the form, after a confirmation) removes the logos
 and the favicon, empties the colours, sets the appearance back to *Follow the

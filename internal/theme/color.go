@@ -118,6 +118,10 @@ func mix(a, b string, t float64) string {
 // ensureContrast returns c when its contrast with bg is at least minRatio,
 // else c blended towards (black or white) in steps of 2 % until it is; at
 // the end it is towards itself. The result is "#rrggbb".
+//
+// internal/web/static/app.js ports it (with luminance, Contrast and mix) for
+// the live default of the dark accent field on the branding page: keep the
+// two in sync.
 func ensureContrast(c, bg string, minRatio float64, towards string) string {
 	c = parseHex(c).hex()
 	if Contrast(c, bg) >= minRatio {
@@ -139,4 +143,25 @@ func bestText(bg, dark string) string {
 		return white
 	}
 	return dark
+}
+
+// buttonText returns the text colour of a button (or another control) in
+// the colour bg: white or #111111, whichever contrasts more; if that is
+// below 4.5 (mid-tones), white or black, whichever contrasts more. One of
+// white and black always reaches 4.58, so the result is always readable.
+func buttonText(bg string) string {
+	if text := bestText(bg, nearBlack); Contrast(text, bg) >= minTextContrast {
+		return text
+	}
+	return bestText(bg, black)
+}
+
+// opposite returns black for a light colour (e.g. white text) and white for
+// a dark one (e.g. dark text or black). Mixed into a background, the
+// opposite of a text colour raises the contrast with that text.
+func opposite(c string) string {
+	if parseHex(c).luminance() > 0.5 {
+		return black
+	}
+	return white
 }

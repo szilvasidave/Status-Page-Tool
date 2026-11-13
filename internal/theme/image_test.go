@@ -120,8 +120,10 @@ func TestCheckImage(t *testing.T) {
 		// valid SVG
 		{"svg logo", []byte(plainSVG), false, TypeSVG, nil},
 		{"svg favicon", []byte(plainSVG), true, TypeSVG, nil},
-		{"svg without namespace", []byte(`<svg viewBox="0 0 1 1"><circle r="1"/></svg>`), false, TypeSVG, nil},
 		{"svg with prefix", []byte(`<s:svg xmlns:s="http://www.w3.org/2000/svg"><s:rect width="1" height="1"/></s:svg>`), false, TypeSVG, nil},
+		{"svg with prefix and doctype", []byte(`<!DOCTYPE svg:svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">` +
+			`<svg:svg xmlns:svg="http://www.w3.org/2000/svg"/>`), true, TypeSVG, nil},
+		{"svg with a system doctype", []byte(`<!DOCTYPE svg SYSTEM "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg xmlns="http://www.w3.org/2000/svg"/>`), false, TypeSVG, nil},
 		{"svg with declaration, comments and doctype", []byte("\xef\xbb\xbf<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n" +
 			"<!-- Generator: Some Editor 1.0 -->\n<!-- second comment -->\n" +
 			`<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">` + "\n" +
@@ -143,6 +145,13 @@ func TestCheckImage(t *testing.T) {
 		{"comment only", []byte("<!-- nothing -->"), false, "", ErrSVGInvalid},
 		{"unknown encoding", []byte(`<?xml version="1.0" encoding="EBCDIC"?><svg/>`), false, "", ErrSVGInvalid},
 		{"invalid utf-8", []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"><title>\xff\xfe</title></svg>"), false, "", ErrSVGInvalid},
+		{"doctype after root", []byte(plainSVG + `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">`), false, "", ErrSVGInvalid},
+		{"internal subset after root", []byte(plainSVG + `<!DOCTYPE svg [<!ATTLIST svg onload CDATA "alert(1)">]>`), false, "", ErrSVGInvalid},
+
+		// no namespace: browsers do not draw the file as an image
+		{"svg without namespace", []byte(`<svg viewBox="0 0 1 1"><circle r="1"/></svg>`), false, "", ErrSVGNamespace},
+		{"svg favicon without namespace", []byte(`<?xml version="1.0"?><svg width="16" height="16"/>`), true, "", ErrSVGNamespace},
+		{"namespace only on a child", []byte(`<svg><g xmlns="http://www.w3.org/2000/svg"/></svg>`), false, "", ErrSVGNamespace},
 
 		// active content
 		{"script", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`), false, "", ErrSVGActive},
@@ -163,6 +172,18 @@ func TestCheckImage(t *testing.T) {
 		{"iframe", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><iframe src="https://example.com/"/></svg>`), false, "", ErrSVGActive},
 		{"entity declaration", []byte(`<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;">]><svg xmlns="http://www.w3.org/2000/svg"><text>&b;</text></svg>`), false, "", ErrSVGActive},
 		{"lower-case entity declaration", []byte(`<!DOCTYPE svg [<!entity a "x">]><svg xmlns="http://www.w3.org/2000/svg"/>`), false, "", ErrSVGActive},
+		// An internal subset can give the root an onload handler as a
+		// default attribute, which encoding/xml does not report.
+		{"attribute list declaration", []byte(`<!DOCTYPE svg [<!ATTLIST svg onload CDATA "document.title='PWNED'">]><svg xmlns="http://www.w3.org/2000/svg"/>`), false, "", ErrSVGActive},
+		// encoding/xml reads the quote in the processing instruction of the
+		// internal subset as the start of a quoted string and takes all up
+		// to "<?b '" for the doctype; a browser ends the doctype at "]>" and
+		// runs the script of the first svg element.
+		{"doctype hiding markup", []byte(`<!DOCTYPE svg [<?a ' ?>]><svg xmlns="http://www.w3.org/2000/svg"><script>document.title="PWNED"</script></svg>` +
+			`<?b ' >> <svg xmlns="http://www.w3.org/2000/svg"/> <?xml version="1.0"?>`), false, "", ErrSVGActive},
+		{"empty internal subset", []byte(`<!DOCTYPE svg []><svg xmlns="http://www.w3.org/2000/svg"/>`), false, "", ErrSVGActive},
+		{"internal subset with an external identifier", []byte(`<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [<!ATTLIST svg onclick CDATA "alert(1)">]>` +
+			`<svg xmlns="http://www.w3.org/2000/svg"/>`), false, "", ErrSVGActive},
 		{"xslt style sheet", []byte(`<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="https://example.com/x.xsl"?><svg xmlns="http://www.w3.org/2000/svg"/>`), false, "", ErrSVGActive},
 	}
 	for _, tc := range tests {

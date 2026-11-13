@@ -30,6 +30,12 @@ type adminBrandingData struct {
 	Defaults    adminBrandColors // what an empty colour field means
 	Images      adminBrandImages // the stored images
 	Previews    []adminBrandPreview
+
+	// DarkFallback is what static/app.js needs to update the default of the
+	// empty dark accent field (Defaults.AccentDark) while the light accent
+	// is edited: the dark accent without any accent colour, and the dark page
+	// background that the light accent is lightened against.
+	DarkFallback struct{ Default, Bg string }
 }
 
 // adminBrandColors are the colours of the four colour fields.
@@ -95,11 +101,15 @@ func adminBrandingView(st store.Settings, errs adminFormErrors) *adminBrandingDa
 	c := st.ThemeColors()
 	d.Light, d.Dark = theme.Resolve(c)
 	defLight, defDark := theme.Resolve(theme.Colors{})
+	// The dark accent of an empty field: the light accent, lightened where
+	// needed (theme.Resolve). static/app.js (darkAccentFallback) computes the
+	// same live from the light accent field: keep the two in sync.
 	_, fallbackDark := theme.Resolve(theme.Colors{AccentLight: c.AccentLight})
 	d.Defaults = adminBrandColors{
 		AccentLight: defLight.Primary, HeaderLight: defLight.HeaderBg,
 		AccentDark: fallbackDark.Primary, HeaderDark: defDark.HeaderBg,
 	}
+	d.DarkFallback.Default, d.DarkFallback.Bg = defDark.Primary, defDark.Bg
 
 	var light, dark string
 	if st.LogoLight != "" {
@@ -137,7 +147,8 @@ func adminBrandPreviewStyle(p theme.Palette) template.CSS {
 	for _, v := range [][2]string{
 		{"--bg", p.Bg}, {"--surface", p.Surface}, {"--surface-2", p.Surface2}, {"--surface-hover", p.SurfaceHover},
 		{"--border", p.Border}, {"--text", p.Text}, {"--text-muted", p.TextMuted},
-		{"--primary", p.Primary}, {"--primary-hover", p.PrimaryHover}, {"--primary-text", p.PrimaryText}, {"--link", p.Link},
+		{"--primary", p.Primary}, {"--primary-hover", p.PrimaryHover}, {"--primary-text", p.PrimaryText},
+		{"--primary-ui", p.PrimaryUI}, {"--link", p.Link},
 		{"--header-bg", p.HeaderBg}, {"--header-text", p.HeaderText}, {"--header-text-muted", p.HeaderTextMuted},
 		{"--header-hover", p.HeaderHover}, {"--header-current", p.HeaderCurrent}, {"--header-line", p.HeaderLine},
 	} {
@@ -166,7 +177,9 @@ type adminBrandUpload struct {
 
 // handleBrandingSave saves the branding form (multipart). Everything is
 // checked first: with any error nothing is stored and the form is shown
-// again (422); chosen files must then be chosen again.
+// again (422); chosen files must then be chosen again. Only the branding
+// settings are written (Store.SaveTheme): the other settings in cur may be
+// an older copy (the settings cache), which must not be written back.
 func (s *Server) handleBrandingSave(w http.ResponseWriter, r *http.Request) {
 	if !s.adminBrandParseForm(w, r) {
 		return
@@ -233,7 +246,7 @@ func (s *Server) handleBrandingSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.Store.SaveSettings(ctx, &st); err != nil {
+	if err := s.Store.SaveTheme(ctx, &st); err != nil {
 		s.serverError(w, r, err)
 		return
 	}
@@ -242,7 +255,8 @@ func (s *Server) handleBrandingSave(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBrandingReset removes the logos and the favicon and sets the
-// colours, the appearance and "show the site name" back to the defaults.
+// colours, the appearance and "show the site name" back to the defaults
+// (Store.SaveTheme: the other settings stay as stored).
 func (s *Server) handleBrandingReset(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	for _, f := range adminBrandFields {
@@ -260,7 +274,7 @@ func (s *Server) handleBrandingReset(w http.ResponseWriter, r *http.Request) {
 	st.ThemeMode, st.ThemeShowSiteName = def.ThemeMode, def.ThemeShowSiteName
 	st.ThemeAccentLight, st.ThemeAccentDark = def.ThemeAccentLight, def.ThemeAccentDark
 	st.ThemeHeaderLight, st.ThemeHeaderDark = def.ThemeHeaderLight, def.ThemeHeaderDark
-	if err := s.Store.SaveSettings(ctx, &st); err != nil {
+	if err := s.Store.SaveTheme(ctx, &st); err != nil {
 		s.serverError(w, r, err)
 		return
 	}
@@ -331,7 +345,11 @@ func adminBrandImageError(err error, size int64, favicon bool) string {
 	case errors.Is(err, theme.ErrSVGInvalid):
 		return "This file is not a valid SVG image."
 	case errors.Is(err, theme.ErrSVGActive):
-		return "This SVG contains scripts or event handlers, which are not allowed. Export it again as a plain SVG, or use a PNG."
+		return "This SVG contains active content (scripts, event handlers, embedded documents, entity or document type " +
+			"declarations, or style sheet links), which is not allowed. Export it again as a plain SVG, or use a PNG."
+	case errors.Is(err, theme.ErrSVGNamespace):
+		return `This SVG has no xmlns="http://www.w3.org/2000/svg" on its svg element, so browsers would not show it. ` +
+			"Add it, or export the file again."
 	case favicon:
 		return "Use a PNG, GIF, SVG or ICO image."
 	}

@@ -48,11 +48,15 @@
   --primary: #1f5bd8;
   --primary-hover: #1a4dba;
   --primary-text: #ffffff;
+  /* the accent as a non-text UI colour (focus outlines, the border of a focused input, the
+     active tab): at least 3:1 against the page surfaces; the defaults reach it unchanged */
+  --primary-ui: var(--primary);
   --danger: #c4302b;
   --focus: color-mix(in srgb, var(--primary) 45%, transparent);
-  /* The accent (--primary, --primary-hover, --primary-text, --link, --focus) and the header
-     tokens can be customised on Admin → Branding: a <style> block after this stylesheet then
-     sets all of them for both modes (internal/theme). The header follows the surfaces of the mode. */
+  /* The accent (--primary, --primary-hover, --primary-text, --primary-ui, --link, --focus) and
+     the header tokens can be customised on Admin → Branding: a <style> block after this
+     stylesheet then sets all of them for both modes (internal/theme). The header follows the
+     surfaces of the mode. */
   --header-bg: var(--surface);
   --header-text: var(--text);
   --header-text-muted: var(--text-muted);
@@ -83,8 +87,10 @@
 
 /* Dark mode: following the device (prefers-color-scheme), unless the page is forced
    to light mode (data-theme="light", Admin → Branding), and forced dark mode
-   (data-theme="dark"). The two blocks must declare the same tokens (checked by a test). */
-@media (prefers-color-scheme: dark) {
+   (data-theme="dark"). The two blocks must declare the same tokens (checked by a test).
+   Only on screen: printing always uses the light tokens (dark text on white paper).
+   internal/theme (theme.CSS) uses the same selectors and media queries. */
+@media screen and (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0d1117;
     --surface: #151b23;
@@ -115,37 +121,39 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
 }
-:root[data-theme="dark"] {
-  --bg: #0d1117;
-  --surface: #151b23;
-  --surface-2: #1b222c;
-  --surface-hover: #212a35;
-  --border: #2a3340;
-  --border-strong: #3a4553;
-  --text: #e6ebf1;
-  --text-muted: #9ba7b6;
-  --link: #7aa9ff;
-  --primary: #2f6be0;
-  --primary-hover: #3b78ee;
-  --danger: #f2706a;
-  --focus: color-mix(in srgb, #7aa9ff 55%, transparent);
+@media screen {
+  :root[data-theme="dark"] {
+    --bg: #0d1117;
+    --surface: #151b23;
+    --surface-2: #1b222c;
+    --surface-hover: #212a35;
+    --border: #2a3340;
+    --border-strong: #3a4553;
+    --text: #e6ebf1;
+    --text-muted: #9ba7b6;
+    --link: #7aa9ff;
+    --primary: #2f6be0;
+    --primary-hover: #3b78ee;
+    --danger: #f2706a;
+    --focus: color-mix(in srgb, #7aa9ff 55%, transparent);
 
-  --st-operational: #2fb26a;
-  --st-maintenance: #4d8df5;
-  --st-degraded: #e6b422;
-  --st-partial_outage: #f08b3c;
-  --st-major_outage: #f0564e;
-  --st-nodata: #2a323d;
-  --st-operational-text: #5fd496;
-  --st-maintenance-text: #8fb7ff;
-  --st-degraded-text: #f0c950;
-  --st-partial_outage-text: #f7a868;
-  --st-major_outage-text: #ff8b84;
+    --st-operational: #2fb26a;
+    --st-maintenance: #4d8df5;
+    --st-degraded: #e6b422;
+    --st-partial_outage: #f08b3c;
+    --st-major_outage: #f0564e;
+    --st-nodata: #2a323d;
+    --st-operational-text: #5fd496;
+    --st-maintenance-text: #8fb7ff;
+    --st-degraded-text: #f0c950;
+    --st-partial_outage-text: #f7a868;
+    --st-major_outage-text: #ff8b84;
 
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+  :root[data-theme="dark"] { color-scheme: dark; }
 }
 :root[data-theme="light"] { color-scheme: light; }
-:root[data-theme="dark"] { color-scheme: dark; }
 
 /* ================================================================ base */
 
@@ -224,9 +232,11 @@ section + section, .main > * + section, .main > section + *, .main > form + .car
 }
 /* An uploaded logo (Admin → Branding) instead of the mark. Next to a logo the site name is
    shown only where it fits completely: else it wraps to a second line, which is cut off
-   (it stays the text of the link for screen readers). */
+   (it stays the text of the link for screen readers). Where the header is too narrow even
+   for the logo alone, the logo is scaled down (never below 32px wide) instead of cut off. */
 .brand-logo { display: block; height: 32px; width: auto; max-width: min(240px, 50vw); object-fit: contain; object-position: left center; }
-.brand-logo, .brand picture { flex: none; }
+.brand-logo, .brand picture { flex: 0 1 auto; min-width: 32px; }
+.brand picture { display: flex; }
 .brand-with-logo { flex-wrap: wrap; align-content: flex-start; height: 32px; overflow: hidden; }
 .brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .site-nav { display: flex; gap: 2px; flex: 1 0 auto; }
@@ -268,13 +278,13 @@ section + section, .main > * + section, .main > section + *, .main > form + .car
 .subnav { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 28px; }
 .subnav a { padding: 9px 14px; color: var(--text-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 550; white-space: nowrap; }
 .subnav a:hover { color: var(--text); text-decoration: none; border-bottom-color: var(--border-strong); }
-.subnav a[aria-current="page"] { color: var(--text); border-bottom-color: var(--primary); }
+.subnav a[aria-current="page"] { color: var(--text); border-bottom-color: var(--primary-ui); }
 /* Narrow screens: the sections wrap as chips instead of being cut off. */
 @media (max-width: 640px) {
   .subnav { flex-wrap: wrap; gap: 6px; border-bottom: 0; margin-bottom: 22px; }
   .subnav a { padding: 4px 12px; margin: 0; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font-size: .9rem; }
   .subnav a:hover { border-color: var(--border-strong); }
-  .subnav a[aria-current="page"] { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+  .subnav a[aria-current="page"] { border-color: var(--primary-ui); box-shadow: inset 0 0 0 1px var(--primary-ui); }
 }
 
 /* ================================================================ cards */
@@ -345,10 +355,10 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--text
 textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
 select { cursor: pointer; }
 input[type="checkbox"], input[type="radio"] { width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--primary); flex: none; }
-input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--focus); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary-ui); box-shadow: 0 0 0 3px var(--focus); }
 button:focus-visible, .btn:focus-visible, a:focus-visible, summary:focus-visible, .table-wrap:focus-visible,
 input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
-  outline: 2px solid var(--primary); outline-offset: 2px;
+  outline: 2px solid var(--primary-ui); outline-offset: 2px;
 }
 input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger); }
 input[type="file"] { display: block; max-width: 100%; font: inherit; font-size: .9rem; color: var(--text-muted); border-radius: var(--radius-small); }
@@ -635,7 +645,10 @@ fieldset.box > fieldset:last-child { margin-bottom: 0; }
 
 /* ================================================================ print */
 
+/* Printed in light mode, also when the page is forced to dark mode (the dark tokens apply
+   only on screen). */
 @media print {
+  :root { color-scheme: light; }
   .site-header, .site-footer, .skip-link, .btn, .public-pager { display: none !important; }
   body { background: #fff; }
   .card { box-shadow: none; }
