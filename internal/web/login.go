@@ -8,25 +8,37 @@ import (
 )
 
 type loginData struct {
-	Next        string
-	OIDCEnabled bool
-	ButtonLabel string
-	Error       string
-	Username    string
-	ShowLocal   bool // expand the local administrator form
+	Next         string
+	OIDCEnabled  bool
+	ButtonLabel  string
+	Error        string
+	Notice       string // information, e.g. why the local administrator was signed out
+	Username     string
+	LocalEnabled bool // sign-in with the local administrator account is allowed (Settings.LocalLoginEnabled)
+	ShowLocal    bool // expand the local administrator form
 }
+
+// Messages of the sign-in page while sign-in with the local administrator
+// account is turned off.
+const (
+	loginLocalOff = "Sign-in with the local administrator account is turned off. Please sign in with single sign-on. " +
+		"If single sign-on is unavailable, an administrator can turn the local sign-in on again on the server with the command “statuspage local-login enable”."
+	loginLocalSignedOut = "Sign-in with the local administrator account has been turned off, so you were signed out. " +
+		"Sign in with single sign-on."
+)
 
 func (s *Server) loginData(r *http.Request, next string) *loginData {
 	st := s.settings(r)
 	d := &loginData{
-		Next:        auth.SafeReturnTo(next),
-		OIDCEnabled: st.OIDCConfigured(),
-		ButtonLabel: st.OIDCButtonLabel,
+		Next:         auth.SafeReturnTo(next),
+		OIDCEnabled:  st.OIDCConfigured(),
+		ButtonLabel:  st.OIDCButtonLabel,
+		LocalEnabled: st.LocalLoginEnabled,
 	}
 	if d.ButtonLabel == "" {
 		d.ButtonLabel = "Sign in with SSO"
 	}
-	d.ShowLocal = !d.OIDCEnabled || r.URL.Query().Get("local") == "1"
+	d.ShowLocal = d.LocalEnabled && (!d.OIDCEnabled || r.URL.Query().Get("local") == "1")
 	return d
 }
 
@@ -36,7 +48,19 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, next, http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, "login", "Sign in", s.loginData(r, next))
+	d := s.loginData(r, next)
+	if !d.LocalEnabled {
+		if s.Auth.LocalSessionEnded(r) {
+			// The local administrator turned the local sign-in off (or it
+			// was turned off by another administrator or on the command
+			// line): end the session that no longer works and say why.
+			s.Auth.Logout(w, r)
+			d.Notice = loginLocalSignedOut
+		} else if r.URL.Query().Get("local") == "1" {
+			d.Notice = loginLocalOff
+		}
+	}
+	s.render(w, r, "login", "Sign in", d)
 }
 
 func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +72,11 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		s.Log.Info("local login", "user", d.Username, "ip", auth.ClientIP(r))
 		http.Redirect(w, r, d.Next, http.StatusSeeOther)
+	case errors.Is(err, auth.ErrLocalLoginOff):
+		s.Log.Warn("local login refused: turned off", "user", d.Username, "ip", auth.ClientIP(r))
+		d.LocalEnabled, d.ShowLocal = false, false
+		d.Error = loginLocalOff
+		s.renderStatus(w, r, http.StatusForbidden, "login", "Sign in", d)
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		s.Log.Warn("failed local login", "user", d.Username, "ip", auth.ClientIP(r))
 		d.Error = "Invalid user name or password."

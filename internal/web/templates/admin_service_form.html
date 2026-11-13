@@ -18,12 +18,25 @@
     {{template "field-error" .Errors.description}}
   </div>
   <div class="field-row">
-    <div class="field">
-      <label for="category">Category <span class="muted">(optional)</span></label>
-      <input id="category" name="category" type="text" list="categories" value="{{.Service.Category}}" maxlength="100" autocomplete="off"{{if .Errors.category}} aria-invalid="true"{{end}}>
-      <datalist id="categories">{{range .Categories}}<option value="{{.}}">{{end}}</datalist>
-      <span class="help">Heading to group services on the status page.</span>
-      {{template "field-error" .Errors.category}}
+    <div>
+      {{- $new := .NewCategoryValue}}
+      <div class="field">
+        <label for="category">Category <span class="muted">(optional)</span></label>
+        <select id="category" name="category" data-show-when="{{$new}}" data-target="#category-new-field" aria-describedby="category_help"{{if .Errors.category}} aria-invalid="true"{{end}}>
+          <option value="">No category</option>
+          {{- range .Categories}}
+          <option value="{{.}}"{{if eq . $.Data.Category}} selected{{end}}>{{.}}</option>
+          {{- end}}
+          <option value="{{$new}}"{{if eq .Category $new}} selected{{end}}>New category…</option>
+        </select>
+        <span class="help" id="category_help">Services with the same category are shown together on the status page.</span>
+        {{template "field-error" .Errors.category}}
+      </div>
+      <div class="field" id="category-new-field"{{if ne .Category $new}} hidden{{end}}>
+        <label for="category_new">Name of the new category</label>
+        <input id="category_new" name="category_new" type="text" value="{{.NewCategory}}" maxlength="100"{{if .Errors.category_new}} aria-invalid="true"{{end}}>
+        {{template "field-error" .Errors.category_new}}
+      </div>
     </div>
     <div class="field">
       <label for="sort_order">Sort order</label>

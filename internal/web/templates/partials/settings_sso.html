@@ -4,7 +4,7 @@
     <legend>Single sign-on (OpenID Connect)</legend>
     <div class="field">
       <label class="checkbox"><input type="checkbox" name="oidc_enabled" data-show-when="on" data-target="#oidc-fields"{{if .St.OIDCEnabled}} checked{{end}}> Enable sign-in with OpenID Connect</label>
-      <span class="help">Works with Microsoft Entra ID, Keycloak and any provider that supports OpenID Connect discovery. The local administrator can always sign in at <a href="/login?local=1">/login</a>.</span>
+      <span class="help">Works with Microsoft Entra ID, Keycloak and any provider that supports OpenID Connect discovery.</span>
     </div>
     <div class="field">
       <span class="label">Redirect URI</span>
@@ -50,6 +50,13 @@
         <span class="help">Text of the sign-in button, e.g. “Sign in with Microsoft”.</span>
         {{template "field-error" .Errors.oidc_button_label}}
       </div>
+    </div>
+    <div class="field">
+      <label class="checkbox"><input type="checkbox" name="local_login_enabled" aria-describedby="local_login_help"{{if .St.LocalLoginEnabled}} checked{{end}}{{if .Errors.local_login_enabled}} aria-invalid="true"{{end}}> Allow sign-in with the local administrator account</label>
+      <span class="help" id="local_login_help">The break-glass login for when single sign-on is unavailable, at <a href="/login?local=1">/login?local=1</a>.
+        It can only be turned off while single sign-on is set up and a group has the Administrator role; turning it off signs the
+        local administrator out. To turn it on again without signing in, run <code class="nowrap">statuspage local-login enable</code> on the server.</span>
+      {{template "field-error" .Errors.local_login_enabled}}
     </div>
   </fieldset>
 {{end}}

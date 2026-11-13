@@ -52,6 +52,9 @@ func adminSettingsForm(st *store.Settings) url.Values {
 	if st.PublicAccess {
 		f.Set("public_access", "on")
 	}
+	if st.LocalLoginEnabled {
+		f.Set("local_login_enabled", "on")
+	}
 	if st.OIDCEnabled {
 		f.Set("oidc_enabled", "on")
 	}
@@ -127,7 +130,7 @@ func TestAdminSettingsSave(t *testing.T) {
 	e.loginAdmin()
 
 	r := e.get("/admin/settings")
-	mustContain(t, r.Body, `name="site_name"`, `value="Status"`, `<datalist id="timezones">`,
+	mustContain(t, r.Body, `name="site_name"`, `value="Status"`, `<option value="UTC" selected>UTC</option>`,
 		auth.OIDCCallbackPath, "set the base URL", `action="/admin/settings/test-email"`)
 
 	f := adminSettingsForm(adminSettings(t, e))
@@ -379,9 +382,9 @@ func TestAdminServices(t *testing.T) {
 	}
 	mustContain(t, e.get("/admin/services").Body, "status-major_outage")
 
-	// Edit: the categories datalist and the checked groups are shown.
+	// Edit: the selected category and the checked groups are shown.
 	r = e.get("/admin/services/" + id)
-	mustContain(t, r.Body, `<option value="Infrastructure">`, `value="VPN"`, `value="5"`, "checked", "Delete service", "data-confirm=")
+	mustContain(t, r.Body, `<option value="Infrastructure" selected>`, `value="VPN"`, `value="5"`, "checked", "Delete service", "data-confirm=")
 	r = e.post("/admin/services/"+id, url.Values{"name": {"VPN gateway"}, "category": {""}, "sort_order": {""}, "groups": {strconv.FormatInt(g2.ID, 10)}})
 	mustContain(t, adminFollow(t, e, r).Body, "Service “VPN gateway” saved.")
 	svc, _ := e.Store.GetService(ctx, svcs[0].ID)

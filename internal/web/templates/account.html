@@ -19,6 +19,31 @@
 </section>
 
 {{- if .User.IsLocalAdmin}}
+<section class="card" id="details" aria-labelledby="account-details">
+  <div class="card-header"><h2 id="account-details">Account details</h2></div>
+  <div class="card-body">
+    <form method="post" action="/account/profile" class="form">
+      {{template "error-summary" .DetailsErrors}}
+      {{template "csrf" $}}
+      <div class="field-row">
+        <div class="field">
+          <label for="name">Display name <span class="muted">(optional)</span></label>
+          <input id="name" name="name" type="text" value="{{.DetailsName}}" maxlength="100" placeholder="{{.User.Username}}" aria-describedby="name_help"{{if .DetailsErrors.name}} aria-invalid="true"{{end}}>
+          <span class="help" id="name_help">Shown in the header and with your incident updates.</span>
+          {{template "field-error" .DetailsErrors.name}}
+        </div>
+        <div class="field">
+          <label for="username">User name</label>
+          <input id="username" name="username" type="text" value="{{.DetailsUsername}}" required maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="username_help"{{if .DetailsErrors.username}} aria-invalid="true"{{end}}>
+          <span class="help" id="username_help">For signing in; upper and lower case do not matter.</span>
+          {{template "field-error" .DetailsErrors.username}}
+        </div>
+      </div>
+      <div class="form-actions"><button type="submit" class="btn-primary">Save details</button></div>
+    </form>
+  </div>
+</section>
+
 <section class="card" id="password" aria-labelledby="account-password">
   <div class="card-header"><h2 id="account-password">Change password</h2></div>
   <div class="card-body">

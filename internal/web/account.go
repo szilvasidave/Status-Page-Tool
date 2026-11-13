@@ -1,8 +1,10 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
@@ -21,13 +23,20 @@ type accountData struct {
 
 	MinPasswordLength int
 	PasswordError     string
+
+	// Account details form of the local administrator (the values as
+	// entered when they are shown again with errors).
+	DetailsName     string
+	DetailsUsername string
+	DetailsErrors   adminFormErrors
 }
 
 // accountData collects the data of the account page for the signed-in user.
 func (s *Server) accountData(r *http.Request) (*accountData, error) {
 	ctx := r.Context()
 	id := auth.FromContext(ctx)
-	d := &accountData{User: id.User, Role: id.Role, MinPasswordLength: auth.MinPasswordLength}
+	d := &accountData{User: id.User, Role: id.Role, MinPasswordLength: auth.MinPasswordLength,
+		DetailsName: id.User.Name, DetailsUsername: id.User.Username, DetailsErrors: adminFormErrors{}}
 	switch {
 	case id.User.IsLocalAdmin:
 		d.RoleHelp = "The local administrator account always has the Administrator role. Use it for the initial setup and when single sign-on is unavailable."
@@ -74,6 +83,55 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, "account", "Your account", d)
+}
+
+// handleAccountProfile changes the display name and the user name of the
+// local administrator. Users who sign in with single sign-on get them from
+// the identity provider.
+func (s *Server) handleAccountProfile(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := auth.FromContext(ctx).User
+	if !user.IsLocalAdmin {
+		s.errorPage(w, r, http.StatusForbidden, "Access denied",
+			"Only the local administrator account can change its name here. Your name comes from your identity provider.")
+		return
+	}
+
+	name := formTrim(r, "name")
+	username := strings.ToLower(formTrim(r, "username"))
+	errs := adminFormErrors{}
+	if msg := localUsernameProblem(username); msg != "" {
+		errs.add("username", msg)
+	}
+	if tooLong(name, 100) {
+		errs.add("name", "The display name is too long (at most 100 characters).")
+	}
+	if len(errs) == 0 {
+		switch err := s.Store.UpdateLocalAdmin(ctx, user.ID, username, name); {
+		case errors.Is(err, store.ErrUsernameTaken):
+			errs.add("username", "Another local account already has this user name.")
+		case err != nil:
+			s.serverError(w, r, err)
+			return
+		}
+	}
+	if len(errs) > 0 {
+		d, err := s.accountData(r)
+		if err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+		d.DetailsName, d.DetailsUsername, d.DetailsErrors = name, username, errs
+		s.renderStatus(w, r, http.StatusUnprocessableEntity, "account", "Your account", d)
+		return
+	}
+
+	s.Log.Info("local administrator account changed", "user", username, "previous_user", user.Username, "ip", auth.ClientIP(r))
+	msg := "Your account details were saved."
+	if username != user.Username {
+		msg += " From now on, sign in with the user name “" + username + "”."
+	}
+	s.redirectWithFlash(w, r, "/account", "success", msg)
 }
 
 // handleAccountPassword changes the password of the local administrator.

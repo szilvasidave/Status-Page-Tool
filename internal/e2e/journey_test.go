@@ -167,7 +167,7 @@ func (j *journey) setup(fillDatabase func(*form)) {
 	}
 	f.set("username", "admin").set("name", "Ada Admin").
 		set("password", adminPW).set("password_confirm", adminPW).
-		set("site_name", siteName).set("timezone", berlinTZ)
+		set("site_name", siteName).choose("timezone", berlinTZ)
 	p = f.post()
 	p.expectRedirect("/admin/settings")
 	p.follow().expectStatus(200).expectFlash("success", "Setup complete").expectText("Ada Admin", "Settings")
@@ -200,7 +200,7 @@ func (j *journey) settings() {
 	t, b := j.t, j.admin
 	p := b.get(j.base + "/admin/settings").expectStatus(200)
 	f := p.form("/admin/settings")
-	f.set("site_name", siteName).set("base_url", j.base).set("timezone", berlinTZ).check("public_access", "")
+	f.set("site_name", siteName).set("base_url", j.base).choose("timezone", berlinTZ).check("public_access", "")
 	f.check("oidc_enabled", "").set("oidc_issuer", j.idp.Issuer()).
 		set("oidc_client_id", j.idp.ClientID).set("oidc_client_secret", j.idp.ClientSecret)
 	f.set("smtp_host", j.smtp.Host()).set("smtp_port", strconv.Itoa(j.smtp.Port())).choose("smtp_security", "none").

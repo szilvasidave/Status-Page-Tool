@@ -5,6 +5,7 @@
 //	statuspage setup ...
 //	statuspage service install|uninstall|start|stop|restart|status [-data DIR]
 //	statuspage reset-password -username NAME [-data DIR]
+//	statuspage local-login enable|disable|status [-data DIR]
 //	statuspage version
 package main
 
@@ -39,6 +40,8 @@ Usage:
         manage the Windows service / systemd unit
   statuspage reset-password -username NAME [-data DIR]
         set a new password for a local administrator account (read from standard input)
+  statuspage local-login enable|disable|status [-data DIR]
+        turn the sign-in with the local administrator account on or off
   statuspage version
         print the version
 
@@ -75,6 +78,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdService(args, stdout, stderr)
 	case "reset-password":
 		err = cmdResetPassword(args, stdout, stderr)
+	case "local-login":
+		err = cmdLocalLogin(args, stdout, stderr)
 	case "version":
 		fmt.Fprintf(stdout, "statuspage %s (%s, %s/%s)\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	case "help":

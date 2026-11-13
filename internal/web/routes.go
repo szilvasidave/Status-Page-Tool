@@ -29,6 +29,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /auth/oidc/callback", s.handleOIDCCallback)
 	m.HandleFunc("POST /logout", s.handleLogout)
 	m.Handle("GET /account", signedIn(s.handleAccount))
+	m.Handle("POST /account/profile", signedIn(s.handleAccountProfile))
 	m.Handle("POST /account/password", signedIn(s.handleAccountPassword))
 
 	// First-run setup: create the local administrator account.

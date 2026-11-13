@@ -193,17 +193,14 @@ func CheckOrigin(r *http.Request, baseURL string) bool {
 }
 
 func (m *Manager) loadIdentity(r *http.Request) *Identity {
-	c, err := r.Cookie(SessionCookie)
-	if err != nil || c.Value == "" {
+	sess, user := m.sessionUser(r)
+	if user == nil {
 		return nil
 	}
 	ctx := r.Context()
-	sess, err := m.store.GetSession(ctx, hashToken(c.Value), time.Now())
-	if err != nil {
-		return nil
-	}
-	user, err := m.store.GetUser(ctx, sess.UserID)
-	if err != nil {
+	if user.IsLocalAdmin && !m.localLoginEnabled(ctx) {
+		// Sign-in with the local administrator account was turned off: its
+		// sessions stop working at once, as if signed out.
 		return nil
 	}
 	role, err := m.store.UserRole(ctx, user.ID)
@@ -212,6 +209,45 @@ func (m *Manager) loadIdentity(r *http.Request) *Identity {
 		return nil
 	}
 	return &Identity{User: user, Role: role, SessionID: sess.ID}
+}
+
+// sessionUser returns the session of the request and its user (nil, nil if
+// there is none).
+func (m *Manager) sessionUser(r *http.Request) (*store.Session, *store.User) {
+	c, err := r.Cookie(SessionCookie)
+	if err != nil || c.Value == "" {
+		return nil, nil
+	}
+	ctx := r.Context()
+	sess, err := m.store.GetSession(ctx, hashToken(c.Value), time.Now())
+	if err != nil {
+		return nil, nil
+	}
+	user, err := m.store.GetUser(ctx, sess.UserID)
+	if err != nil {
+		return nil, nil
+	}
+	return sess, user
+}
+
+// localLoginEnabled reports whether the local administrator account may sign
+// in (Settings.LocalLoginEnabled; false if the settings cannot be read).
+func (m *Manager) localLoginEnabled(ctx context.Context) bool {
+	st, err := m.store.GetSettings(ctx)
+	if err != nil {
+		m.log.Error("load settings", "err", err)
+		return false
+	}
+	return st.LocalLoginEnabled
+}
+
+// LocalSessionEnded reports whether the request carries a session of the
+// local administrator account that no longer works because sign-in with that
+// account was turned off. The sign-in page then tells the administrator why
+// they were signed out.
+func (m *Manager) LocalSessionEnded(r *http.Request) bool {
+	_, user := m.sessionUser(r)
+	return user != nil && user.IsLocalAdmin && !m.localLoginEnabled(r.Context())
 }
 
 // StartSession creates a new session for userID and sets the session cookie.
@@ -247,12 +283,24 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ErrLocalLoginOff is returned by LoginLocal while sign-in with the local
+// administrator account is turned off (Settings.LocalLoginEnabled).
+var ErrLocalLoginOff = errors.New("sign-in with the local administrator account is turned off")
+
 // LoginLocal verifies a local administrator's credentials and starts a
-// session. Returns ErrInvalidCredentials or ErrTooManyAttempts on failure.
-// Failed attempts are limited per client address and user name, so that
-// behind a reverse proxy (one address for everybody) failures for one name
-// do not lock out the others.
+// session. Returns ErrLocalLoginOff, ErrInvalidCredentials or
+// ErrTooManyAttempts on failure. Failed attempts are limited per client
+// address and user name, so that behind a reverse proxy (one address for
+// everybody) failures for one name do not lock out the others.
 func (m *Manager) LoginLocal(w http.ResponseWriter, r *http.Request, username, password string) error {
+	ctx := r.Context()
+	st, err := m.store.GetSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if !st.LocalLoginEnabled {
+		return ErrLocalLoginOff // refused before the password is checked
+	}
 	username = strings.ToLower(strings.TrimSpace(username))
 	key := ClientIP(r) + " " + username
 	if len(key) > 200 { // bound the limiter's memory
@@ -261,7 +309,6 @@ func (m *Manager) LoginLocal(w http.ResponseWriter, r *http.Request, username, p
 	if !m.limiter.allow(key) {
 		return ErrTooManyAttempts
 	}
-	ctx := r.Context()
 	user, err := m.store.GetUserByUsername(ctx, username)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {

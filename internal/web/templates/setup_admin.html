@@ -54,13 +54,7 @@
           with HTTPS. Do not use localhost: it only works on the server itself.</span>
         {{template "field-error" .Errors.base_url}}
       </div>
-      <div class="field">
-        <label for="timezone">Time zone</label>
-        <input id="timezone" name="timezone" type="text" list="timezones" value="{{.Timezone}}" autocomplete="off" spellcheck="false"{{if .Errors.timezone}} aria-invalid="true"{{end}}>
-        {{template "admin-tz-datalist" .Timezones}}
-        <span class="help">Times are shown and entered in this time zone, e.g. Europe/Berlin.</span>
-        {{template "field-error" .Errors.timezone}}
-      </div>
+      {{template "timezone-field" (dict "Zones" .Timezones "Error" .Errors.timezone "Browser" .BrowserTimezone)}}
       <div class="field">
         <label class="checkbox"><input type="checkbox" name="public_access"{{if .PublicAccess}} checked{{end}}> Anyone can view the status page without signing in</label>
         <span class="help">When off, everybody has to sign in to see the status. You can change this later.</span>

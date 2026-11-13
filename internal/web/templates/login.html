@@ -5,15 +5,22 @@
     <h1>Sign in</h1>
     <p class="muted">Sign in to {{$.SiteName}}.</p>
     {{with .Error}}<div class="flash flash-error" role="alert">{{.}}</div>{{end}}
+    {{with .Notice}}<div class="flash" role="status">{{.}}</div>{{end}}
 
     {{if .OIDCEnabled}}
     <a class="btn btn-primary btn-block" href="/auth/oidc/login?next={{.Next}}">{{.ButtonLabel}}</a>
+    {{- if .LocalEnabled}}
     <details class="disclosure local-login"{{if .ShowLocal}} open{{end}}>
       <summary>Sign in with the local administrator account</summary>
       {{template "login-local-form" (dict "Page" $ "Data" .)}}
     </details>
-    {{else}}
+    {{- end}}
+    {{else if .LocalEnabled}}
     {{template "login-local-form" (dict "Page" $ "Data" .)}}
+    {{else}}
+    <p class="notice">Signing in is not possible: single sign-on is not set up and sign-in with the local administrator account
+      is turned off. An administrator can turn the local sign-in on again on the server with the command
+      <code class="nowrap">statuspage local-login enable</code>.</p>
     {{end}}
   </div>
 </section>

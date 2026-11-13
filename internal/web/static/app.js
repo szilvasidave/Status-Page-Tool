@@ -23,4 +23,33 @@
   }
   document.addEventListener("change", syncToggles);
   document.addEventListener("DOMContentLoaded", syncToggles);
+
+  // <select data-browser-timezone="UTC"> (setup wizard) selects the
+  // browser's time zone if it is offered and the select still shows UTC.
+  // Some browsers report the old names of renamed zones.
+  var renamedZones = {
+    "Asia/Calcutta": "Asia/Kolkata", "Asia/Saigon": "Asia/Ho_Chi_Minh", "Asia/Katmandu": "Asia/Kathmandu",
+    "Asia/Rangoon": "Asia/Yangon", "Europe/Kiev": "Europe/Kyiv", "America/Godthab": "America/Nuuk",
+    "America/Buenos_Aires": "America/Argentina/Buenos_Aires", "America/Indianapolis": "America/Indiana/Indianapolis",
+    "America/Louisville": "America/Kentucky/Louisville", "Atlantic/Faeroe": "Atlantic/Faroe", "Africa/Asmera": "Africa/Asmara"
+  };
+  function selectBrowserTimezone() {
+    var zone;
+    try {
+      zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch (e) {
+      return;
+    }
+    zone = renamedZones[zone] || zone;
+    document.querySelectorAll("select[data-browser-timezone]").forEach(function (sel) {
+      if (!zone || sel.value !== sel.getAttribute("data-browser-timezone")) return;
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === zone) {
+          sel.value = zone;
+          return;
+        }
+      }
+    });
+  }
+  document.addEventListener("DOMContentLoaded", selectBrowserTimezone);
 })();

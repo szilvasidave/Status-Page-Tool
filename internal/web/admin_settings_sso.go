@@ -1,9 +1,11 @@
 package web
 
-// Settings page section "Single sign-on (OpenID Connect)". Template:
+// Settings page section "Single sign-on (OpenID Connect)", with the switch
+// for the sign-in with the local administrator account. Template:
 // templates/partials/settings_sso.html.
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -48,6 +50,7 @@ func (s *Server) adminSSOSave(r *http.Request, cur, st *store.Settings, d *admin
 	if st.OIDCButtonLabel == "" {
 		st.OIDCButtonLabel = store.DefaultSettings().OIDCButtonLabel
 	}
+	s.adminLocalLoginSave(r, st, d)
 	// The OIDC fields are hidden while single sign-on is off, so they are
 	// only checked when it is enabled.
 	if !st.OIDCEnabled {
@@ -69,6 +72,29 @@ func (s *Server) adminSSOSave(r *http.Request, cur, st *store.Settings, d *admin
 	}
 	if tooLong(st.OIDCButtonLabel, 60) {
 		errs.add("oidc_button_label", "The label is too long (at most 60 characters).")
+	}
+}
+
+// adminLocalLoginSave reads the checkbox "Allow sign-in with the local
+// administrator account". It can only be turned off while nobody is locked
+// out by it: single sign-on (as entered in this form) is enabled and
+// configured, and a group has the Administrator role. "statuspage
+// local-login disable" applies the same check (store.CheckLocalLoginOff).
+func (s *Server) adminLocalLoginSave(r *http.Request, st *store.Settings, d *adminSettingsData) {
+	st.LocalLoginEnabled = formBool(r, "local_login_enabled")
+	if st.LocalLoginEnabled {
+		return
+	}
+	switch err := s.Store.CheckLocalLoginOff(r.Context(), st); {
+	case errors.Is(err, store.ErrSSONotConfigured):
+		d.Errors.add("local_login_enabled", "The local administrator sign-in can only be turned off while single sign-on is enabled "+
+			"and configured (issuer URL, client ID and client secret).")
+	case errors.Is(err, store.ErrNoAdminGroup):
+		d.Errors.add("local_login_enabled", "The local administrator sign-in can only be turned off when at least one group has the "+
+			"Administrator role (Admin → Groups), so that somebody can still sign in as an administrator.")
+	case err != nil:
+		s.Log.Error("check whether the local sign-in can be turned off", "err", err)
+		d.Errors.add("local_login_enabled", "The groups could not be checked, so the local administrator sign-in stays on. Please try again.")
 	}
 }
 

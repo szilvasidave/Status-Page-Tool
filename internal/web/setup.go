@@ -302,10 +302,13 @@ type setupAdminData struct {
 	Timezone     string
 	PublicAccess bool
 	MinPassword  int
-	Timezones    []string
-	AskToken     bool
-	TokenFile    string
-	Errors       adminFormErrors
+	Timezones    adminTZChoices // options of the time zone select
+	// BrowserTimezone lets static/app.js select the browser's time zone
+	// while the select still shows UTC (when the form is first shown).
+	BrowserTimezone bool
+	AskToken        bool
+	TokenFile       string
+	Errors          adminFormErrors
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
@@ -332,7 +335,6 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		Timezone:     st.Timezone,
 		PublicAccess: st.PublicAccess,
 		MinPassword:  auth.MinPasswordLength,
-		Timezones:    adminTimezones,
 		TokenFile:    s.setupTokenFile(),
 		Errors:       adminFormErrors{},
 	}
@@ -341,6 +343,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		d.AskToken = s.setupAskToken(r)
+		d.Timezones, d.BrowserTimezone = adminTimezoneChoices(d.Timezone, time.Now()), true
 		s.render(w, r, "setup_admin", "Setup", d)
 		return
 	}
@@ -357,11 +360,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	if d.Timezone, msg = adminValidateTimezone(r.FormValue("timezone")); msg != "" {
 		d.Errors.add("timezone", msg)
 	}
-	switch {
-	case d.Username == "":
-		d.Errors.add("username", "Enter a user name.")
-	case len(d.Username) > 64 || strings.IndexFunc(d.Username, setupBadUsernameRune) >= 0:
-		d.Errors.add("username", "Use at most 64 letters, digits and the characters . _ - @ (no spaces).")
+	if msg := localUsernameProblem(d.Username); msg != "" {
+		d.Errors.add("username", msg)
 	}
 	if tooLong(d.Name, 100) {
 		d.Errors.add("name", "The display name is too long (at most 100 characters).")
@@ -387,6 +387,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusForbidden
 	}
 	if len(d.Errors) > 0 {
+		d.Timezones = adminTimezoneChoices(d.Timezone, time.Now())
 		s.renderStatus(w, r, status, "setup_admin", "Setup", d)
 		return
 	}
@@ -455,6 +456,19 @@ func setupSuggestBaseURL(r *http.Request) string {
 		return ""
 	}
 	return u
+}
+
+// localUsernameProblem checks the (lower-cased) user name of the local
+// administrator, in the setup wizard and on the account page. It returns an
+// error message for the user ("" if valid).
+func localUsernameProblem(name string) string {
+	switch {
+	case name == "":
+		return "Enter a user name."
+	case tooLong(name, 64) || strings.IndexFunc(name, setupBadUsernameRune) >= 0:
+		return "Use at most 64 letters, digits and the characters . _ - @ (no spaces)."
+	}
+	return ""
 }
 
 // setupBadUsernameRune reports characters not allowed in local user names.

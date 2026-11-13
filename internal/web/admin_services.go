@@ -66,14 +66,27 @@ func (s *Server) handleServices(w http.ResponseWriter, r *http.Request) {
 
 // adminServiceForm is the data of the new/edit service form.
 type adminServiceForm struct {
-	Service    store.Service
-	SortOrder  string // as entered
-	IsNew      bool
-	Groups     []store.Group // groups with a role or services, and the groups of this service
-	Other      []store.Group // all other groups (shown collapsed)
-	Categories []string
-	Errors     adminFormErrors
+	Service   store.Service
+	SortOrder string // as entered
+	IsNew     bool
+	Groups    []store.Group // groups with a role or services, and the groups of this service
+	Other     []store.Group // all other groups (shown collapsed)
+
+	// The category is chosen in a select: "No category" (""), one of
+	// Categories, or "New category…" (adminNewCategory) with its name
+	// entered in the field category_new.
+	Categories  []string // existing categories, sorted
+	Category    string   // the selected option
+	NewCategory string   // name of a new category as entered
+	Errors      adminFormErrors
 }
+
+// adminNewCategory is the value of the option "New category…" of the
+// category select.
+const adminNewCategory = "(new)"
+
+// NewCategoryValue returns adminNewCategory (for the template).
+func (f *adminServiceForm) NewCategoryValue() string { return adminNewCategory }
 
 func (s *Server) adminRenderServiceForm(w http.ResponseWriter, r *http.Request, status int, f *adminServiceForm) {
 	ctx := r.Context()
@@ -87,13 +100,26 @@ func (s *Server) adminRenderServiceForm(w http.ResponseWriter, r *http.Request, 
 		s.serverError(w, r, err)
 		return
 	}
-	seen := map[string]bool{}
+	// The categories of the services, once each regardless of case (like
+	// the headings of the status page). The service's own category is
+	// always offered, e.g. one that was entered when the form had errors.
+	f.Categories = nil
+	seen := map[string]string{}
 	for _, svc := range services {
-		if c := svc.Category; c != "" && !seen[strings.ToLower(c)] {
-			seen[strings.ToLower(c)] = true
+		if c := svc.Category; c != "" && seen[strings.ToLower(c)] == "" {
+			seen[strings.ToLower(c)] = c
 			f.Categories = append(f.Categories, c)
 		}
 	}
+	if f.Category != adminNewCategory {
+		f.Category = f.Service.Category
+		if c := seen[strings.ToLower(f.Category)]; c != "" {
+			f.Category = c
+		} else if f.Category != "" {
+			f.Categories = append(f.Categories, f.Category)
+		}
+	}
+	slices.SortStableFunc(f.Categories, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
 	f.Groups, f.Other = adminSplitGroups(groups, func(g *store.Group) bool { return slices.Contains(f.Service.GroupIDs, g.ID) })
 	if f.Errors == nil {
 		f.Errors = adminFormErrors{}
@@ -130,7 +156,16 @@ func adminParseServiceForm(r *http.Request, f *adminServiceForm) {
 	f.Errors = adminFormErrors{}
 	f.Service.Name = formTrim(r, "name")
 	f.Service.Description = formTrim(r, "description")
-	f.Service.Category = formTrim(r, "category")
+	f.Category = formTrim(r, "category")
+	f.Service.Category = f.Category
+	categoryField := "category"
+	if f.Category == adminNewCategory {
+		f.NewCategory = formTrim(r, "category_new")
+		f.Service.Category, categoryField = f.NewCategory, "category_new"
+		if f.NewCategory == "" {
+			f.Errors.add("category_new", "Enter the name of the new category, or choose an existing one.")
+		}
+	}
 	f.Service.GroupIDs = formInt64s(r, "groups")
 	f.SortOrder = formTrim(r, "sort_order")
 	switch {
@@ -143,7 +178,7 @@ func adminParseServiceForm(r *http.Request, f *adminServiceForm) {
 		f.Errors.add("description", "The description is too long (at most 300 characters).")
 	}
 	if tooLong(f.Service.Category, 100) {
-		f.Errors.add("category", "The category is too long (at most 100 characters).")
+		f.Errors.add(categoryField, "The category is too long (at most 100 characters).")
 	}
 	f.Service.SortOrder = 0
 	if f.SortOrder != "" {

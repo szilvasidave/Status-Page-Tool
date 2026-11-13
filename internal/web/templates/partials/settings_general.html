@@ -18,13 +18,7 @@
         fail for everybody else. Enter the name under which users reach the server.</p>
       {{- end}}
     </div>
-    <div class="field">
-      <label for="timezone">Time zone</label>
-      <input id="timezone" name="timezone" type="text" list="timezones" value="{{.St.Timezone}}" autocomplete="off" spellcheck="false"{{if .Errors.timezone}} aria-invalid="true"{{end}}>
-      {{template "admin-tz-datalist" .General.Timezones}}
-      <span class="help">Times are shown and entered in this time zone, e.g. Europe/Berlin or America/New_York.</span>
-      {{template "field-error" .Errors.timezone}}
-    </div>
+    {{template "timezone-field" (dict "Zones" .General.Timezones "Error" .Errors.timezone "Browser" false)}}
     <div class="field">
       <label class="checkbox"><input type="checkbox" name="public_access"{{if .St.PublicAccess}} checked{{end}}> Public access</label>
       <span class="help">When on, the status pages can be viewed without signing in. When off, everybody has to sign in.</span>

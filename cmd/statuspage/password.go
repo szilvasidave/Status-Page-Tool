@@ -15,8 +15,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
-	"github.com/szilvasidave/status-page-tool/internal/config"
-	"github.com/szilvasidave/status-page-tool/internal/db"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
@@ -24,7 +22,8 @@ const resetPasswordUsage = `statuspage reset-password -username NAME [-data DIR]
 
 Sets a new password for a local administrator account and signs out all its
 sessions. The password is read from standard input (asked twice without echo
-when run in a terminal).`
+when run in a terminal). If the sign-in with the local administrator account
+is turned off, turn it on with "statuspage local-login enable".`
 
 func cmdResetPassword(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("reset-password", resetPasswordUsage, stderr)
@@ -44,26 +43,13 @@ func cmdResetPassword(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	cfg, err := config.Load(dir)
-	if errors.Is(err, config.ErrNotConfigured) {
-		return fmt.Errorf("the status page is not configured yet (%s not found); finish the setup in the browser first", config.Path(dir))
-	}
-	if err != nil {
-		return err
-	}
-	key, err := cfg.Key()
-	if err != nil {
-		return err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	d, err := db.OpenConfig(ctx, cfg, dir)
+	st, closeDB, err := openStore(ctx, dir)
 	if err != nil {
-		return fmt.Errorf("could not open the database: %w", err)
+		return err
 	}
-	defer d.Close()
-	st := store.New(d, key)
+	defer closeDB()
 
 	user, err := st.GetUserByUsername(ctx, name)
 	if errors.Is(err, store.ErrNotFound) {
@@ -93,6 +79,10 @@ func cmdResetPassword(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("the password was changed, but the existing sessions could not be signed out: %w", err)
 	}
 	fmt.Fprintf(stdout, "The password of %q was changed. All its sessions were signed out.\n", user.Username)
+	if settings, err := st.GetSettings(ctx); err == nil && !settings.LocalLoginEnabled {
+		fmt.Fprintf(stdout, "Note: sign-in with the local administrator account is turned off. "+
+			"Turn it on with: statuspage local-login enable -data \"%s\"\n", dir)
+	}
 	return nil
 }
 
