@@ -38,6 +38,12 @@ func fullSettings() Settings {
 		GraphSender:        "status@example.com",
 		SCIMTokenHash:      "0123abcd",
 		SCIMTokenCreatedAt: time.Unix(1700000000, 0).UTC(),
+		ThemeMode:          "dark",
+		ThemeAccentLight:   "#ffd400",
+		ThemeAccentDark:    "#002855",
+		ThemeHeaderLight:   "#101820",
+		ThemeHeaderDark:    "",
+		ThemeShowSiteName:  false,
 	}
 }
 
@@ -46,9 +52,18 @@ func TestSettingsRoundTrip(t *testing.T) {
 		want := fullSettings()
 		in := want
 		in.BaseURL = " https://status.example.com// "
+		in.ThemeAccentLight = " #FFD400 "
+		in.ThemeHeaderLight = "101820"
 		check(t, s.SetSCIMToken(ctx, want.SCIMTokenHash, want.SCIMTokenCreatedAt)) // not stored by SaveSettings
+		for name, p := range map[string]*string{BrandLogoLight: &want.LogoLight, BrandLogoDark: &want.LogoDark, BrandFavicon: &want.Favicon} {
+			v, err := s.SetBrandImage(ctx, name, "image/png", []byte(name)) // not stored by SaveSettings either
+			check(t, err)
+			*p = v
+		}
+		in.LogoLight = "stale version"
 		check(t, s.SaveSettings(ctx, &in))
 		equal(t, "input not modified", in.BaseURL, " https://status.example.com// ")
+		equal(t, "input not modified", in.ThemeAccentLight, " #FFD400 ")
 
 		got, err := s.GetSettings(ctx)
 		check(t, err)
@@ -69,6 +84,11 @@ func TestSettingsRoundTrip(t *testing.T) {
 		equal(t, "bool", raw["oidc_enabled"], "true")
 		equal(t, "int", raw["smtp_port"], "465")
 		equal(t, "base_url", raw["base_url"], "https://status.example.com")
+		equal(t, "colour", raw["theme_accent_light"], "#ffd400")
+		equal(t, "colour", raw["theme_header_light"], "#101820")
+		equal(t, "mode", raw["theme_mode"], "dark")
+		equal(t, "bool", raw["theme_show_site_name"], "false")
+		equal(t, "logo version", raw["brand_logo_light"], want.LogoLight)
 		for _, k := range []string{"oidc_client_secret", "smtp_password"} {
 			if !strings.HasPrefix(raw[k], "enc:v1:") || strings.Contains(raw[k], "secret") || strings.Contains(raw[k], "word") {
 				t.Fatalf("%s is not stored encrypted: %q", k, raw[k])
@@ -123,7 +143,9 @@ func TestSettingsPartialAndInvalid(t *testing.T) {
 	forEachDB(t, func(t *testing.T, s *Store) {
 		mustExec(t, s, `INSERT INTO settings (key, value) VALUES ('site_name', 'Only name'), ('public_access', 'maybe'),
 			('smtp_port', 'abc'), ('oidc_client_secret', 'plain-text-secret'), ('smtp_password', 'enc:v1:not-valid'),
-			('base_url', 'http://x.example/'), ('unknown_key', 'ignored')`)
+			('base_url', 'http://x.example/'), ('unknown_key', 'ignored'),
+			('theme_mode', 'sepia'), ('theme_accent_light', '#ABC'), ('theme_accent_dark', 'red'),
+			('theme_header_light', '#12345'), ('theme_header_dark', ' 0A0B0C '), ('theme_show_site_name', 'perhaps')`)
 		st, err := s.GetSettings(ctx)
 		check(t, err)
 		want := DefaultSettings()
@@ -131,7 +153,9 @@ func TestSettingsPartialAndInvalid(t *testing.T) {
 		want.OIDCClientSecret = "plain-text-secret" // unencrypted values are read as-is
 		want.SMTPPassword = ""                      // cannot be decrypted
 		want.BaseURL = "http://x.example"
-		equal(t, "settings", *st, want)
+		want.ThemeAccentLight = "#aabbcc" // normalised
+		want.ThemeHeaderDark = "#0a0b0c"
+		equal(t, "settings", *st, want) // unknown mode → auto, invalid colours → default
 	})
 }
 

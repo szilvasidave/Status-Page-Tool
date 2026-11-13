@@ -228,3 +228,32 @@ func TestFormatWindow(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderButtonColor: the link button uses the light-mode accent colour
+// of the branding with readable text; without one the e-mail is unchanged.
+func TestRenderButtonColor(t *testing.T) {
+	const defaultButton = `<td bgcolor="#1d5fd1" style="background-color:#1d5fd1;border-radius:6px;padding:10px 18px;">` +
+		`<a href="https://status.example.com/incidents/42" style="color:#ffffff;text-decoration:none;font-weight:bold;">View incident</a></td>`
+	inc := testIncident()
+	st := renderSettings()
+	assertContains(t, "default html", RenderIncident(st, inc, nil, true).HTML, defaultButton)
+	st.ThemeAccentLight = "not a colour" // never stored, but harmless
+	assertContains(t, "html with an invalid accent", RenderIncident(st, inc, nil, true).HTML, defaultButton)
+
+	tests := []struct{ accent, bg, text string }{
+		{"#ffd400", "#ffd400", "#111111"}, // light accent: dark text
+		{"#002855", "#002855", "#ffffff"}, // dark accent: white text
+	}
+	for _, tc := range tests {
+		st.ThemeAccentLight = tc.accent
+		want := `<td bgcolor="` + tc.bg + `" style="background-color:` + tc.bg + `;border-radius:6px;padding:10px 18px;">` +
+			`<a href="https://status.example.com/incidents/42" style="color:` + tc.text + `;text-decoration:none;font-weight:bold;">View incident</a></td>`
+		e := RenderIncident(st, inc, nil, true)
+		assertContains(t, tc.accent+" incident html", e.HTML, want)
+		assertNotContains(t, tc.accent+" incident html", e.HTML, "#1d5fd1", "ZgotmplZ")
+		m := &store.Maintenance{ID: 9, Title: "Firewall upgrade", StartsAt: inc.StartedAt, EndsAt: inc.StartedAt.Add(time.Hour)}
+		e = RenderMaintenance(st, m, MaintenanceEventScheduled)
+		assertContains(t, tc.accent+" maintenance html", e.HTML,
+			`bgcolor="`+tc.bg+`" style="background-color:`+tc.bg+`;`, `style="color:`+tc.text+`;text-decoration:none;font-weight:bold;">View maintenance</a>`)
+	}
+}

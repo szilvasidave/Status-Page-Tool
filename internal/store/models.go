@@ -4,6 +4,8 @@ import (
 	"errors"
 	"slices"
 	"time"
+
+	"github.com/szilvasidave/status-page-tool/internal/theme"
 )
 
 // ErrNotFound is returned when a requested row does not exist.
@@ -106,6 +108,23 @@ type Settings struct {
 	SCIMTokenHash string
 	// SCIMTokenCreatedAt is when the current SCIM token was generated.
 	SCIMTokenCreatedAt time.Time
+
+	// Branding (Admin → Branding). Colours are "#rrggbb" or "" for the
+	// default; GetSettings and SaveSettings normalise them (invalid → "").
+	ThemeMode         string // theme.ModeAuto (default), theme.ModeLight or theme.ModeDark
+	ThemeAccentLight  string // buttons, links, focus rings, active tab in light mode
+	ThemeAccentDark   string // the same in dark mode; "" = ThemeAccentLight, lightened where needed
+	ThemeHeaderLight  string // header background in light mode
+	ThemeHeaderDark   string // header background in dark mode (no fallback to ThemeHeaderLight)
+	ThemeShowSiteName bool   // show the site name next to an uploaded logo (default true)
+
+	// Versions of the uploaded brand images ("" = none, see BrandImage).
+	// Only SetBrandImage and DeleteBrandImage write them; SaveSettings does
+	// not, so that saving the settings never brings back a removed or
+	// replaced image.
+	LogoLight string // BrandLogoLight
+	LogoDark  string // BrandLogoDark
+	Favicon   string // BrandFavicon
 }
 
 // E-mail delivery methods (Settings.MailMethod).
@@ -128,6 +147,24 @@ func DefaultSettings() Settings {
 
 		LocalLoginEnabled: true,
 		MailMethod:        MailGraph,
+
+		ThemeMode:         theme.ModeAuto,
+		ThemeShowSiteName: true,
+	}
+}
+
+// ThemeColors returns the branding colours and appearance mode for package
+// theme (Resolve, CSS).
+func (s *Settings) ThemeColors() theme.Colors {
+	if s == nil {
+		return theme.Colors{Mode: theme.ModeAuto}
+	}
+	return theme.Colors{
+		Mode:        s.ThemeMode,
+		AccentLight: s.ThemeAccentLight,
+		AccentDark:  s.ThemeAccentDark,
+		HeaderLight: s.ThemeHeaderLight,
+		HeaderDark:  s.ThemeHeaderDark,
 	}
 }
 

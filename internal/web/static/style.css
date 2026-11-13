@@ -23,7 +23,12 @@
  *   timeline:   .timeline > .timeline-item[data-status] (.timeline-status, .timeline-body, .timeline-meta)
  *
  * Page specific: .public-* (status, history, incident and maintenance pages), .impact-table
- * (incident forms), .auth-card .local-login (sign-in page), .setup-* (setup wizard).
+ * (incident forms), .auth-card .local-login (sign-in page), .setup-* (setup wizard),
+ * .brand-image-* .color-field .brand-preview-* (branding page).
+ *
+ * Header (layout.html): .site-header .brand (.brand-mark or .brand-logo, .brand-name) .site-nav
+ * .user-menu, coloured with the --header-* tokens. Branding (Admin → Branding) can override the
+ * accent and header tokens and force light or dark mode with <html data-theme="light|dark">.
  */
 
 /* ================================================================ tokens */
@@ -45,6 +50,15 @@
   --primary-text: #ffffff;
   --danger: #c4302b;
   --focus: color-mix(in srgb, var(--primary) 45%, transparent);
+  /* The accent (--primary, --primary-hover, --primary-text, --link, --focus) and the header
+     tokens can be customised on Admin → Branding: a <style> block after this stylesheet then
+     sets all of them for both modes (internal/theme). The header follows the surfaces of the mode. */
+  --header-bg: var(--surface);
+  --header-text: var(--text);
+  --header-text-muted: var(--text-muted);
+  --header-hover: var(--surface-hover);
+  --header-current: var(--surface-2);
+  --header-line: var(--border);
 
   /* status colours: fills (bars, dots, accents) … */
   --st-operational: #1e9e5a;
@@ -67,8 +81,11 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
+/* Dark mode: following the device (prefers-color-scheme), unless the page is forced
+   to light mode (data-theme="light", Admin → Branding), and forced dark mode
+   (data-theme="dark"). The two blocks must declare the same tokens (checked by a test). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0d1117;
     --surface: #151b23;
     --surface-2: #1b222c;
@@ -98,6 +115,37 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
 }
+:root[data-theme="dark"] {
+  --bg: #0d1117;
+  --surface: #151b23;
+  --surface-2: #1b222c;
+  --surface-hover: #212a35;
+  --border: #2a3340;
+  --border-strong: #3a4553;
+  --text: #e6ebf1;
+  --text-muted: #9ba7b6;
+  --link: #7aa9ff;
+  --primary: #2f6be0;
+  --primary-hover: #3b78ee;
+  --danger: #f2706a;
+  --focus: color-mix(in srgb, #7aa9ff 55%, transparent);
+
+  --st-operational: #2fb26a;
+  --st-maintenance: #4d8df5;
+  --st-degraded: #e6b422;
+  --st-partial_outage: #f08b3c;
+  --st-major_outage: #f0564e;
+  --st-nodata: #2a323d;
+  --st-operational-text: #5fd496;
+  --st-maintenance-text: #8fb7ff;
+  --st-degraded-text: #f0c950;
+  --st-partial_outage-text: #f7a868;
+  --st-major_outage-text: #ff8b84;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 /* ================================================================ base */
 
@@ -163,20 +211,34 @@ section + section, .main > * + section, .main > section + *, .main > form + .car
 
 /* ================================================================ header and footer */
 
-.site-header { background: var(--surface); border-bottom: 1px solid var(--border); }
+.site-header { background: var(--header-bg); border-bottom: 1px solid var(--header-line); }
 .header-inner { display: flex; align-items: center; gap: 8px 24px; min-height: 64px; }
-.brand { display: inline-flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; font-weight: 700; font-size: 1.08rem; color: var(--text); letter-spacing: -.01em; }
-.brand:hover { text-decoration: none; color: var(--text); }
-.brand-mark { width: 26px; height: 26px; flex: none; border-radius: 7px; background: var(--primary) url("favicon.svg") center / cover no-repeat; }
+.brand { display: inline-flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; font-weight: 700; font-size: 1.08rem; color: var(--header-text); letter-spacing: -.01em; }
+.brand:hover { text-decoration: none; color: var(--header-text); }
+/* The default mark: the pulse line of favicon.svg on the accent colour, drawn in the text
+   colour of the accent where masks are supported (dark on a light accent). */
+.brand-mark { width: 26px; height: 26px; flex: none; border-radius: 7px; background: var(--primary) url("brand-mark.svg") center / cover no-repeat; }
+@supports (mask: url("brand-mark.svg") center / cover no-repeat) {
+  .brand-mark { position: relative; background-image: none; }
+  .brand-mark::after { content: ""; position: absolute; inset: 0; background: var(--primary-text); mask: url("brand-mark.svg") center / cover no-repeat; }
+}
+/* An uploaded logo (Admin → Branding) instead of the mark. Next to a logo the site name is
+   shown only where it fits completely: else it wraps to a second line, which is cut off
+   (it stays the text of the link for screen readers). */
+.brand-logo { display: block; height: 32px; width: auto; max-width: min(240px, 50vw); object-fit: contain; object-position: left center; }
+.brand-logo, .brand picture { flex: none; }
+.brand-with-logo { flex-wrap: wrap; align-content: flex-start; height: 32px; overflow: hidden; }
 .brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .site-nav { display: flex; gap: 2px; flex: 1 0 auto; }
-.site-nav a { color: var(--text-muted); padding: 7px 12px; border-radius: var(--radius-small); font-weight: 550; white-space: nowrap; }
-.site-nav a:hover { background: var(--surface-hover); text-decoration: none; color: var(--text); }
-.site-nav a[aria-current="page"] { color: var(--text); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
+.site-nav a { color: var(--header-text-muted); padding: 7px 12px; border-radius: var(--radius-small); font-weight: 550; white-space: nowrap; }
+.site-nav a:hover { background: var(--header-hover); text-decoration: none; color: var(--header-text); }
+.site-nav a[aria-current="page"] { color: var(--header-text); background: var(--header-current); box-shadow: inset 0 0 0 1px var(--header-line); }
 .user-menu { display: flex; align-items: center; gap: 14px; margin-left: auto; min-width: 0; flex: 0 1 auto; white-space: nowrap; }
-.user-name { color: var(--text); font-weight: 550; min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-.user-menu .btn-link { color: var(--text-muted); }
-.user-menu .btn-link:hover { color: var(--text); }
+.user-name { color: var(--header-text); font-weight: 550; min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.user-menu .btn-link { color: var(--header-text-muted); }
+.user-menu .btn-link:hover { color: var(--header-text); }
+/* The focus ring stays visible on a coloured header. */
+.site-header a:focus-visible, .site-header button:focus-visible { outline-color: var(--header-text); }
 /* Narrow screens: brand and user menu in the first row, the navigation below. */
 @media (max-width: 800px) {
   .header-inner {
@@ -185,6 +247,7 @@ section + section, .main > * + section, .main > section + *, .main > form + .car
     gap: 8px 16px; min-height: 0; padding-top: 12px; padding-bottom: 8px;
   }
   .brand { grid-area: brand; justify-self: start; max-width: 100%; }
+  .brand-logo { max-width: min(180px, 42vw); }
   .user-menu { grid-area: user; gap: 12px; margin-left: 0; justify-content: flex-end; }
   .user-name { max-width: 150px; }
   .site-nav { grid-area: nav; overflow-x: auto; margin: 0 -10px; }
@@ -288,6 +351,13 @@ input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
   outline: 2px solid var(--primary); outline-offset: 2px;
 }
 input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger); }
+input[type="file"] { display: block; max-width: 100%; font: inherit; font-size: .9rem; color: var(--text-muted); border-radius: var(--radius-small); }
+input[type="file"]::file-selector-button {
+  font: inherit; font-weight: 550; color: var(--text); margin-right: 12px; padding: 7px 12px; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-small); background: var(--surface);
+}
+input[type="file"]::file-selector-button:hover { background: var(--surface-hover); }
+input[type="file"][aria-invalid="true"]::file-selector-button { border-color: var(--danger); }
 .checkbox { display: flex; align-items: flex-start; gap: 9px; margin: 8px 0; cursor: pointer; }
 .field > .checkbox { font-weight: 600; margin: 0; }
 .checkbox + .help { margin: 2px 0 0 25px; }
@@ -298,6 +368,7 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 fieldset { border: 0; padding: 0; margin: 0 0 18px; min-width: 0; }
 fieldset.box { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 20px 2px; margin-bottom: 24px; background: var(--surface); }
 fieldset.box > legend { font-weight: 650; padding: 0 6px; margin: 0 0 0 -6px; }
+fieldset.box > fieldset:last-child { margin-bottom: 0; }
 @media (max-width: 560px) { fieldset.box { padding: 12px 14px 2px; } }
 .code-box { display: block; padding: 8px 10px; font-family: var(--mono); font-size: .9rem; word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-small); user-select: all; }
 .disclosure { margin-bottom: 24px; }
@@ -527,6 +598,40 @@ fieldset.box > legend { font-weight: 650; padding: 0 6px; margin: 0 0 0 -6px; }
   .setup-steps { gap: 6px 16px; }
   .setup-steps li + li::before { display: none; }
 }
+
+/* ================================================================ branding page */
+
+/* stored logo or favicon on a chip in the colour it is seen on, with its remove checkbox */
+.brand-image-current { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 10px; }
+.brand-image-chip { display: inline-flex; align-items: center; max-width: 100%; min-height: 54px; padding: 10px 16px; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--surface-2); }
+.brand-image-chip img { display: block; height: 32px; width: auto; max-width: 100%; object-fit: contain; }
+.field .brand-image-current > .checkbox { margin: 0; font-weight: 400; }
+
+/* colour: a picker (shown by app.js) next to the hex code */
+.color-field { display: flex; align-items: center; gap: 8px; }
+.color-field input[type="text"] { flex: 1 1 auto; min-width: 0; font-family: var(--mono); font-size: .92rem; }
+.color-field input[type="text"]::placeholder { font-family: var(--font); font-size: .94rem; }
+.color-field input[type="color"] {
+  flex: none; width: 44px; height: 40px; padding: 4px; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-small); background: var(--surface);
+}
+.color-field input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.color-field input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 4px; }
+.color-field input[type="color"]::-moz-color-swatch { border: 0; border-radius: 4px; }
+
+/* preview of light and dark mode: the style attribute sets the colour tokens of the mode */
+.brand-preview { margin: 0; min-width: 0; }
+.brand-preview-page { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text); box-shadow: var(--shadow); }
+.brand-preview-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 56px; padding: 10px 16px; background: var(--header-bg); color: var(--header-text); border-bottom: 1px solid var(--header-line); }
+.brand-preview-brand { display: inline-flex; align-items: center; gap: 9px; min-width: 0; max-width: 100%; font-weight: 700; }
+.brand-preview-brand .brand-logo { height: 28px; max-width: min(180px, 100%); }
+.brand-preview-nav { display: flex; gap: 2px; margin-left: auto; font-size: .88rem; font-weight: 550; }
+.brand-preview-nav > span { padding: 4px 10px; border-radius: var(--radius-small); color: var(--header-text-muted); }
+.brand-preview-nav > .brand-preview-current { color: var(--header-text); background: var(--header-current); box-shadow: inset 0 0 0 1px var(--header-line); }
+.brand-preview-body { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; padding: 16px; }
+.brand-preview-body p { margin: 0; flex: 1 1 12em; }
+.brand-preview-body .btn { cursor: default; }
+.brand-preview-link { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
 
 /* ================================================================ print */
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/szilvasidave/status-page-tool/internal/store"
+	"github.com/szilvasidave/status-page-tool/internal/theme"
 )
 
 // Email is a rendered notification e-mail.
@@ -85,6 +86,10 @@ type emailView struct {
 	LinkURL    string
 	LinkText   string
 	Footer     string
+	// ButtonColor and ButtonText are the colours of the link button: the
+	// light-mode accent colour of the branding (theme.EmailButton).
+	ButtonColor string
+	ButtonText  string
 }
 
 type emailFact struct{ Label, Value string }
@@ -119,6 +124,7 @@ func RenderIncident(st *store.Settings, inc *store.Incident, upd *store.Incident
 		Message:  strings.TrimSpace(message),
 		Footer:   emailFooter,
 	}
+	v.ButtonColor, v.ButtonText = theme.EmailButton(st.ThemeAccentLight)
 	switch {
 	case status == store.IncidentResolved:
 		v.Subject = subject(st, "Resolved: "+v.Title)
@@ -175,6 +181,7 @@ func RenderMaintenance(st *store.Settings, m *store.Maintenance, ev MaintenanceE
 		BadgeColor: colorMaintenance,
 		Facts:      []emailFact{{"When", formatWindow(m.StartsAt, m.EndsAt, st.Location())}},
 	}
+	v.ButtonColor, v.ButtonText = theme.EmailButton(st.ThemeAccentLight)
 	switch ev {
 	case MaintenanceEventScheduled:
 		v.Subject = subject(st, "Scheduled maintenance: "+title)

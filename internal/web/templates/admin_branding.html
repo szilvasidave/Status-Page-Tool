@@ -1,0 +1,157 @@
+{{define "content"}}
+{{with .Data}}
+<h1>Branding</h1>
+<p class="lead">Your organisation's logo, favicon and colours on every page, including the sign-in page. The status colours
+  (operational, maintenance, degraded, outage) cannot be changed, so that they keep their meaning.</p>
+
+{{template "error-summary" .Errors}}
+{{- if .FilesDropped}}
+<p class="flash flash-warning">Nothing was saved, so the chosen image files were not kept either. Choose them again before you save.</p>
+{{- end}}
+
+<section aria-labelledby="preview-title">
+  <h2 id="preview-title">Preview</h2>
+  <div class="grid-2">
+    {{- range .Previews}}
+    <figure class="brand-preview">
+      <figcaption class="label">{{.Title}}</figcaption>
+      <div class="brand-preview-page" style="{{.Style}}" aria-hidden="true">
+        <div class="brand-preview-header">
+          <span class="brand-preview-brand">
+            {{- if .LogoURL}}<img class="brand-logo" src="{{.LogoURL}}" alt="">{{else}}<span class="brand-mark"></span>{{end}}
+            {{- if .ShowName}}<span class="brand-name">{{$.SiteName}}</span>{{end -}}
+          </span>
+          <span class="brand-preview-nav"><span class="brand-preview-current">Status</span><span>History</span></span>
+        </div>
+        <div class="brand-preview-body">
+          <p>Text on the page, <span class="brand-preview-link">a link</span> and <span class="muted">a note</span>.</p>
+          <span class="btn btn-primary">Button</span>
+        </div>
+      </div>
+    </figure>
+    {{- end}}
+  </div>
+  <p class="help">{{if .Errors}}The colours you entered{{else}}The saved branding{{end}}, as shown in light and in dark mode{{if eq .St.ThemeMode "light" "dark"}} (the pages always use {{.St.ThemeMode}} mode){{end}}.</p>
+</section>
+
+<form method="post" action="/admin/branding" enctype="multipart/form-data" class="form" data-unsaved="Your changes to the branding have not been saved and will be lost. Continue?">
+  {{template "csrf" $}}
+  <fieldset class="box" id="logo">
+    <legend>Logo and favicon</legend>
+    <div class="field">
+      <label for="logo_light">Logo for light mode</label>
+      {{template "brand-current" (dict "Image" .Images.LogoLight "Alt" "Current logo for light mode" "Remove" "logo_light_remove" "Checked" (index .Remove "logo_light_remove") "RemoveLabel" "Remove this logo")}}
+      <input id="logo_light" name="logo_light" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.svg,image/png,image/jpeg,image/gif,image/webp,image/svg+xml" data-max-bytes="524288" aria-describedby="logo_light_help"{{if .Errors.logo_light}} aria-invalid="true"{{end}}>
+      <span class="help" id="logo_light_help">PNG, JPEG, GIF, WebP or SVG, at most 512 KB. Shown 32 pixels high in the header of every page, instead of
+        the default icon. A wide logo with a transparent background works best.</span>
+      {{template "field-error" .Errors.logo_light}}
+    </div>
+    <div class="field">
+      <label for="logo_dark">Logo for dark mode <span class="muted">(optional)</span></label>
+      {{template "brand-current" (dict "Image" .Images.LogoDark "Alt" "Current logo for dark mode" "Remove" "logo_dark_remove" "Checked" (index .Remove "logo_dark_remove") "RemoveLabel" "Remove this logo")}}
+      <input id="logo_dark" name="logo_dark" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.svg,image/png,image/jpeg,image/gif,image/webp,image/svg+xml" data-max-bytes="524288" aria-describedby="logo_dark_help"{{if .Errors.logo_dark}} aria-invalid="true"{{end}}>
+      <span class="help" id="logo_dark_help">A variant for the dark header, e.g. with light text. Without it the logo for light mode is used in
+        dark mode too (and a logo uploaded only here is used in both modes).</span>
+      {{template "field-error" .Errors.logo_dark}}
+    </div>
+    <div class="field">
+      <label class="checkbox"><input type="checkbox" name="show_site_name" aria-describedby="show_site_name_help"{{if .St.ThemeShowSiteName}} checked{{end}}> Show the site name next to the logo</label>
+      <span class="help" id="show_site_name_help">Turn this off if the logo already contains the name. Without a logo the name is always shown.</span>
+    </div>
+    <div class="field">
+      <label for="favicon">Favicon <span class="muted">(optional)</span></label>
+      {{template "brand-current" (dict "Image" .Images.Favicon "Alt" "Current favicon" "Remove" "favicon_remove" "Checked" (index .Remove "favicon_remove") "RemoveLabel" "Remove this favicon")}}
+      <input id="favicon" name="favicon" type="file" accept=".png,.gif,.svg,.ico,image/png,image/gif,image/svg+xml,image/x-icon,image/vnd.microsoft.icon" data-max-bytes="524288" aria-describedby="favicon_help"{{if .Errors.favicon}} aria-invalid="true"{{end}}>
+      <span class="help" id="favicon_help">PNG, GIF, SVG or ICO, at most 512 KB; square, at least 32 × 32 pixels. The icon of browser tabs and
+        bookmarks. Without one, the default icon is used, drawn in the accent colour of light mode.</span>
+      {{template "field-error" .Errors.favicon}}
+    </div>
+  </fieldset>
+
+  <fieldset class="box" id="colours">
+    <legend>Colours</legend>
+    <div class="field">
+      <label for="theme_mode">Appearance</label>
+      <select id="theme_mode" name="theme_mode" aria-describedby="theme_mode_help"{{if .Errors.theme_mode}} aria-invalid="true"{{end}}>
+        <option value="auto"{{if eq .St.ThemeMode "auto"}} selected{{end}}>Follow the device setting</option>
+        <option value="light"{{if eq .St.ThemeMode "light"}} selected{{end}}>Always light</option>
+        <option value="dark"{{if eq .St.ThemeMode "dark"}} selected{{end}}>Always dark</option>
+      </select>
+      <span class="help" id="theme_mode_help">Following the device setting, each visitor sees light or dark mode as their device is set. Choose
+        a fixed appearance if your logo or colours suit only one of them.</span>
+      {{template "field-error" .Errors.theme_mode}}
+    </div>
+    <p class="help">Enter colours as hex codes such as #1f5bd8, or pick them. Leave a field empty for the default. Text on a coloured
+      header or button is white or dark, whichever is easier to read.</p>
+    <fieldset>
+      <legend>Light mode</legend>
+      <div class="field-row">
+        {{- $hint := ""}}{{if .Light.LinkAdjusted}}{{$hint = printf "Links use the darker shade %s so that they stay readable." .Light.Link}}{{end}}
+        {{template "brand-color-field" (dict "ID" "accent_light" "Label" "Accent colour" "Picker" "Accent colour for light mode: colour picker"
+          "Value" .St.ThemeAccentLight "Default" .Defaults.AccentLight "Error" .Errors.accent_light "Hint" $hint
+          "Help" "Buttons, links, focus rings and the current tab, and the button of notification e-mails.")}}
+        {{template "brand-color-field" (dict "ID" "header_light" "Label" "Header background" "Picker" "Header background for light mode: colour picker"
+          "Value" .St.ThemeHeaderLight "Default" .Defaults.HeaderLight "Error" .Errors.header_light "Hint" ""
+          "Help" "The bar at the top of every page with the logo and the navigation. Default: white.")}}
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Dark mode</legend>
+      <div class="field-row">
+        {{- $hint = ""}}{{if .Dark.LinkAdjusted}}{{$hint = printf "Links use the lighter shade %s so that they stay readable." .Dark.Link}}{{end}}
+        {{template "brand-color-field" (dict "ID" "accent_dark" "Label" "Accent colour" "Picker" "Accent colour for dark mode: colour picker"
+          "Value" .St.ThemeAccentDark "Default" .Defaults.AccentDark "Error" .Errors.accent_dark "Hint" $hint
+          "Help" "Empty: the accent colour of light mode, lightened where needed so that it stays visible on the dark background.")}}
+        {{template "brand-color-field" (dict "ID" "header_dark" "Label" "Header background" "Picker" "Header background for dark mode: colour picker"
+          "Value" .St.ThemeHeaderDark "Default" .Defaults.HeaderDark "Error" .Errors.header_dark "Hint" ""
+          "Help" "Empty: the default dark header. The header colour of light mode is not used in dark mode.")}}
+      </div>
+    </fieldset>
+  </fieldset>
+
+  <div class="form-actions">
+    <button type="submit" class="btn-primary">Save branding</button>
+  </div>
+</form>
+
+<section class="danger-zone" aria-labelledby="reset-branding">
+  <h2 id="reset-branding">Restore the default branding</h2>
+  <p class="muted">Removes the logos and the favicon, and sets the colours and the appearance back to the defaults.</p>
+  <form method="post" action="/admin/branding/reset" data-confirm="Restore the default branding? The logos and the favicon are removed and the colours are set back to the defaults.">
+    {{template "csrf" $}}
+    <button type="submit" class="btn-danger">Restore defaults</button>
+  </form>
+</section>
+{{end}}
+{{end}}
+
+{{/* A stored image of the branding form on a chip in the colour it is seen on, with its remove checkbox.
+     Usage: {{template "brand-current" (dict "Image" <adminBrandImage> "Alt" "…" "Remove" "<field>_remove"
+     "Checked" <bool> "RemoveLabel" "…")}} */}}
+{{define "brand-current"}}
+{{- with .Image}}{{if .URL}}
+<div class="brand-image-current">
+  <span class="brand-image-chip"{{with .Chip}} style="{{.}}"{{end}}><img src="{{.URL}}" alt="{{$.Alt}}"></span>
+  {{- if .Uploaded}}
+  <label class="checkbox"><input type="checkbox" name="{{$.Remove}}"{{if $.Checked}} checked{{end}}> {{$.RemoveLabel}}</label>
+  {{- else}}
+  <span class="small muted">Default icon</span>
+  {{- end}}
+</div>
+{{- end}}{{end}}
+{{- end}}
+
+{{/* A colour field of the branding form: a hex text input and a colour picker that static/app.js shows and
+     keeps in sync with it. Usage: {{template "brand-color-field" (dict "ID" "<field>" "Label" "…" "Picker" "…"
+     "Value" "…" "Default" "#rrggbb" "Error" "…" "Help" "…" "Hint" "…")}} */}}
+{{define "brand-color-field"}}
+<div class="field">
+  <label for="{{.ID}}">{{.Label}}</label>
+  <div class="color-field">
+    <input type="color" data-color-for="{{.ID}}" aria-label="{{.Picker}}" hidden>
+    <input id="{{.ID}}" name="{{.ID}}" type="text" value="{{.Value}}" maxlength="7" placeholder="Default ({{.Default}})" data-default="{{.Default}}" autocomplete="off" spellcheck="false" aria-describedby="{{.ID}}_help"{{if .Error}} aria-invalid="true"{{end}}>
+  </div>
+  <span class="help" id="{{.ID}}_help">{{.Help}}{{with .Hint}} {{.}}{{end}}</span>
+  {{template "field-error" .Error}}
+</div>
+{{end}}

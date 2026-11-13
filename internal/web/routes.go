@@ -8,7 +8,7 @@ import (
 )
 
 // routes registers all routes for normal mode. Handler implementations live
-// in public.go, login.go, setup.go, manage.go and admin_*.go.
+// in public.go, login.go, setup.go, manage.go, brand.go and admin_*.go.
 func (s *Server) routes() {
 	m := s.mux
 	viewer := s.viewer
@@ -22,6 +22,10 @@ func (s *Server) routes() {
 	m.Handle("GET /incidents/{id}", viewer(s.handleIncident))
 	m.Handle("GET /maintenance/{id}", viewer(s.handleMaintenance))
 	m.Handle("GET /api/status", viewer(s.handleAPIStatus))
+
+	// Brand images (logos, favicon): public even while public access is
+	// off, because the sign-in page shows them.
+	m.HandleFunc("GET /brand/{name}", s.handleBrandImage)
 
 	// Authentication.
 	m.HandleFunc("GET /login", s.handleLoginPage)
@@ -62,6 +66,9 @@ func (s *Server) routes() {
 	m.Handle("POST /admin/settings/test-email", admin(s.handleTestEmail))
 	m.Handle("POST /admin/settings/scim-token", admin(s.handleSCIMTokenNew))
 	m.Handle("POST /admin/settings/scim-token/delete", admin(s.handleSCIMTokenDelete))
+	m.Handle("GET /admin/branding", admin(s.handleBranding))
+	m.Handle("POST /admin/branding", admin(s.handleBrandingSave))
+	m.Handle("POST /admin/branding/reset", admin(s.handleBrandingReset))
 	m.Handle("GET /admin/services", admin(s.handleServices))
 	m.Handle("GET /admin/services/new", admin(s.handleServiceNew))
 	m.Handle("POST /admin/services", admin(s.handleServiceCreate))

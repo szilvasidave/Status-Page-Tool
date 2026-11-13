@@ -132,11 +132,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireSetupDone redirects everything to /setup until a local administrator
-// account exists. SCIM provisioning (/scim/) answers with its own errors.
+// account exists. SCIM provisioning (/scim/) answers with its own errors;
+// static files and the brand images (/brand/) are served.
 func (s *Server) requireSetupDone(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.setupDone.Load() || r.URL.Path == "/setup" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" ||
-			strings.HasPrefix(r.URL.Path, "/scim/") {
+			strings.HasPrefix(r.URL.Path, "/scim/") || strings.HasPrefix(r.URL.Path, "/brand/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -202,7 +203,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		if strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" {
+		if strings.HasPrefix(r.URL.Path, "/static/") || strings.HasPrefix(r.URL.Path, "/brand/") || r.URL.Path == "/healthz" {
 			return
 		}
 		lvl := slog.LevelDebug
@@ -247,7 +248,7 @@ func (s *Server) loadTemplates() error {
 type Page struct {
 	Title     string
 	Nav       string // active navigation item: status, history, manage, admin, account, login, setup
-	SubNav    string // active admin section: settings, services, groups, users, notifications
+	SubNav    string // active admin section: settings, branding, services, groups, users, notifications
 	Settings  *store.Settings
 	Identity  *auth.Identity
 	CSRF      string
@@ -256,6 +257,8 @@ type Page struct {
 	Now       time.Time
 	SetupMode bool
 	Data      any
+
+	theme *pageTheme // see Theme
 }
 
 // User returns the signed-in user or nil.
@@ -271,6 +274,15 @@ func (p *Page) IsEditor() bool { return p.Identity.Has(store.RoleEditor) }
 
 // IsAdmin reports whether the user is an administrator.
 func (p *Page) IsAdmin() bool { return p.Identity.Has(store.RoleAdmin) }
+
+// Theme returns the branding of the page: appearance, colours, favicon and
+// logo (see brand.go). It is computed once per page.
+func (p *Page) Theme() *pageTheme {
+	if p.theme == nil {
+		p.theme = newPageTheme(p.Settings, p.SiteName())
+	}
+	return p.theme
+}
 
 // SiteName returns the configured site name.
 func (p *Page) SiteName() string {

@@ -71,4 +71,53 @@
     });
   }
   document.addEventListener("DOMContentLoaded", selectBrowserTimezone);
+
+  // <input type="color" data-color-for="id" hidden> (branding page) is a
+  // colour picker for the hex code in the text input #id: it is shown, starts
+  // with that colour (or the input's data-default, the colour an empty field
+  // stands for) and the two stay in sync. Picking a colour fires an input
+  // event on the text input, so data-unsaved notices it.
+  var hexCode = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i;
+  function expandHex(v) {
+    var m = hexCode.exec((v || "").trim());
+    if (!m) return "";
+    var h = m[1].toLowerCase();
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    return "#" + h;
+  }
+  function setupColorPickers() {
+    document.querySelectorAll("input[type=color][data-color-for]").forEach(function (picker) {
+      var text = document.getElementById(picker.getAttribute("data-color-for"));
+      if (!text) return;
+      function fromText() {
+        picker.value = expandHex(text.value) || expandHex(text.getAttribute("data-default")) || "#000000";
+      }
+      fromText();
+      picker.hidden = false;
+      picker.addEventListener("input", function () {
+        text.value = picker.value;
+        text.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      text.addEventListener("input", function () {
+        if (expandHex(text.value) || text.value.trim() === "") fromText();
+      });
+    });
+  }
+  document.addEventListener("DOMContentLoaded", setupColorPickers);
+
+  // <input type="file" data-max-bytes="N"> refuses a file larger than N
+  // bytes when it is chosen, instead of after the upload.
+  document.addEventListener("change", function (e) {
+    var input = e.target;
+    if (!input.matches || !input.matches("input[type=file][data-max-bytes]")) return;
+    var max = parseInt(input.getAttribute("data-max-bytes"), 10);
+    var file = input.files && input.files[0];
+    if (file && max > 0 && file.size > max) {
+      input.setCustomValidity("The file is too large (" + Math.ceil(file.size / 1024) + " KB); at most " +
+        Math.floor(max / 1024) + " KB.");
+      input.reportValidity();
+    } else {
+      input.setCustomValidity("");
+    }
+  });
 })();

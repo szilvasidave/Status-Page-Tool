@@ -9,6 +9,7 @@ import (
 
 	"github.com/szilvasidave/status-page-tool/internal/db"
 	"github.com/szilvasidave/status-page-tool/internal/secret"
+	"github.com/szilvasidave/status-page-tool/internal/theme"
 )
 
 // settingsTTL is how long GetSettings serves the settings from memory.
@@ -18,7 +19,7 @@ const settingsTTL = 10 * time.Second
 type settingField struct {
 	key    string
 	secret bool // stored encrypted
-	own    bool // written only by its own method (SetSCIMToken), never by SaveSettings
+	own    bool // written only by its own method (SetSCIMToken, SetBrandImage, …), never by SaveSettings
 	encode func(st *Settings) string
 	decode func(st *Settings, v string)
 }
@@ -39,7 +40,8 @@ func secretField(key string, p func(*Settings) *string) settingField {
 
 // ownField marks a setting that has its own writer: SaveSettings leaves it
 // alone, so that saving the settings form never writes back an older value
-// (e.g. a provisioning token that was replaced or deleted meanwhile).
+// (e.g. a provisioning token or a logo that was replaced or deleted
+// meanwhile).
 func ownField(f settingField) settingField {
 	f.own = true
 	return f
@@ -115,6 +117,28 @@ var settingFields = []settingField{
 
 	ownField(strField("scim_token_hash", func(s *Settings) *string { return &s.SCIMTokenHash })),
 	ownField(timeField("scim_token_created_at", func(s *Settings) *time.Time { return &s.SCIMTokenCreatedAt })),
+
+	strField("theme_mode", func(s *Settings) *string { return &s.ThemeMode }),
+	strField("theme_accent_light", func(s *Settings) *string { return &s.ThemeAccentLight }),
+	strField("theme_accent_dark", func(s *Settings) *string { return &s.ThemeAccentDark }),
+	strField("theme_header_light", func(s *Settings) *string { return &s.ThemeHeaderLight }),
+	strField("theme_header_dark", func(s *Settings) *string { return &s.ThemeHeaderDark }),
+	boolField("theme_show_site_name", func(s *Settings) *bool { return &s.ThemeShowSiteName }),
+	ownField(strField(brandSettingKeys[BrandLogoLight], func(s *Settings) *string { return &s.LogoLight })),
+	ownField(strField(brandSettingKeys[BrandLogoDark], func(s *Settings) *string { return &s.LogoDark })),
+	ownField(strField(brandSettingKeys[BrandFavicon], func(s *Settings) *string { return &s.Favicon })),
+}
+
+// normalizeTheme puts the branding settings into their canonical form:
+// colours "#rrggbb" or "" (invalid colours become the default) and a known
+// appearance mode (else theme.ModeAuto).
+func normalizeTheme(st *Settings) {
+	for _, c := range []*string{&st.ThemeAccentLight, &st.ThemeAccentDark, &st.ThemeHeaderLight, &st.ThemeHeaderDark} {
+		*c, _ = theme.NormalizeHex(*c)
+	}
+	if !theme.ValidMode(st.ThemeMode) {
+		st.ThemeMode = theme.ModeAuto
+	}
 }
 
 // trimBaseURL removes surrounding spaces and trailing slashes.
@@ -184,19 +208,24 @@ func (s *Store) loadSettings(ctx context.Context) (*Settings, error) {
 	if st.MailMethod != MailSMTP {
 		st.MailMethod = MailGraph
 	}
+	normalizeTheme(&st)
 	return &st, nil
 }
 
 // SaveSettings stores all fields of st (secrets encrypted with the key) in
 // one transaction and invalidates the settings cache. A trailing "/" is
-// removed from BaseURL. The provisioning token (SCIMTokenHash,
-// SCIMTokenCreatedAt) is not stored: only SetSCIMToken changes it.
+// removed from BaseURL; the branding colours and mode are normalised like
+// GetSettings does (callers validate them first). The provisioning token
+// (SCIMTokenHash, SCIMTokenCreatedAt) and the versions of the brand images
+// (LogoLight, LogoDark, Favicon) are not stored: only SetSCIMToken,
+// SetBrandImage and DeleteBrandImage change them.
 func (s *Store) SaveSettings(ctx context.Context, st *Settings) error {
 	if st == nil {
 		return fmt.Errorf("save settings: no settings given")
 	}
 	c := *st
 	c.BaseURL = trimBaseURL(c.BaseURL)
+	normalizeTheme(&c)
 	values := make([]string, len(settingFields))
 	for i, f := range settingFields {
 		v := f.encode(&c)
@@ -222,11 +251,17 @@ func (s *Store) SaveSettings(ctx context.Context, st *Settings) error {
 		}
 		return nil
 	})
-	s.settingsMu.Lock()
-	s.settingsCache = nil
-	s.settingsMu.Unlock()
+	s.invalidateSettings()
 	if err != nil {
 		return fmt.Errorf("save settings: %w", err)
 	}
 	return nil
+}
+
+// invalidateSettings drops the cached settings, so that the next
+// GetSettings reads them again.
+func (s *Store) invalidateSettings() {
+	s.settingsMu.Lock()
+	s.settingsCache = nil
+	s.settingsMu.Unlock()
 }
