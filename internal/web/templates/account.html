@@ -84,7 +84,7 @@
   <div class="card-body"><p class="muted">You are not a member of any group.</p></div>
   {{- end}}
   <div class="card-footer small muted">
-    Your groups come from the identity provider and are refreshed every time you sign in{{if $.Settings.DirectorySyncEnabled}} and by the hourly directory sync{{end}}.
+    Your groups come from the identity provider and are refreshed every time you sign in{{if $.Settings.SCIMEnabled}} and by provisioning from Microsoft Entra ID{{end}}.
     Please contact your IT department if a group is missing.
   </div>
 </section>

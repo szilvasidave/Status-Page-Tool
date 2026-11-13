@@ -36,9 +36,9 @@ func scanNotification(sc scanner) (Notification, error) {
 	return n, err
 }
 
-// RecipientsForServices returns the distinct users (with a non-empty e-mail)
-// that are members of a group assigned to any of the given services, ordered
-// by e-mail.
+// RecipientsForServices returns the distinct users (with a non-empty e-mail,
+// not deactivated by provisioning) that are members of a group assigned to
+// any of the given services, ordered by e-mail.
 func (s *Store) RecipientsForServices(ctx context.Context, serviceIDs []int64) ([]Recipient, error) {
 	ids := uniqueIDs(serviceIDs)
 	if len(ids) == 0 {
@@ -52,8 +52,8 @@ func (s *Store) RecipientsForServices(ctx context.Context, serviceIDs []int64) (
 	    FROM users u
 	    JOIN user_groups ug ON ug.user_id = u.id
 	    JOIN service_groups sg ON sg.group_id = ug.group_id
-	    WHERE sg.service_id IN (`+in+`) AND u.email <> ''
-	    ORDER BY u.email, u.id`, args...)
+	    WHERE sg.service_id IN (`+in+`) AND u.email <> '' AND u.active = ?
+	    ORDER BY u.email, u.id`, append(args, true)...)
 	if err != nil {
 		return nil, fmt.Errorf("find e-mail recipients: %w", err)
 	}

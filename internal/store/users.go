@@ -128,18 +128,26 @@ func (s *Store) SetPasswordHash(ctx context.Context, userID int64, hash string) 
 	return err
 }
 
+// ErrUserDeactivated is returned by UpsertOIDCUser for a user that
+// provisioning deactivated.
+var ErrUserDeactivated = errors.New("your account has been deactivated by your organisation's user provisioning")
+
 // UpsertOIDCUser finds the user for a successful OIDC login and updates it,
 // or creates it. Matching order: oidc_subject, then directory_id (if given),
-// then email (if given, case-insensitive; with a directory id only rows
-// without one, so that the row of another directory object is never taken
-// over). The matched user gets oidc_subject (taken over if it changed),
-// email (lower case, if given), name (if given), directory_id (if given) and
-// last_login_at=now updated. When the subject of a row changes, the row's
-// sessions are deleted (they belong to the previous identity). Local admin
-// accounts are never matched or modified (they have no e-mail).
+// then principal_name (if given) and then email (if given); both
+// case-insensitive and, with a directory id, only rows without one, so that
+// the row of another directory object is never taken over. The matched user
+// gets oidc_subject (taken over if it changed), directory_id (if given) and
+// last_login_at=now updated, and email (lower case), name and principal_name
+// (if given) unless the user is provisioned: provisioning is authoritative
+// for these. When the subject of a row changes, the row's sessions are
+// deleted (they belong to the previous identity). A user deactivated by
+// provisioning is not changed: ErrUserDeactivated. Local admin accounts are
+// never matched or modified (they have no e-mail).
 // Must not fail on unique constraints when another row already holds the
 // e-mail/directory id: the first match wins and conflicting values are
-// cleared from the other row.
+// cleared from the other row, except that the e-mail address of a
+// provisioned user is never taken.
 func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) {
 	subject := strings.TrimSpace(in.Subject)
 	if subject == "" {
@@ -147,32 +155,45 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 	}
 	var out *User
 	upsert := func(tx *db.Tx) error {
+		if err := s.lockProvisioning(ctx, tx); err != nil {
+			return err
+		}
 		email := normEmail(in.Email)
 		name := strings.TrimSpace(in.Name)
 		dir := strings.TrimSpace(in.DirectoryID)
+		principal := strings.TrimSpace(in.PrincipalName)
 
 		const notAdmin = " AND u.is_local_admin = ?"
+		noOtherObject := "" // rows of another directory object are never taken over by name or e-mail
+		if dir != "" {
+			noOtherObject = " AND u.directory_id IS NULL"
+		}
 		u, err := findUser(ctx, tx, "u.oidc_subject = ?"+notAdmin, subject, false)
 		if errors.Is(err, ErrNotFound) && dir != "" {
 			u, err = findUser(ctx, tx, "u.directory_id = ?"+notAdmin, dir, false)
 		}
+		if errors.Is(err, ErrNotFound) && principal != "" {
+			u, err = findUser(ctx, tx, "LOWER(u.principal_name) = LOWER(?) AND u.principal_name <> ''"+noOtherObject+notAdmin, principal, false)
+		}
 		if errors.Is(err, ErrNotFound) && email != "" {
-			cond := "u.email = ? AND u.email <> ''"
-			if dir != "" {
-				cond += " AND u.directory_id IS NULL"
-			}
-			u, err = findUser(ctx, tx, cond+notAdmin, email, false)
+			u, err = findUser(ctx, tx, "u.email = ? AND u.email <> ''"+noOtherObject+notAdmin, email, false)
 		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}
 		var id int64 // 0 = create a new user
 		if u != nil {
+			if !u.Active {
+				return ErrUserDeactivated
+			}
 			id = u.ID
 			if u.OIDCSubject != "" && u.OIDCSubject != subject {
 				if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
 					return err
 				}
+			}
+			if u.Provisioned {
+				email, name, principal = u.Email, u.Name, u.PrincipalName
 			}
 		}
 
@@ -186,8 +207,15 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 				return err
 			}
 		}
-		if email != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND email <> '' AND id <> ?`, email, id); err != nil {
+		if email != "" && (u == nil || !u.Provisioned) {
+			var provisioned int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE email = ? AND email <> '' AND provisioned = ? AND id <> ?`,
+				email, true, id).Scan(&provisioned); err != nil {
+				return err
+			}
+			if provisioned > 0 {
+				email = "" // the address of a provisioned user
+			} else if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND email <> '' AND id <> ?`, email, id); err != nil {
 				return err
 			}
 		}
@@ -195,9 +223,9 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 		now := db.Now()
 		if u == nil {
 			err = tx.QueryRowContext(ctx,
-				`INSERT INTO users (email, name, oidc_subject, directory_id, last_login_at, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
-				email, name, subject, nullString(dir), now, now).Scan(&id)
+				`INSERT INTO users (email, name, oidc_subject, directory_id, principal_name, last_login_at, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+				email, name, subject, nullString(dir), principal, now, now).Scan(&id)
 			if err != nil {
 				return err
 			}
@@ -211,9 +239,12 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 			if dir == "" {
 				dir = u.DirectoryID
 			}
+			if principal == "" {
+				principal = u.PrincipalName
+			}
 			_, err = tx.ExecContext(ctx,
-				`UPDATE users SET oidc_subject = ?, email = ?, name = ?, directory_id = ?, last_login_at = ? WHERE id = ?`,
-				subject, email, name, nullString(dir), now, id)
+				`UPDATE users SET oidc_subject = ?, email = ?, name = ?, directory_id = ?, principal_name = ?, last_login_at = ? WHERE id = ?`,
+				subject, email, name, nullString(dir), principal, now, id)
 			if err != nil {
 				return err
 			}
@@ -221,12 +252,12 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 		out, err = findUser(ctx, tx, "u.id = ?", id)
 		return err
 	}
-	// PostgreSQL: a concurrent sign-in or directory sync may create or
+	// PostgreSQL: a concurrent sign-in or provisioning request may create or
 	// change the same user after the lookup (duplicate key, or a deadlock).
 	// Look again; then the row is found.
-	err := s.db.InTx(ctx, upsert)
-	for attempt := 1; attempt < 3 && isConflict(err); attempt++ {
-		err = s.db.InTx(ctx, upsert)
+	err := s.inTxRetry(ctx, upsert)
+	if errors.Is(err, ErrUserDeactivated) {
+		return nil, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("save signed-in user %q: %w", subject, err)
@@ -234,29 +265,22 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 	return out, nil
 }
 
-// insertMembershipSQL adds a user to a group. A sign-in and a directory sync
-// may insert the same membership at the same time (PostgreSQL), and a
-// membership kept from the sync may be in the claim, too.
+// insertMembershipSQL adds a user to a group. Concurrent sign-ins (and
+// provisioning) may insert the same membership at the same time
+// (PostgreSQL).
 const insertMembershipSQL = `INSERT INTO user_groups (user_id, group_id) VALUES (?, ?) ON CONFLICT DO NOTHING`
 
-// SetUserGroups replaces all group memberships of a user with the given
-// groups (SetLoginGroups without keepSynced).
-func (s *Store) SetUserGroups(ctx context.Context, userID int64, groups []GroupRef) error {
-	return s.SetLoginGroups(ctx, userID, groups, false)
-}
-
-// SetLoginGroups sets the group memberships of a user to the groups reported
+// SetUserGroups sets the group memberships of a user to the groups reported
 // by the identity provider at sign-in: memberships of other groups are
 // removed. Groups are created if they do not exist yet (keyed by ExternalID,
 // see NormExternalID; Name defaults to ExternalID). An existing group's name
 // is only overwritten when ref.Name is non-empty and differs from
 // ExternalID. Refs with an empty ExternalID are ignored.
 //
-// With keepSynced (directory sync enabled), memberships of groups the
-// directory sync manages are not removed: only the sync removes those. These
-// are the groups it currently synchronises (see GroupsToSync) and has
-// synchronised at least once (last_synced_at set).
-func (s *Store) SetLoginGroups(ctx context.Context, userID int64, groups []GroupRef, keepSynced bool) error {
+// Provisioned groups are left alone: only provisioning (SCIM) adds and
+// removes their members and changes their names, whether or not they are in
+// groups.
+func (s *Store) SetUserGroups(ctx context.Context, userID int64, groups []GroupRef) error {
 	// Unique refs (the first name wins), sorted so that concurrent logins
 	// lock the group rows in the same order.
 	names := make(map[string]string)
@@ -272,19 +296,22 @@ func (s *Store) SetLoginGroups(ctx context.Context, userID int64, groups []Group
 	slices.Sort(exts)
 
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
+		if err := s.lockProvisioning(ctx, tx); err != nil {
+			return err
+		}
 		var ids []int64
 		for _, ext := range exts {
-			g, err := ensureGroup(ctx, tx, ext, names[ext])
+			g, provisioned, err := ensureGroup(ctx, tx, ext, names[ext])
 			if err != nil {
 				return err
 			}
-			ids = append(ids, g)
+			if !provisioned {
+				ids = append(ids, g)
+			}
 		}
-		del := `DELETE FROM user_groups WHERE user_id = ?`
-		if keepSynced {
-			del += ` AND group_id NOT IN (SELECT g.id FROM idp_groups g WHERE g.last_synced_at IS NOT NULL AND ` + groupInUseSQL + `)`
-		}
-		if _, err := tx.ExecContext(ctx, del, userID); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM user_groups WHERE user_id = ? AND group_id NOT IN (SELECT id FROM idp_groups WHERE provisioned = ?)`,
+			userID, true); err != nil {
 			return err
 		}
 		for _, gid := range ids {
@@ -301,8 +328,9 @@ func (s *Store) SetLoginGroups(ctx context.Context, userID int64, groups []Group
 }
 
 // ensureGroup returns the id of the group with external id ext, creating it
-// if needed. The name is updated when name is non-empty and differs from ext.
-func ensureGroup(ctx context.Context, tx *db.Tx, ext, name string) (int64, error) {
+// if needed, and whether it is provisioned. The name of a group that is not
+// provisioned is updated when name is non-empty and differs from ext.
+func ensureGroup(ctx context.Context, tx *db.Tx, ext, name string) (int64, bool, error) {
 	initial := name
 	if initial == "" {
 		initial = ext
@@ -310,21 +338,22 @@ func ensureGroup(ctx context.Context, tx *db.Tx, ext, name string) (int64, error
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO idp_groups (external_id, name, role, created_at) VALUES (?, ?, '', ?)
 		 ON CONFLICT (external_id) DO NOTHING`, ext, initial, db.Now()); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	var (
-		id      int64
-		current string
+		id          int64
+		current     string
+		provisioned bool
 	)
-	if err := tx.QueryRowContext(ctx, `SELECT id, name FROM idp_groups WHERE external_id = ?`, ext).Scan(&id, &current); err != nil {
-		return 0, err
+	if err := tx.QueryRowContext(ctx, `SELECT id, name, provisioned FROM idp_groups WHERE external_id = ?`, ext).Scan(&id, &current, &provisioned); err != nil {
+		return 0, false, err
 	}
-	if name != "" && name != ext && name != current {
+	if !provisioned && name != "" && name != ext && name != current {
 		if _, err := tx.ExecContext(ctx, `UPDATE idp_groups SET name = ? WHERE id = ?`, name, id); err != nil {
-			return 0, err
+			return 0, false, err
 		}
 	}
-	return id, nil
+	return id, provisioned, nil
 }
 
 // effectiveRole computes a user's role from the local admin flag and the

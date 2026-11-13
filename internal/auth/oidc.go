@@ -217,16 +217,24 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 			if user.DirectoryID == "" {
 				user.DirectoryID = fromInfo.DirectoryID
 			}
+			if user.PrincipalName == "" {
+				user.PrincipalName = fromInfo.PrincipalName
+			}
 		}
 	}
 
 	u, err := m.store.UpsertOIDCUser(ctx, user)
+	if errors.Is(err, store.ErrUserDeactivated) {
+		m.log.Info("OIDC: sign-in refused: the user was deactivated by provisioning", "subject", idt.Subject,
+			"user", user.PrincipalName, "ip", ClientIP(r))
+		return "", err
+	}
 	if err != nil {
 		return "", err
 	}
 	switch {
 	case overage:
-		m.log.Warn("OIDC: the identity provider did not include the groups in the token because the user is a member of too many groups (group overage); group memberships were not changed. Enable the directory sync to keep them up to date.",
+		m.log.Warn("OIDC: the identity provider did not include the groups in the token because the user is a member of too many groups (group overage); group memberships were not changed. With SCIM provisioning from Microsoft Entra ID the members of the provisioned groups are kept up to date regardless.",
 			"user", u.DisplayName(), "claim", groupsClaim)
 	case infoFailed:
 		// Logged above.
@@ -239,9 +247,8 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 		for _, g := range groups {
 			refs = append(refs, store.GroupRef{ExternalID: g})
 		}
-		// With directory sync, the sync alone removes members of the groups
-		// it manages.
-		if err := m.store.SetLoginGroups(ctx, u.ID, refs, st.DirectorySyncEnabled); err != nil {
+		// The memberships of provisioned groups are left to provisioning.
+		if err := m.store.SetUserGroups(ctx, u.ID, refs); err != nil {
 			return "", err
 		}
 	}
@@ -427,8 +434,8 @@ func (m *Manager) readOIDCState(r *http.Request) (s oidcState, ok bool) {
 
 // ------------------------------------------------------------------ claims
 
-// oidcUserFromClaims extracts e-mail, name and directory id from ID token or
-// userinfo claims (Subject is not set).
+// oidcUserFromClaims extracts e-mail, name, directory id and user name from
+// ID token or userinfo claims (Subject is not set).
 func oidcUserFromClaims(c map[string]any) store.OIDCUser {
 	str := func(k string) string {
 		s, _ := c[k].(string)
@@ -452,6 +459,12 @@ func oidcUserFromClaims(c map[string]any) store.OIDCUser {
 		u.Name = str("preferred_username")
 	}
 	u.DirectoryID = str("oid") // Microsoft Entra ID object id
+	// The user name, as provisioning (SCIM userName) knows it: Entra ID puts
+	// the user principal name into preferred_username (v2.0) or upn (v1.0).
+	u.PrincipalName = str("preferred_username")
+	if u.PrincipalName == "" {
+		u.PrincipalName = str("upn")
+	}
 	return u
 }
 

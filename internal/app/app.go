@@ -24,7 +24,6 @@ import (
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
 	"github.com/szilvasidave/status-page-tool/internal/db"
-	"github.com/szilvasidave/status-page-tool/internal/directory"
 	"github.com/szilvasidave/status-page-tool/internal/notify"
 	"github.com/szilvasidave/status-page-tool/internal/secret"
 	"github.com/szilvasidave/status-page-tool/internal/store"
@@ -155,7 +154,7 @@ func Run(ctx context.Context, opts Options) error {
 	case <-ctx.Done():
 	}
 	a.log.Info("shutting down")
-	a.stopWork() // stop sending e-mails and syncing first
+	a.stopWork() // stop sending e-mails first
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
@@ -223,7 +222,6 @@ func (a *app) activate(cfg *config.Config) error {
 	st := store.New(d, key)
 	am := auth.New(st, key, a.log)
 	n := notify.New(st, a.log)
-	dir := directory.NewSyncer(st, a.log)
 
 	token := ""
 	hasAdmin, err := st.HasLocalAdmin(ctx)
@@ -235,7 +233,7 @@ func (a *app) activate(cfg *config.Config) error {
 		token = a.setupToken()
 	}
 	h, err := web.NewHandler(web.Deps{
-		Config: cfg, DataDir: a.opts.DataDir, Store: st, Auth: am, Notifier: n, Directory: dir,
+		Config: cfg, DataDir: a.opts.DataDir, Store: st, Auth: am, Notifier: n,
 		Version: a.opts.Version, Log: a.log, SetupToken: token,
 	})
 	if err != nil {
@@ -247,7 +245,6 @@ func (a *app) activate(cfg *config.Config) error {
 	a.handler.Store(&h)
 
 	a.goWorker(n.Run)
-	a.goWorker(dir.Run)
 	a.goWorker(func(ctx context.Context) { cleanupSessions(ctx, st, a.log) })
 	a.log.Info("database ready", "driver", cfg.DBDriver)
 	return nil

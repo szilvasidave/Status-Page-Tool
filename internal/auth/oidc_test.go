@@ -685,74 +685,6 @@ func TestOIDCUserinfoFailureKeepsMemberships(t *testing.T) {
 	}
 }
 
-// TestOIDCDirectorySyncOwnsSyncedGroups: with directory sync on, a sign-in
-// does not remove memberships of groups the sync manages (synchronised, with
-// a role or service); the claim still decides about the other groups, and
-// adds synced groups it contains.
-func TestOIDCDirectorySyncOwnsSyncedGroups(t *testing.T) {
-	const (
-		synced = "aaaaaaaa-0000-4000-8000-000000000001"
-		other  = "bbbbbbbb-0000-4000-8000-000000000002" // synced, the user is not a member
-	)
-	ctx := context.Background()
-	e := newOIDCEnv(t)
-	e.saveSettings(func(s *store.Settings) { s.DirectorySyncEnabled = true })
-	e.idp.setUserinfo(map[string]any{}) // works, but has no groups
-	u := e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{"from-claim"}})
-
-	gs, err := e.store.CreateGroup(ctx, synced, "Synced")
-	if err != nil {
-		t.Fatal(err)
-	}
-	go2, err := e.store.CreateGroup(ctx, other, "Other")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, g := range []*store.Group{gs, go2} {
-		if err := e.store.UpdateGroup(ctx, g.ID, g.Name, store.RoleEditor); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := e.store.SyncGroupMembers(ctx, gs.ID, "", []store.DirectoryUser{{DirectoryID: "oid-1"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.store.SyncGroupMembers(ctx, go2.ID, "", nil); err != nil {
-		t.Fatal(err)
-	}
-	want := func(step string, groups ...string) {
-		t.Helper()
-		slices.Sort(groups)
-		if got := e.groupsOf(u.ID); !slices.Equal(got, groups) {
-			t.Errorf("%s: groups = %v, want %v", step, got, groups)
-		}
-	}
-	want("after the sync", "from-claim", synced)
-
-	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{"new"}})
-	want("claim without the synced group", "new", synced)
-
-	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1"})
-	want("no groups claim", synced)
-
-	// The claim adds memberships of synced groups (no conflict with the
-	// membership kept from the sync); upper-case GUIDs are normalised.
-	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{strings.ToUpper(synced), other}})
-	want("claim with synced groups", synced, other)
-
-	// A group without role and services is no longer synchronised: the
-	// claim decides about it again.
-	if err := e.store.UpdateGroup(ctx, gs.ID, gs.Name, store.RoleViewer); err != nil {
-		t.Fatal(err)
-	}
-	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{other}})
-	want("synced group no longer used", other)
-
-	// Directory sync off: the claim decides about all groups again.
-	e.saveSettings(func(s *store.Settings) { s.DirectorySyncEnabled = false })
-	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{"new"}})
-	want("directory sync off", "new")
-}
-
 func TestOIDCUserinfoFallback(t *testing.T) {
 	e := newOIDCEnv(t)
 	e.idp.setUserinfo(map[string]any{"groups": []string{"from-userinfo"}, "email": "carol@example.com", "name": "Carol"})
@@ -796,7 +728,7 @@ func TestOIDCGroupOverage(t *testing.T) {
 	if _, hits := e.idp.hits(); hits != 0 {
 		t.Errorf("userinfo called on group overage")
 	}
-	if log := e.logBuf.String(); !strings.Contains(log, "overage") || !strings.Contains(log, "directory sync") {
+	if log := e.logBuf.String(); !strings.Contains(log, "overage") || !strings.Contains(log, "SCIM provisioning") {
 		t.Errorf("no overage warning logged:\n%s", log)
 	}
 }
@@ -1042,13 +974,17 @@ func TestOIDCUserFromClaims(t *testing.T) {
 		want   store.OIDCUser
 	}{
 		{map[string]any{"email": "a@example.com", "name": "A"}, store.OIDCUser{Email: "a@example.com", Name: "A"}},
-		{map[string]any{"preferred_username": "b@example.com"}, store.OIDCUser{Email: "b@example.com", Name: "b@example.com"}},
+		{map[string]any{"preferred_username": "b@example.com"},
+			store.OIDCUser{Email: "b@example.com", Name: "b@example.com", PrincipalName: "b@example.com"}},
 		{map[string]any{"preferred_username": "bob", "upn": "bob@corp.example.com", "given_name": "Bob", "family_name": "Builder"},
-			store.OIDCUser{Email: "bob@corp.example.com", Name: "Bob Builder"}},
-		{map[string]any{"preferred_username": "carol", "given_name": "Carol"}, store.OIDCUser{Name: "Carol"}},
+			store.OIDCUser{Email: "bob@corp.example.com", Name: "Bob Builder", PrincipalName: "bob"}},
+		{map[string]any{"preferred_username": "carol", "given_name": "Carol"}, store.OIDCUser{Name: "Carol", PrincipalName: "carol"}},
 		{map[string]any{"email": "not-an-email", "oid": "oid-9"}, store.OIDCUser{DirectoryID: "oid-9"}},
 		{map[string]any{"email": "d@example.com", "email_verified": false}, store.OIDCUser{}},
-		{map[string]any{"preferred_username": "d@example.com", "email_verified": "FALSE"}, store.OIDCUser{Name: "d@example.com"}},
+		{map[string]any{"preferred_username": "d@example.com", "email_verified": "FALSE"},
+			store.OIDCUser{Name: "d@example.com", PrincipalName: "d@example.com"}},
+		{map[string]any{"upn": "Eve@Corp.example.com", "name": "Eve"}, // Entra ID v1.0 tokens
+			store.OIDCUser{Email: "Eve@Corp.example.com", Name: "Eve", PrincipalName: "Eve@Corp.example.com"}},
 	}
 	for _, tc := range cases {
 		if got := oidcUserFromClaims(tc.claims); got != tc.want {
