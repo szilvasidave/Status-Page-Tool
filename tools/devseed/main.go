@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -92,7 +93,11 @@ func main() {
 	set.Timezone = "Europe/Berlin"
 	set.BaseURL = *baseURL
 	if set.BaseURL == "" {
-		set.BaseURL = "http://localhost" + cfg.Listen
+		host, port, err := net.SplitHostPort(cfg.Listen)
+		if err != nil || host == "" || host == "0.0.0.0" || host == "::" {
+			host = "localhost"
+		}
+		set.BaseURL = "http://" + net.JoinHostPort(host, port)
 	}
 	must(st.SaveSettings(ctx, set))
 

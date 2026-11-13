@@ -306,6 +306,9 @@ fieldset.box > legend { font-weight: 650; padding: 0 6px; margin: 0 0 0 -6px; }
 /* The SQLite fields of the setup wizard are shown exactly when the PostgreSQL
    fields (toggled by data-show-when on the driver select) are hidden. */
 #pg-fields:not([hidden]) ~ #sqlite-fields { display: none; }
+/* The Microsoft Graph fields of the e-mail settings are shown exactly when the
+   SMTP fields (toggled by data-show-when on the method select) are hidden. */
+#smtp-fields:not([hidden]) ~ #graph-fields { display: none; }
 
 /* ================================================================ tables */
 
@@ -314,7 +317,7 @@ fieldset.box > legend { font-weight: 650; padding: 0 6px; margin: 0 0 0 -6px; }
 .table th { font-size: .76rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); font-weight: 650; background: var(--surface-2); white-space: nowrap; }
 .table tbody tr:hover td { background: color-mix(in srgb, var(--surface-hover) 60%, transparent); }
 .table tr:last-child td { border-bottom: 0; }
-.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap { position: relative; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .card.table-wrap { overflow: auto hidden; }
 .cell-wrap { word-break: break-word; min-width: 140px; }
 @media (max-width: 600px) { .table th, .table td { padding: 9px 10px; } }
