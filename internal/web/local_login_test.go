@@ -158,8 +158,10 @@ func TestLocalLoginSessions(t *testing.T) {
 		t.Fatalf("single sign-on user: %d", r.Status)
 	}
 
-	// Turned on again, an old session of the local administrator works again
-	// unless it was ended (by the sign-in page above).
+	// Turned on again, the session ended by the sign-in page above does not
+	// come back. (The settings page and "statuspage local-login enable" end
+	// the other sessions of the local administrator too, see
+	// TestLocalLoginOnAgainEndsOldSessions.)
 	st.LocalLoginEnabled = true
 	if err := e.Store.SaveSettings(ctx, st); err != nil {
 		t.Fatal(err)

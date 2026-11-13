@@ -53,6 +53,11 @@ func cmdResetPassword(args []string, stdout, stderr io.Writer) error {
 
 	user, err := st.GetUserByUsername(ctx, name)
 	if errors.Is(err, store.ErrNotFound) {
+		// The name can be changed on the account page, and when single
+		// sign-on is down nobody can look it up there.
+		if names, err := st.LocalAdminUsernames(ctx); err == nil && len(names) > 0 {
+			return fmt.Errorf("there is no local account named %q; local administrator account: %s", name, strings.Join(names, ", "))
+		}
 		return fmt.Errorf("there is no local account named %q", name)
 	}
 	if err != nil {

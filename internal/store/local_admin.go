@@ -30,6 +30,9 @@ var (
 // settingFields).
 const localLoginKey = "local_login_enabled"
 
+// deleteLocalAdminSessionsSQL signs out all local administrator accounts.
+const deleteLocalAdminSessionsSQL = `DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE is_local_admin = ?)`
+
 // UpdateLocalAdmin changes the user name and the display name of a local
 // administrator account; the caller validates them. The user name is stored
 // in lower case, like CreateLocalAdmin does. Returns ErrNotFound if id is not
@@ -68,14 +71,53 @@ func (s *Store) CheckLocalLoginOff(ctx context.Context, st *Settings) error {
 	if !st.OIDCConfigured() || st.OIDCClientSecret == "" {
 		return ErrSSONotConfigured
 	}
-	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM idp_groups WHERE role = ?`, roleValue(RoleAdmin)).Scan(&n); err != nil {
-		return fmt.Errorf("check for groups with the Administrator role: %w", err)
+	n, err := s.AdminGroupCount(ctx, 0)
+	if err != nil {
+		return err
 	}
 	if n == 0 {
 		return ErrNoAdminGroup
 	}
 	return nil
+}
+
+// AdminGroupCount returns the number of groups with the Administrator role,
+// not counting the group except (0 = count all). While the sign-in with the
+// local administrator account is off, the groups page uses it to keep the
+// last of them (see CheckLocalLoginOff).
+func (s *Store) AdminGroupCount(ctx context.Context, except int64) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM idp_groups WHERE role = ? AND id <> ?`,
+		roleValue(RoleAdmin), except).Scan(&n); err != nil {
+		return 0, fmt.Errorf("check for groups with the Administrator role: %w", err)
+	}
+	return n, nil
+}
+
+// DeleteLocalAdminSessions signs out all local administrator accounts. The
+// settings page calls it when it turns their sign-in on again (like
+// SetLocalLoginEnabled), so that sessions from before it was turned off do
+// not come back to life.
+func (s *Store) DeleteLocalAdminSessions(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, deleteLocalAdminSessionsSQL, true); err != nil {
+		return fmt.Errorf("sign out the local administrator: %w", err)
+	}
+	return nil
+}
+
+// LocalAdminUsernames returns the user names of the local administrator
+// accounts, sorted. The command line names them when it does not know a
+// name, since the name can be changed on the account page.
+func (s *Store) LocalAdminUsernames(ctx context.Context) ([]string, error) {
+	names, err := queryAll(ctx, s.db, func(sc scanner) (string, error) {
+		var name string
+		err := sc.Scan(&name)
+		return name, err
+	}, `SELECT username FROM users WHERE is_local_admin = ? AND username <> '' ORDER BY username`, true)
+	if err != nil {
+		return nil, fmt.Errorf("list the local administrator accounts: %w", err)
+	}
+	return names, nil
 }
 
 // SetLocalLoginEnabled turns sign-in with the local administrator account on
@@ -105,7 +147,7 @@ func (s *Store) SetLocalLoginEnabled(ctx context.Context, on bool) (changed bool
 			 ON CONFLICT (key) DO UPDATE SET value = excluded.value`, localLoginKey, strconv.FormatBool(on)); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE is_local_admin = ?)`, true)
+		_, err = tx.ExecContext(ctx, deleteLocalAdminSessionsSQL, true)
 		return err
 	})
 	s.settingsMu.Lock()

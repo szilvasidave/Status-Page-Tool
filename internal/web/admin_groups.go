@@ -172,6 +172,15 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	role := store.ParseRole(f.Role)
 	if role == store.RoleNone {
 		f.Errors.add("role", "Choose a role.")
+	} else if role != store.RoleAdmin {
+		last, err := s.adminLastAdminGroup(r, g)
+		if err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+		if last {
+			f.Errors.add("role", adminLastAdminGroupMsg)
+		}
 	}
 	if tooLong(f.Group.Name, 200) {
 		f.Errors.add("name", "The display name is too long (at most 200 characters).")
@@ -200,7 +209,16 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 	if g == nil {
 		return
 	}
-	err := s.Store.DeleteGroup(r.Context(), g.ID)
+	last, err := s.adminLastAdminGroup(r, g)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	if last {
+		s.redirectWithFlash(w, r, "/admin/groups/"+strconv.FormatInt(g.ID, 10), "error", adminLastAdminGroupMsg)
+		return
+	}
+	err = s.Store.DeleteGroup(r.Context(), g.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		s.notFound(w, r)
 		return
@@ -210,4 +228,21 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("group deleted", "group", g.ExternalID, "user", adminActor(r))
 	s.redirectWithFlash(w, r, "/admin/groups", "success", "Group “"+g.DisplayName()+"” deleted.")
+}
+
+// adminLastAdminGroupMsg explains why a group keeps the Administrator role.
+const adminLastAdminGroupMsg = "This is the only group with the Administrator role and the local administrator sign-in " +
+	"is turned off, so nobody could administer the status page any more. Give another group the Administrator role " +
+	"first, or turn the local administrator sign-in on again in Admin → Settings."
+
+// adminLastAdminGroup reports whether g is the only group with the
+// Administrator role while the sign-in with the local administrator account
+// is off. Then it can neither lose the role nor be deleted, like the sign-in
+// cannot be turned off without such a group (store.CheckLocalLoginOff).
+func (s *Server) adminLastAdminGroup(r *http.Request, g *store.Group) (bool, error) {
+	if g.Role != store.RoleAdmin || s.settings(r).LocalLoginEnabled {
+		return false, nil
+	}
+	n, err := s.Store.AdminGroupCount(r.Context(), g.ID)
+	return n == 0, err
 }

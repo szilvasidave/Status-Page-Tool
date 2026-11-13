@@ -17,12 +17,13 @@ import (
 const localLoginUsage = `statuspage local-login enable|disable|status [-data DIR]
 
 Turns the sign-in with the local administrator account on or off, or shows
-whether it is on. "enable" always works: use it when single sign-on is
-unavailable and nobody can sign in. "disable" works only while single
-sign-on is set up and at least one group has the Administrator role, so that
-somebody can still sign in as an administrator. Changing it signs out all
-sessions of the local administrator account. A running status page applies
-the change within about 10 seconds; no restart is needed.`
+whether it is on and the user name of that account. "enable" always works:
+use it when single sign-on is unavailable and nobody can sign in. "disable"
+works only while single sign-on is set up and at least one group has the
+Administrator role, so that somebody can still sign in as an administrator.
+Changing it signs out all sessions of the local administrator account. A
+running status page applies the change within about 10 seconds; no restart
+is needed.`
 
 func cmdLocalLogin(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("local-login", localLoginUsage, stderr)
@@ -65,11 +66,18 @@ func cmdLocalLogin(args []string, stdout, stderr io.Writer) error {
 
 	switch action {
 	case "status":
+		names, err := st.LocalAdminUsernames(ctx)
+		if err != nil {
+			return err
+		}
 		if settings.LocalLoginEnabled {
 			fmt.Fprintln(stdout, "Sign-in with the local administrator account is on.")
 		} else {
 			fmt.Fprintln(stdout, "Sign-in with the local administrator account is off.")
 			fmt.Fprintln(stdout, enableHint)
+		}
+		if len(names) > 0 {
+			fmt.Fprintf(stdout, "Local administrator account: %s\n", strings.Join(names, ", "))
 		}
 		return nil
 
