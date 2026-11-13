@@ -171,13 +171,14 @@ func (s *Server) handleSetupDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	listen := setupListen(r)
+	_, port, _ := net.SplitHostPort(listen)
 	d := &setupDBData{
 		Driver:            config.DriverSQLite,
 		DefaultSQLitePath: filepath.Join(s.DataDir, setup.DefaultSQLiteFile),
 		PG:                config.PostgresParams{Host: "localhost", Database: "statuspage", User: "statuspage", SSLMode: "prefer"},
 		PGPort:            strconv.Itoa(setup.DefaultPostgresPort),
 		SSLModes:          setupSSLModes,
-		Port:              strings.TrimPrefix(listen, ":"),
+		Port:              port,
 		TokenFile:         s.setupTokenFile(),
 	}
 	if r.Method != http.MethodPost {
@@ -188,6 +189,14 @@ func (s *Server) handleSetupDatabase(w http.ResponseWriter, r *http.Request) {
 
 	setupMu.Lock()
 	defer setupMu.Unlock()
+	if s.activated {
+		// A second submission (another tab, or a click while the first one
+		// was saving) that reached this handler before the server switched
+		// to normal mode: the database is configured already, so do not
+		// write config.json again but continue with the next step.
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
 	d.Driver = r.FormValue("driver")
 	d.SQLitePath = formTrim(r, "sqlite_path")
 	d.PG = config.PostgresParams{
@@ -258,20 +267,34 @@ func (s *Server) handleSetupDatabase(w http.ResponseWriter, r *http.Request) {
 		render(http.StatusInternalServerError)
 		return
 	}
-	s.Log.Info("setup: database configured", "driver", cfg.DBDriver, "ip", auth.ClientIP(r))
+	s.activated = true
+	s.Log.Info("setup: database configured", "driver", cfg.DBDriver, "listen", cfg.Listen, "ip", auth.ClientIP(r))
 	http.SetCookie(w, &http.Cookie{Name: setupCSRFCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: auth.IsHTTPS(r), SameSite: http.SameSiteLaxMode})
-	s.redirectWithFlash(w, r, "/setup", "success", "The database is ready. Next: create the administrator account.")
+	// Neutral wording: if the database already has an administrator (e.g. a
+	// reinstallation), the next page is the sign-in page.
+	s.redirectWithFlash(w, r, "/setup", "success", "The database is ready.")
 }
 
-// setupListen returns the listen address written to config.json: the port
-// the server is reachable on now, so that it does not change.
+// setupListen returns the listen address written to config.json: the
+// address the server listens on now, so that it does not change when the
+// server is restarted without -listen (e.g. as a service). The host part is
+// kept if one was given (e.g. -listen 127.0.0.1:8080 behind a reverse
+// proxy); the port is taken from the connection, in case port 0 was given.
 func setupListen(r *http.Request) string {
-	if a, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
-		if _, port, err := net.SplitHostPort(a.String()); err == nil && port != "" && port != "0" {
-			return ":" + port
+	a, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok {
+		return config.DefaultListen
+	}
+	_, port, err := net.SplitHostPort(a.String())
+	if err != nil || port == "" || port == "0" {
+		return config.DefaultListen
+	}
+	if srv, ok := r.Context().Value(http.ServerContextKey).(*http.Server); ok {
+		if host, _, err := net.SplitHostPort(srv.Addr); err == nil && host != "" {
+			return net.JoinHostPort(host, port)
 		}
 	}
-	return config.DefaultListen
+	return ":" + port
 }
 
 // setupSentence capitalises the first letter of a message from package setup.
@@ -328,11 +351,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		Errors:       adminFormErrors{},
 	}
 	if d.BaseURL == "" {
-		scheme := "http"
-		if auth.IsHTTPS(r) {
-			scheme = "https"
-		}
-		d.BaseURL = scheme + "://" + r.Host
+		d.BaseURL = setupSuggestBaseURL(r)
 	}
 	if r.Method != http.MethodPost {
 		d.AskToken = s.setupAskToken(r)
@@ -358,7 +377,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	case len(d.Username) > 64 || strings.IndexFunc(d.Username, setupBadUsernameRune) >= 0:
 		d.Errors.add("username", "Use at most 64 letters, digits and the characters . _ - @ (no spaces).")
 	}
-	if len(d.Name) > 100 {
+	if tooLong(d.Name, 100) {
 		d.Errors.add("name", "The display name is too long (at most 100 characters).")
 	}
 	switch {
@@ -372,7 +391,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case d.SiteName == "":
 		d.Errors.add("site_name", "Enter a name for the status page.")
-	case len(d.SiteName) > 100:
+	case tooLong(d.SiteName, 100):
 		d.Errors.add("site_name", "The name is too long (at most 100 characters).")
 	}
 	status := http.StatusUnprocessableEntity
@@ -413,6 +432,43 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirectWithFlash(w, r, "/admin/settings", "success", "Setup complete. Next: configure single sign-on and e-mail.")
+}
+
+// setupHostname returns the name of this computer (replaced in tests).
+var setupHostname = os.Hostname
+
+// setupSuggestBaseURL returns the base URL suggested by the setup wizard:
+// the address of the request, except that localhost is replaced by the name
+// of this computer. The Windows installer opens the wizard as
+// http://localhost:<port>, but other computers cannot use that address for
+// links in e-mails or for the single sign-on redirect. Returns "" if no
+// usable address is known.
+func setupSuggestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if auth.IsHTTPS(r) {
+		scheme = "https"
+	}
+	host, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host, port = strings.Trim(r.Host, "[]"), ""
+	}
+	if adminIsLocalhost(host) {
+		name, err := setupHostname()
+		if err != nil || name == "" {
+			return ""
+		}
+		host = strings.ToLower(name)
+	}
+	if port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]" // IPv6 address
+	}
+	u, msg := adminValidateBaseURL(scheme + "://" + host)
+	if msg != "" {
+		return ""
+	}
+	return u
 }
 
 // setupBadUsernameRune reports characters not allowed in local user names.

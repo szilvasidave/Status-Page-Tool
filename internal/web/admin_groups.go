@@ -15,11 +15,29 @@ import (
 
 // adminGroupsData is the data of the groups list.
 type adminGroupsData struct {
-	Groups           []store.Group
+	InUse            []store.Group // groups with a role or services
+	Other            []store.Group // all other groups (shown collapsed)
 	DirectoryEnabled bool
 	ExternalID       string // "add group" form values
 	Name             string
 	Errors           adminFormErrors
+}
+
+// adminSplitGroups splits groups into the groups in use (with a role or
+// services, or for which keep returns true) and the others. Every group of
+// every user's groups claim is recorded at sign-in, so with Microsoft Entra
+// ID there are often many unnamed groups (object IDs) that nobody uses; the
+// pages show them in a collapsed section.
+func adminSplitGroups(groups []store.Group, keep func(*store.Group) bool) (inUse, other []store.Group) {
+	for i := range groups {
+		g := &groups[i]
+		if g.Role > store.RoleViewer || len(g.ServiceIDs) > 0 || (keep != nil && keep(g)) {
+			inUse = append(inUse, *g)
+		} else {
+			other = append(other, *g)
+		}
+	}
+	return inUse, other
 }
 
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
@@ -32,7 +50,7 @@ func (s *Server) adminRenderGroups(w http.ResponseWriter, r *http.Request, statu
 		s.serverError(w, r, err)
 		return
 	}
-	d.Groups = groups
+	d.InUse, d.Other = adminSplitGroups(groups, nil)
 	d.DirectoryEnabled = s.adminDirectoryEnabled(r.Context())
 	if d.Errors == nil {
 		d.Errors = adminFormErrors{}
@@ -46,10 +64,10 @@ func (s *Server) handleGroupCreate(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case d.ExternalID == "":
 		d.Errors.add("external_id", "Enter the group ID as it appears in the groups claim (Entra ID: object ID; Keycloak: group name).")
-	case len(d.ExternalID) > 255:
+	case tooLong(d.ExternalID, 255):
 		d.Errors.add("external_id", "The group ID is too long (at most 255 characters).")
 	}
-	if len(d.Name) > 200 {
+	if tooLong(d.Name, 200) {
 		d.Errors.add("name", "The display name is too long (at most 200 characters).")
 	}
 	if len(d.Errors) > 0 {
@@ -152,25 +170,17 @@ func (s *Server) handleDirectorySync(w http.ResponseWriter, r *http.Request) {
 	res, err := s.Directory.SyncNow(ctx)
 	if err != nil {
 		s.Log.Warn("directory sync failed", "err", err)
-		s.redirectWithFlash(w, r, back, "error", adminTruncate("Directory sync failed: "+err.Error(), 800))
+		s.redirectWithFlash(w, r, back, "error", "Directory sync failed: "+err.Error())
 		return
 	}
 	s.Log.Info("directory sync", "groups", res.Groups, "memberships", res.Members, "errors", len(res.Errors), "user", adminActor(r))
-	msg := fmt.Sprintf("Synchronised %s, %s.", adminPlural(res.Groups, "group"), adminPlural(res.Members, "membership"))
+	msg := fmt.Sprintf("Synchronised %s, %s.", plural(res.Groups, "group"), plural(res.Members, "membership"))
 	kind := "success"
 	if len(res.Errors) > 0 {
 		kind = "warning" // the other groups were synchronised
-		msg += " " + adminPlural(len(res.Errors), "error") + ": " + strings.Join(res.Errors, "; ")
+		msg += " " + plural(len(res.Errors), "error") + ": " + strings.Join(res.Errors, "; ")
 	}
-	s.redirectWithFlash(w, r, back, kind, adminTruncate(msg, 800))
-}
-
-// adminPlural returns e.g. "1 group" or "3 groups".
-func adminPlural(n int, unit string) string {
-	if n == 1 {
-		return "1 " + unit
-	}
-	return strconv.Itoa(n) + " " + unit + "s"
+	s.redirectWithFlash(w, r, back, kind, msg)
 }
 
 // adminGroupForm is the data of the group edit page.
@@ -242,7 +252,7 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	if role == store.RoleNone {
 		f.Errors.add("role", "Choose a role.")
 	}
-	if len(f.Group.Name) > 200 {
+	if tooLong(f.Group.Name, 200) {
 		f.Errors.add("name", "The display name is too long (at most 200 characters).")
 	}
 	if len(f.Errors) > 0 {

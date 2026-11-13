@@ -32,8 +32,9 @@ type manageMaintenanceData struct {
 // CanEnd reports whether the window can be ended now.
 func (d *manageMaintenanceData) CanEnd() bool { return d.State == store.MaintenanceInProgress }
 
-// CanCancel reports whether the window can be cancelled.
-func (d *manageMaintenanceData) CanCancel() bool { return d.Editable }
+// CanCancel reports whether the window can be cancelled: only before it
+// has started (a window in progress is ended with "End now").
+func (d *manageMaintenanceData) CanCancel() bool { return d.State == store.MaintenanceScheduled }
 
 // PageTitle returns the title of the page.
 func (d *manageMaintenanceData) PageTitle() string {
@@ -90,6 +91,9 @@ func (s *Server) manageParseMaintenance(r *http.Request, services []store.Servic
 	if msg := manageCheckTitle(d.Title); msg != "" {
 		d.Errors = append(d.Errors, msg)
 	}
+	if msg := manageCheckText(d.Description, "description"); msg != "" {
+		d.Errors = append(d.Errors, msg)
+	}
 	start, startErr := s.manageParseTime(d.StartsAt, "start time")
 	end, endErr := s.manageParseTime(d.EndsAt, "end time")
 	if old != nil && startErr == "" && d.StartsAt == s.formatTime(old.StartsAt, InputTimeLayout) {
@@ -116,7 +120,9 @@ func (s *Server) manageParseMaintenance(r *http.Request, services []store.Servic
 			refs = append(refs, store.ServiceRef{ID: svc.ID, Name: svc.Name})
 		}
 	}
-	if len(refs) == 0 {
+	// A service is required, except for a maintenance whose services were
+	// all deleted (it can still be changed).
+	if len(refs) == 0 && (old == nil || len(old.Services) > 0) {
 		d.Errors = append(d.Errors, "Please select at least one affected service.")
 	}
 	return start, end, refs
@@ -250,7 +256,8 @@ func (s *Server) handleMaintenanceUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.Log.Info("maintenance updated", "id", m.ID, "title", m.Title, "user", manageUserID(r))
-	changed := m.Title != old.Title || !m.StartsAt.Equal(old.StartsAt) || !m.EndsAt.Equal(old.EndsAt) ||
+	changed := m.Title != old.Title || m.Description != old.Description ||
+		!m.StartsAt.Equal(old.StartsAt) || !m.EndsAt.Equal(old.EndsAt) ||
 		!manageSameIDs(m.ServiceIDs(), old.ServiceIDs())
 	var note string
 	var warn bool
@@ -296,7 +303,13 @@ func (s *Server) handleMaintenanceCancel(w http.ResponseWriter, r *http.Request)
 	if m == nil {
 		return
 	}
-	if st := m.State(time.Now()); !manageEditable(st) {
+	switch st := m.State(time.Now()); st {
+	case store.MaintenanceScheduled:
+	case store.MaintenanceInProgress:
+		s.redirectWithFlash(w, r, manageMaintenanceURL(m.ID), "error",
+			"This maintenance has already started and can no longer be cancelled. Use “End now” if the work is finished.")
+		return
+	default:
 		s.redirectWithFlash(w, r, manageMaintenanceURL(m.ID), "error",
 			fmt.Sprintf("This maintenance is %s and can no longer be cancelled.", manageStateWord(st)))
 		return

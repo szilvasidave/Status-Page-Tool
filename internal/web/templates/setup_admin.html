@@ -49,8 +49,9 @@
       <div class="field">
         <label for="base_url">Base URL</label>
         <input id="base_url" name="base_url" type="url" value="{{.BaseURL}}" placeholder="https://status.example.com"{{if .Errors.base_url}} aria-invalid="true"{{end}}>
-        <span class="help">The address users open. Change it if users reach the page under another name, e.g. through a
-          reverse proxy with HTTPS.</span>
+        <span class="help">The address users open from their computers, used for links in e-mails and for the single
+          sign-on redirect. Change it if users reach the page under another name, e.g. a DNS alias or a reverse proxy
+          with HTTPS. Do not use localhost: it only works on the server itself.</span>
         {{template "field-error" .Errors.base_url}}
       </div>
       <div class="field">

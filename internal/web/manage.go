@@ -11,15 +11,10 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
-
-// manageTitleMaxLen is the maximum length (in characters) of incident and
-// maintenance titles.
-const manageTitleMaxLen = 200
 
 // manageResolvedCount is the number of recently resolved incidents shown on
 // the overview page; manageResolvedWindow limits how far back they are
@@ -185,8 +180,18 @@ func manageCheckTitle(title string) string {
 	switch {
 	case title == "":
 		return "Please enter a title."
-	case utf8.RuneCountInString(title) > manageTitleMaxLen:
-		return fmt.Sprintf("The title is too long (at most %d characters).", manageTitleMaxLen)
+	case tooLong(title, maxTitleLen):
+		return fmt.Sprintf("The title is too long (at most %d characters).", maxTitleLen)
+	}
+	return ""
+}
+
+// manageCheckText returns an error message if an incident message or a
+// maintenance description (what) is too long, "" otherwise. Browsers count a
+// line break in a textarea as one character but send it as CRLF.
+func manageCheckText(text, what string) string {
+	if tooLong(strings.ReplaceAll(text, "\r\n", "\n"), maxTextLen) {
+		return fmt.Sprintf("The %s is too long (at most %d characters).", what, maxTextLen)
 	}
 	return ""
 }

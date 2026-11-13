@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
@@ -43,6 +44,28 @@ func TestUIFlashKinds(t *testing.T) {
 		if got := s.popFlash(httptest.NewRecorder(), r) != nil; got != want {
 			t.Errorf("kind %q accepted = %v, want %v", kind, got, want)
 		}
+	}
+}
+
+// Long flash messages (e.g. a directory sync error) are shortened so that the
+// cookie stays small; multi-byte characters are not cut.
+func TestUIFlashLong(t *testing.T) {
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	s.flash(rec, httptest.NewRequest(http.MethodGet, "/", nil), "error", "Sync failed: "+strings.Repeat("é", 3000))
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	for _, c := range rec.Result().Cookies() {
+		if len(c.Value) > 1500 {
+			t.Errorf("flash cookie has %d bytes", len(c.Value))
+		}
+		r.AddCookie(c)
+	}
+	f := s.popFlash(httptest.NewRecorder(), r)
+	if f == nil || !strings.HasPrefix(f.Message, "Sync failed: éé") || !strings.HasSuffix(f.Message, "é…") || !utf8.ValidString(f.Message) {
+		t.Fatalf("flash = %+v", f)
+	}
+	if got := plural(1, "day") + ", " + plural(3, "day"); got != "1 day, 3 days" {
+		t.Errorf("plural: %q", got)
 	}
 }
 

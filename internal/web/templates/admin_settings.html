@@ -19,6 +19,10 @@
       <input id="base_url" name="base_url" type="url" value="{{.St.BaseURL}}" placeholder="https://status.example.com"{{if .Errors.base_url}} aria-invalid="true"{{end}}>
       <span class="help">The address users open, without a trailing slash. Used for links in e-mails and for the single sign-on redirect URI – recommended.</span>
       {{template "field-error" .Errors.base_url}}
+      {{- if .LocalBaseURL}}
+      <p class="flash flash-warning">This address only works on the server itself (localhost): links in e-mails and single sign-on
+        fail for everybody else. Enter the name under which users reach the server.</p>
+      {{- end}}
     </div>
     <div class="field">
       <label for="timezone">Time zone</label>
@@ -79,8 +83,9 @@
       </div>
       <div class="field">
         <label for="oidc_button_label">Button label</label>
-        <input id="oidc_button_label" name="oidc_button_label" type="text" value="{{.St.OIDCButtonLabel}}" maxlength="60">
+        <input id="oidc_button_label" name="oidc_button_label" type="text" value="{{.St.OIDCButtonLabel}}" maxlength="60"{{if .Errors.oidc_button_label}} aria-invalid="true"{{end}}>
         <span class="help">Text of the sign-in button, e.g. “Sign in with Microsoft”.</span>
+        {{template "field-error" .Errors.oidc_button_label}}
       </div>
     </div>
   </fieldset>

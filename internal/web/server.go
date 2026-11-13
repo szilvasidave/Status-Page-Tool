@@ -65,6 +65,7 @@ type Server struct {
 	pages     map[string]*template.Template
 	loc       atomic.Pointer[time.Location] // display time zone used by template funcs
 	setupDone atomic.Bool                   // cached "a local admin exists"
+	activated bool                          // setup mode: the database step succeeded (guarded by setupMu)
 }
 
 // NewHandler returns the handler for normal operation.
@@ -424,8 +425,4 @@ func (s *Server) redirectToLogin(w http.ResponseWriter, r *http.Request) {
 		next = "/"
 	}
 	http.Redirect(w, r, "/login?next="+urlQueryEscape(next), http.StatusSeeOther)
-}
-
-func (s *Server) notImplemented(w http.ResponseWriter, r *http.Request) {
-	s.errorPage(w, r, http.StatusNotImplemented, "Not implemented", "This page is not implemented yet.")
 }

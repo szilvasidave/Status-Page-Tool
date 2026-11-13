@@ -47,12 +47,16 @@
       </div>
       <div class="field">
         <label for="message">Message</label>
-        <textarea id="message" name="message" rows="4" required>{{$f.Message}}</textarea>
+        <textarea id="message" name="message" rows="4" required maxlength="10000">{{$f.Message}}</textarea>
       </div>
       <fieldset>
         <legend>Affected services</legend>
         {{- if $f.Groups}}
+        {{- if $inc.Services}}
         <p class="help">Adjust the impact if it has changed. The impact is kept in the history when the incident is resolved.</p>
+        {{- else}}
+        <p class="help">No service is linked to this incident any more (its services were deleted). You can post updates and resolve it without selecting one.</p>
+        {{- end}}
         {{template "manage-impact-table" $f.Groups}}
         {{- else}}
         {{template "manage-no-services" $}}

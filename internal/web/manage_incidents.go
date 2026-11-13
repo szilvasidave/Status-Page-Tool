@@ -52,8 +52,10 @@ func manageImpactGroups(services []store.Service, impacts map[int64]store.Status
 
 // manageParseImpacts reads the impact_<serviceID> fields of all services.
 // It returns the affected services, the selected impacts (for re-rendering
-// the form) and error messages.
-func manageParseImpacts(r *http.Request, services []store.Service) ([]store.ServiceImpact, map[int64]store.Status, []string) {
+// the form) and error messages. required is false for an update of an
+// incident that has no services left (they were deleted), so that it can
+// still be resolved.
+func manageParseImpacts(r *http.Request, services []store.Service, required bool) ([]store.ServiceImpact, map[int64]store.Status, []string) {
 	var (
 		impacts  []store.ServiceImpact
 		selected = map[int64]store.Status{}
@@ -71,7 +73,7 @@ func manageParseImpacts(r *http.Request, services []store.Service) ([]store.Serv
 		selected[svc.ID] = v
 		impacts = append(impacts, store.ServiceImpact{ServiceID: svc.ID, Impact: v})
 	}
-	if len(impacts) == 0 && len(errs) == 0 {
+	if required && len(impacts) == 0 && len(errs) == 0 {
 		errs = append(errs, "Please select at least one affected service.")
 	}
 	return impacts, selected, errs
@@ -124,10 +126,12 @@ func (s *Server) handleIncidentCreate(w http.ResponseWriter, r *http.Request) {
 	if f.Status, msg = manageParseStatus(r, false); msg != "" {
 		f.Errors = append(f.Errors, msg)
 	}
-	impacts, selected, errs := manageParseImpacts(r, services)
+	impacts, selected, errs := manageParseImpacts(r, services, true)
 	f.Errors = append(f.Errors, errs...)
 	if f.Message == "" {
 		f.Errors = append(f.Errors, "Please enter a message that describes the problem.")
+	} else if msg := manageCheckText(f.Message, "message"); msg != "" {
+		f.Errors = append(f.Errors, msg)
 	}
 	var started time.Time
 	if f.StartedAt != "" {
@@ -212,8 +216,10 @@ func (s *Server) handleIncidentAddUpdate(w http.ResponseWriter, r *http.Request)
 	}
 	if f.Message == "" {
 		f.Errors = append(f.Errors, "Please enter a message for the update.")
+	} else if msg := manageCheckText(f.Message, "message"); msg != "" {
+		f.Errors = append(f.Errors, msg)
 	}
-	impacts, selected, errs := manageParseImpacts(r, services)
+	impacts, selected, errs := manageParseImpacts(r, services, len(inc.Services) > 0)
 	f.Errors = append(f.Errors, errs...)
 	if len(f.Errors) > 0 {
 		f.Groups = manageImpactGroups(services, selected)

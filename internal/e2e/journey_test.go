@@ -147,8 +147,14 @@ func (j *journey) setup(fillDatabase func(*form)) {
 	}
 	p = p.form("/setup").press("action", "save").post()
 	p.expectRedirect("/setup")
-	if _, err := os.Stat(filepath.Join(j.dataDir, config.FileName)); err != nil {
+	cfg, err := config.Load(j.dataDir)
+	if err != nil {
 		t.Fatalf("config.json was not written: %v", err)
+	}
+	// The full listen address (-listen 127.0.0.1:<port>) is kept, so that a
+	// restart without -listen (e.g. as a service) listens on the same address.
+	if addr := strings.TrimPrefix(j.base, "http://"); cfg.Listen != addr {
+		t.Errorf("listen address in config.json = %q, want %q", cfg.Listen, addr)
 	}
 
 	p = p.follow().expectStatus(200).
@@ -156,8 +162,8 @@ func (j *journey) setup(fillDatabase func(*form)) {
 		expectText("Create the administrator")
 	b.get(j.base + "/").expectRedirect("/setup") // still pending: no administrator yet
 	f = p.form("/setup")
-	if got := f.value("base_url"); got != j.base {
-		t.Errorf("base URL suggested by the setup = %q, want %q", got, j.base)
+	if want := suggestedBaseURL(j.base); f.value("base_url") != want {
+		t.Errorf("base URL suggested by the setup = %q, want %q", f.value("base_url"), want)
 	}
 	f.set("username", "admin").set("name", "Ada Admin").
 		set("password", adminPW).set("password_confirm", adminPW).
@@ -171,6 +177,21 @@ func (j *journey) setup(fillDatabase func(*form)) {
 	}
 	b.get(j.base + "/setup").expectRedirect("/login")
 	j.anon.get(j.base + "/").expectStatus(200).expectText(siteName)
+}
+
+// suggestedBaseURL returns the base URL the setup wizard suggests when it is
+// opened as appURL (http(s)://127.0.0.1:<port>): the loopback address is
+// replaced by the computer name, which other computers can reach.
+func suggestedBaseURL(appURL string) string {
+	u, err := url.Parse(appURL)
+	if err != nil {
+		return appURL
+	}
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		return ""
+	}
+	return u.Scheme + "://" + strings.ToLower(name) + ":" + u.Port()
 }
 
 // ------------------------------------------------------------------ b

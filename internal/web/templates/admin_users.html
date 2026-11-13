@@ -2,11 +2,12 @@
 <h1>Users</h1>
 <p class="lead">Users and their groups come from the identity provider: users appear here when they sign in for the
   first time or when the directory sync finds them as group members. Roles are assigned to
-  <a href="/admin/groups">groups</a>.</p>
+  <a href="/admin/groups">groups</a>. Remove users who left or changed teams to stop their e-mails; anybody who is
+  still a member of a group at the identity provider comes back at the next sign-in or directory sync.</p>
 <div class="card table-wrap" tabindex="0" role="region" aria-label="Users">
   <table class="table">
     <thead>
-      <tr><th scope="col">Name</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">Groups</th><th scope="col">Sign-in</th><th scope="col">Last sign-in</th></tr>
+      <tr><th scope="col">Name</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">Groups</th><th scope="col">Sign-in</th><th scope="col">Last sign-in</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
     </thead>
     <tbody>
       {{- range .Data}}
@@ -17,6 +18,14 @@
         <td class="cell-wrap">{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g.Name}}{{else}}<span class="muted">–</span>{{end}}</td>
         <td>{{.SignIn}}</td>
         <td class="nowrap">{{with .LastLoginAt}}<time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}<span class="muted">never</span>{{end}}</td>
+        <td>
+          {{- if not .IsLocalAdmin}}
+          <form method="post" action="/admin/users/{{.ID}}/delete" class="inline" data-confirm="Remove {{.DisplayName}}? Their group memberships are deleted and they are signed out, so they receive no more e-mails. If they are still a member of a group at the identity provider, they are added again at their next sign-in or the next directory sync.">
+            {{template "csrf" $}}
+            <button type="submit" class="btn-small btn-danger">Remove</button>
+          </form>
+          {{- end}}
+        </td>
       </tr>
       {{- end}}
     </tbody>

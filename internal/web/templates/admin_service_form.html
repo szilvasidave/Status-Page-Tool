@@ -13,8 +13,9 @@
   </div>
   <div class="field">
     <label for="description">Description <span class="muted">(optional)</span></label>
-    <input id="description" name="description" type="text" value="{{.Service.Description}}" maxlength="300">
+    <input id="description" name="description" type="text" value="{{.Service.Description}}" maxlength="300"{{if .Errors.description}} aria-invalid="true"{{end}}>
     <span class="help">Shown below the name on the status page.</span>
+    {{template "field-error" .Errors.description}}
   </div>
   <div class="field-row">
     <div class="field">
@@ -33,16 +34,28 @@
   </div>
   <fieldset aria-describedby="groups-help">
     <legend>Groups to notify</legend>
+    {{- $ids := .Service.GroupIDs}}
     {{- if .Groups}}
     <div class="checkbox-list">
-      {{- $ids := .Service.GroupIDs}}
       {{- range .Groups}}
       <label class="checkbox"><input type="checkbox" name="groups" value="{{.ID}}"{{if containsID $ids .ID}} checked{{end}}>
         <span>{{.DisplayName}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
       {{- end}}
     </div>
-    {{- else}}
+    {{- else if not .Other}}
     <p class="notice">There are no groups yet.</p>
+    {{- end}}
+    {{- with .Other}}
+    <details class="disclosure">
+      <summary>Other groups ({{len .}})</summary>
+      <p class="help">Groups without a role or services, usually recorded from the members' sign-ins.</p>
+      <div class="checkbox-list">
+        {{- range .}}
+        <label class="checkbox"><input type="checkbox" name="groups" value="{{.ID}}">
+          <span>{{.DisplayName}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
+        {{- end}}
+      </div>
+    </details>
     {{- end}}
     <p class="help" id="groups-help">Members of these groups are e-mailed about incidents and maintenance of this service. Groups appear
       automatically after their members sign in, or can be added on the <a href="/admin/groups">Groups</a> page.</p>
@@ -56,8 +69,9 @@
 {{- if not .IsNew}}
 <section class="danger-zone" aria-labelledby="delete-service">
   <h2 id="delete-service">Delete service</h2>
-  <p class="muted">Incidents and maintenance windows are kept but lose their link to this service.</p>
-  <form method="post" action="/admin/services/{{.Service.ID}}/delete" data-confirm="Delete the service “{{.Service.Name}}”? Incidents and maintenance windows are kept but lose their link to this service.">
+  <p class="muted">Past incidents and maintenance windows are kept but lose their link to this service. A service that is
+    affected by an open incident or by maintenance that has not ended cannot be deleted.</p>
+  <form method="post" action="/admin/services/{{.Service.ID}}/delete" data-confirm="Delete the service “{{.Service.Name}}”? Past incidents and maintenance windows are kept but lose their link to this service.">
     {{template "csrf" $}}
     <button type="submit" class="btn-danger">Delete service</button>
   </form>

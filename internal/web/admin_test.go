@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -347,7 +348,8 @@ func TestAdminServices(t *testing.T) {
 	r := e.get("/admin/services")
 	mustContain(t, r.Body, "No services yet", `href="/admin/services/new"`)
 	r = e.get("/admin/services/new")
-	mustContain(t, r.Body, `name="groups" value="`+strconv.FormatInt(g1.ID, 10)+`"`, "Operations", "All Staff", "Groups appear")
+	mustContain(t, r.Body, `name="groups" value="`+strconv.FormatInt(g1.ID, 10)+`"`, "Operations", "All Staff", "Groups appear",
+		"Other groups (2)") // without a role or services
 
 	// Validation.
 	r = e.post("/admin/services", url.Values{"name": {""}, "sort_order": {"abc"}, "category": {"Infra"}})
@@ -397,7 +399,34 @@ func TestAdminServices(t *testing.T) {
 		t.Errorf("update unknown service: %d", r.Status)
 	}
 
-	// Delete: the incident stays.
+	// Groups with services (and the checked ones) are listed first, the
+	// others collapsed.
+	r = e.get("/admin/services/" + id)
+	mustContain(t, r.Body, "Other groups (1)")
+	if i, j := strings.Index(r.Body, "All Staff"), strings.Index(r.Body, "Other groups"); i < 0 || i > j {
+		t.Error("the group of the service is not listed before the other groups")
+	}
+
+	// Delete is refused while an open incident or a maintenance that has not
+	// ended affects the service (an incident without services could not be
+	// resolved properly).
+	r = adminFollow(t, e, e.post("/admin/services/"+id+"/delete", nil))
+	mustContain(t, r.Body, "cannot be deleted while the open incident “Down” affects it")
+	if err := e.Store.AddIncidentUpdate(ctx, inc.ID, &store.IncidentUpdate{Status: store.IncidentResolved, Message: "ok"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := &store.Maintenance{Title: "Upgrade", StartsAt: time.Now().Add(time.Hour), EndsAt: time.Now().Add(2 * time.Hour),
+		Services: []store.ServiceRef{{ID: svcs[0].ID}}}
+	if err := e.Store.CreateMaintenance(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	r = adminFollow(t, e, e.post("/admin/services/"+id+"/delete", nil))
+	mustContain(t, r.Body, "cannot be deleted while the maintenance “Upgrade” affects it")
+	if err := e.Store.CancelMaintenance(ctx, m.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete: the resolved incident stays.
 	mustContain(t, adminFollow(t, e, e.post("/admin/services/"+id+"/delete", nil)).Body, "Service “VPN gateway” deleted.")
 	if svcs, _ := e.Store.ListServices(ctx); len(svcs) != 0 {
 		t.Fatalf("service not deleted")
@@ -471,15 +500,24 @@ func TestAdminGroups(t *testing.T) {
 	if role, _ := e.Store.UserRole(ctx, u.ID); role != store.RoleEditor {
 		t.Fatalf("member role: %v", role)
 	}
-	mustContain(t, e.get("/admin/groups").Body, "Desk", "0c6d-guid", "Editor")
+	// Groups in use are listed first, groups only seen in sign-ins collapsed.
+	if err := e.Store.SetUserGroups(ctx, u.ID, []store.GroupRef{{ExternalID: "0c6d-guid"}, {ExternalID: "5a1f-unused"}}); err != nil {
+		t.Fatal(err)
+	}
+	r = e.get("/admin/groups")
+	mustContain(t, r.Body, "Desk", "0c6d-guid", "Editor", "Other groups (1)", "5a1f-unused")
+	if i, j := strings.Index(r.Body, "0c6d-guid"), strings.Index(r.Body, "Other groups"); i > j {
+		t.Error("the group in use is not listed before the other groups")
+	}
 
-	// Back to viewer.
+	// Back to viewer: no group is in use any more.
 	if r := e.post(editURL, url.Values{"name": {"Desk"}, "role": {"viewer"}}); r.Status != http.StatusSeeOther {
 		t.Fatalf("set viewer: %d", r.Status)
 	}
 	if got, _ := e.Store.GetGroup(ctx, g.ID); got.Role != store.RoleNone || len(got.ServiceIDs) != 0 {
 		t.Fatalf("group after reset: %+v", got)
 	}
+	mustContain(t, e.get("/admin/groups").Body, "No group has a role or services yet", "Other groups (2)")
 
 	// Directory features are off.
 	r = adminFollow(t, e, e.post("/admin/groups/sync", nil))
@@ -490,8 +528,8 @@ func TestAdminGroups(t *testing.T) {
 
 	// Delete.
 	mustContain(t, adminFollow(t, e, e.post(editURL+"/delete", nil)).Body, "Group “Desk” deleted.")
-	if groups, _ := e.Store.ListGroups(ctx); len(groups) != 0 {
-		t.Fatal("group not deleted")
+	if _, err := e.Store.GetGroup(ctx, g.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("group not deleted: %v", err)
 	}
 	if r := e.get(editURL); r.Status != http.StatusNotFound {
 		t.Fatalf("deleted group: %d", r.Status)
@@ -517,6 +555,34 @@ func TestAdminUsers(t *testing.T) {
 		"Sam SSO", "sso@example.com", "Ops Team", ">SSO<",
 		"Dora Directory", "Directory Group", "Directory only (never signed in)", "never",
 		"come from the identity provider")
+
+	// SSO and directory users can be removed, the local administrator not.
+	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "next sign-in or the next directory sync")
+	if n := strings.Count(r.Body, `/delete"`); n != 2 {
+		t.Errorf("%d remove buttons, want 2 (not for the local administrator)", n)
+	}
+	r = adminFollow(t, e, e.post("/admin/users/"+strconv.FormatInt(u.ID, 10)+"/delete", nil))
+	mustContain(t, r.Body, "“Sam SSO” has been removed.", "Dora Directory")
+	if strings.Contains(r.Body, "sso@example.com") {
+		t.Error("the removed user is still listed")
+	}
+	if members, _ := e.Store.GroupMembers(ctx, g.ID); len(members) != 1 {
+		t.Errorf("directory group members: %+v", members)
+	}
+	admin, err := e.Store.GetUserByUsername(ctx, testAdminUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = adminFollow(t, e, e.post("/admin/users/"+strconv.FormatInt(admin.ID, 10)+"/delete", nil))
+	mustContain(t, r.Body, "The local administrator account cannot be removed.")
+	for _, id := range []string{strconv.FormatInt(u.ID, 10), "9999", "x"} {
+		if r := e.post("/admin/users/"+id+"/delete", nil); r.Status != http.StatusNotFound {
+			t.Errorf("remove user %s: %d, want 404", id, r.Status)
+		}
+	}
+	if users, _ := e.Store.ListUsers(ctx); len(users) != 2 {
+		t.Errorf("%d users left, want 2", len(users))
+	}
 }
 
 func TestAdminNotifications(t *testing.T) {
@@ -589,4 +655,60 @@ func TestAdminDirectoryTemplates(t *testing.T) {
 	mustContain(t, body, `action="/admin/groups/search"`, `action="/admin/groups/sync"`, "Sync now")
 	body = render("admin_settings", &adminSettingsData{St: store.DefaultSettings(), DirectoryEnabled: true, Errors: adminFormErrors{}})
 	mustContain(t, body, `form="directory-sync-form"`, `id="directory-sync-form"`, `name="next" value="/admin/settings"`)
+}
+
+// TestAdminLengthLimitsCountCharacters: length limits count characters like
+// the maxlength of the inputs, not bytes, so accented names up to the limit
+// are accepted.
+func TestAdminLengthLimitsCountCharacters(t *testing.T) {
+	e := newTestEnv(t)
+	e.loginAdmin()
+	o := func(n int) string { return strings.Repeat("ő", n) } // 2 bytes each
+
+	r := e.post("/admin/services", url.Values{"name": {o(100)}, "category": {o(100)}, "description": {o(300)}})
+	mustContain(t, adminFollow(t, e, r).Body, "Service “"+o(100)+"” created.")
+	r = e.post("/admin/services", url.Values{"name": {o(101)}, "category": {o(101)}, "description": {o(301)}})
+	if r.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("service with too long fields: %d", r.Status)
+	}
+	mustContain(t, r.Body, "The name is too long (at most 100 characters).", "The category is too long (at most 100 characters).",
+		"The description is too long (at most 300 characters).")
+
+	f := adminSettingsForm(adminSettings(t, e))
+	f.Set("site_name", o(100))
+	mustContain(t, adminFollow(t, e, e.post("/admin/settings", f)).Body, "Settings saved.")
+	f.Set("site_name", o(101))
+	r = e.post("/admin/settings", f)
+	if r.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("too long site name: %d", r.Status)
+	}
+	mustContain(t, r.Body, "The name is too long (at most 100 characters).")
+
+	r = e.post("/admin/groups", url.Values{"external_id": {o(255)}, "name": {o(200)}})
+	if r.Status != http.StatusSeeOther {
+		t.Fatalf("add group with 200 characters: %d %s", r.Status, r.Body)
+	}
+	r = e.post("/admin/groups", url.Values{"external_id": {o(256)}, "name": {o(201)}})
+	if r.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("group with too long fields: %d", r.Status)
+	}
+	mustContain(t, r.Body, "The group ID is too long", "The display name is too long")
+}
+
+// TestAdminSettingsLocalhostBaseURL: a base URL that only works on the server
+// itself is pointed out.
+func TestAdminSettingsLocalhostBaseURL(t *testing.T) {
+	e := newTestEnv(t)
+	e.loginAdmin()
+	const warning = "only works on the server itself"
+	for base, warn := range map[string]bool{
+		"http://localhost:8080": true, "http://127.0.0.1:8080": true, "http://status-srv:8080": false, "": false,
+	} {
+		f := adminSettingsForm(adminSettings(t, e))
+		f.Set("base_url", base)
+		r := adminFollow(t, e, e.post("/admin/settings", f))
+		if strings.Contains(r.Body, warning) != warn {
+			t.Errorf("base URL %q: warning shown = %v, want %v", base, !warn, warn)
+		}
+	}
 }

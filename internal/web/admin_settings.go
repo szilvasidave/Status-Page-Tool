@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/directory"
@@ -109,6 +108,7 @@ type adminSettingsData struct {
 	HasSMTPPassword  bool // an SMTP password is stored
 	Errors           adminFormErrors
 	CallbackURL      string
+	LocalBaseURL     bool // the base URL points to localhost: other computers cannot use it
 	DirectoryEnabled bool // directory sync is enabled and configured ("Sync now")
 	TestEmailTo      string
 	Timezones        []string
@@ -143,6 +143,9 @@ func (s *Server) adminSettingsData(r *http.Request, st store.Settings) *adminSet
 	if st.SMTPPort == 0 {
 		d.SMTPPort = ""
 	}
+	if u, err := url.Parse(st.BaseURL); err == nil && st.BaseURL != "" {
+		d.LocalBaseURL = adminIsLocalhost(u.Hostname())
+	}
 	if id := auth.FromContext(r.Context()); id != nil && id.User != nil {
 		d.TestEmailTo = id.User.Email
 	}
@@ -164,7 +167,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case st.SiteName == "":
 		errs.add("site_name", "Enter a name for the status page.")
-	case len(st.SiteName) > 100:
+	case tooLong(st.SiteName, 100):
 		errs.add("site_name", "The name is too long (at most 100 characters).")
 	}
 	var msg string
@@ -212,6 +215,9 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		}
 		if !strings.Contains(" "+st.OIDCScopes+" ", " openid ") {
 			errs.add("oidc_scopes", `The scopes must include "openid".`)
+		}
+		if tooLong(st.OIDCButtonLabel, 60) {
+			errs.add("oidc_button_label", "The label is too long (at most 60 characters).")
 		}
 	}
 
@@ -304,7 +310,7 @@ func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := s.Notifier.SendTestEmail(ctx, to); err != nil {
 		s.Log.Warn("test e-mail failed", "to", to, "err", err)
-		s.redirectWithFlash(w, r, back, "error", adminTruncate("The test e-mail could not be sent: "+err.Error(), 600))
+		s.redirectWithFlash(w, r, back, "error", "The test e-mail could not be sent: "+err.Error())
 		return
 	}
 	s.redirectWithFlash(w, r, back, "success", "A test e-mail was sent to "+to+". Check the inbox (and the spam folder).")
@@ -319,16 +325,4 @@ func adminActor(r *http.Request) string {
 		return id.User.DisplayName()
 	}
 	return ""
-}
-
-// adminTruncate shortens s to at most n bytes (on a rune boundary) so that
-// flash messages fit into a cookie.
-func adminTruncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "…"
 }

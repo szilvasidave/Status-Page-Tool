@@ -12,14 +12,14 @@
 <p class="lead">Groups come from the identity provider. Give a group a role and choose the services its members are
   notified about. A user's role is the highest role of their groups; everybody else who signs in is a viewer.</p>
 
-{{- if .Groups}}
-<div class="card table-wrap" tabindex="0" role="region" aria-label="Groups">
+{{- if .InUse}}
+<div class="card table-wrap" tabindex="0" role="region" aria-label="Groups with a role or services">
   <table class="table">
     <thead>
       <tr><th scope="col">Group</th><th scope="col">ID</th><th scope="col">Role</th><th scope="col">Members</th><th scope="col">Services</th></tr>
     </thead>
     <tbody>
-      {{- range .Groups}}
+      {{- range .InUse}}
       <tr>
         <td><a href="/admin/groups/{{.ID}}">{{.DisplayName}}</a></td>
         <td class="cell-wrap"><code>{{.ExternalID}}</code></td>
@@ -31,8 +31,34 @@
     </tbody>
   </table>
 </div>
+{{- else if .Other}}
+<p class="notice">No group has a role or services yet. Open a group below, or add one, to assign them.</p>
 {{- else}}
 <p class="notice">No groups yet. Groups appear here after their members sign in with single sign-on{{if .DirectoryEnabled}} or after a directory sync{{end}}; you can also add one below.</p>
+{{- end}}
+
+{{- with .Other}}
+<details class="disclosure">
+  <summary>Other groups ({{len .}})</summary>
+  <p class="help">Groups without a role or services, usually recorded from the members' sign-ins. Their members are
+    viewers and receive no e-mails. Open a group to give it a role or services.</p>
+  <div class="card table-wrap" tabindex="0" role="region" aria-label="Other groups">
+    <table class="table">
+      <thead>
+        <tr><th scope="col">Group</th><th scope="col">ID</th><th scope="col">Members</th></tr>
+      </thead>
+      <tbody>
+        {{- range .}}
+        <tr>
+          <td><a href="/admin/groups/{{.ID}}">{{.DisplayName}}</a></td>
+          <td class="cell-wrap"><code>{{.ExternalID}}</code></td>
+          <td>{{.MemberCount}}</td>
+        </tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+</details>
 {{- end}}
 
 <div class="grid-2">

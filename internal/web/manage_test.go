@@ -523,7 +523,16 @@ func TestManageMaintenance(t *testing.T) {
 	now := time.Now()
 	running := manageMaintenance(t, e, "Running", now.Add(-time.Hour), now.Add(time.Hour), vpn)
 	runPath := fmt.Sprintf("/manage/maintenance/%d", running.ID)
-	mustContain(t, e.get(runPath).Body, "End now", "In progress")
+	r = e.get(runPath)
+	mustContain(t, r.Body, "End now", "In progress")
+	// A maintenance that has started cannot be cancelled, only ended.
+	if strings.Contains(r.Body, "Cancel maintenance") || strings.Contains(r.Body, runPath+"/cancel") {
+		t.Error("cancel offered for a maintenance in progress")
+	}
+	mustContain(t, manageFollow(t, e, e.post(runPath+"/cancel", nil), runPath).Body, "has already started and can no longer be cancelled", "End now")
+	if got, _ := e.Store.GetMaintenance(ctx, running.ID); got.Cancelled {
+		t.Fatal("a maintenance in progress was cancelled")
+	}
 	mustContain(t, manageFollow(t, e, e.post(runPath+"/end", nil), "/manage").Body, "The maintenance has been ended.")
 	got, _ = e.Store.GetMaintenance(ctx, running.ID)
 	if got.State(time.Now()) != store.MaintenanceCompleted || got.EndsAt.After(time.Now()) || got.Title != "Running" || len(got.Services) != 1 {
@@ -598,22 +607,27 @@ func TestManageMaintenanceNotifyOnChange(t *testing.T) {
 	list, _ := e.Store.ListCurrentMaintenances(ctx, time.Now())
 	path := fmt.Sprintf("/manage/maintenance/%d", list[0].ID)
 
-	// Only the description changed: no e-mail.
-	form.Set("description", "Details")
-	manageStatus(t, e.post(path, form), http.StatusSeeOther)
+	// Saved without a change: no e-mail.
+	mustContain(t, manageFollow(t, e, e.post(path, form), "/manage").Body, "The maintenance has been updated.")
 	if count() != 1 {
-		t.Errorf("e-mail sent for a description change: %d", count())
+		t.Errorf("e-mail sent without a change: %d", count())
+	}
+	// The description changed (e.g. instructions for the users): e-mail.
+	form.Set("description", "Please save your work, the ERP is unavailable for the first 15 minutes.")
+	mustContain(t, manageFollow(t, e, e.post(path, form), "/manage").Body, "1 notification e-mail queued.")
+	if count() != 2 {
+		t.Errorf("queued e-mails after a description change = %d, want 2", count())
 	}
 	// The window changed: e-mail.
 	form.Set("ends_at", "2030-01-15T13:00")
 	mustContain(t, manageFollow(t, e, e.post(path, form), "/manage").Body, "1 notification e-mail queued.")
-	if count() != 2 {
-		t.Errorf("queued e-mails = %d, want 2", count())
+	if count() != 3 {
+		t.Errorf("queued e-mails = %d, want 3", count())
 	}
 	// Cancel: e-mail because the maintenance has notify enabled.
 	mustContain(t, manageFollow(t, e, e.post(path+"/cancel", nil), "/manage").Body, "The maintenance has been cancelled. 1 notification e-mail queued.")
-	if count() != 3 {
-		t.Errorf("queued e-mails = %d, want 3", count())
+	if count() != 4 {
+		t.Errorf("queued e-mails = %d, want 4", count())
 	}
 }
 
@@ -649,4 +663,67 @@ func TestManageWindow(t *testing.T) {
 	if got, want := s.manageWindow(start.Add(8*time.Hour), start.Add(12*time.Hour)), "12 Nov 2026 22:00 CET – 13 Nov 2026 02:00 CET"; got != want {
 		t.Errorf("across midnight: %q, want %q", got, want)
 	}
+}
+
+// TestManageIncidentWithoutServices: an open incident whose services were
+// all deleted can still be updated and resolved without attaching an
+// unrelated service (which would show a false impact in its history).
+func TestManageIncidentWithoutServices(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	erp, _ := manageServices(t, e)
+	orphan := manageIncident(t, e, "Legacy VPN down") // its service was deleted
+	e.loginAs("editor@example.com", store.RoleEditor)
+	path := fmt.Sprintf("/manage/incidents/%d", orphan.ID)
+
+	mustContain(t, e.get(path).Body, "No service is linked to this incident any more")
+	r := e.post(path+"/updates", url.Values{"status": {"resolved"}, "message": {"The VPN was decommissioned."}})
+	mustContain(t, manageFollow(t, e, r, path).Body, "The incident has been resolved.")
+	got, err := e.Store.GetIncident(ctx, orphan.ID)
+	if err != nil || !got.Resolved() || len(got.Services) != 0 {
+		t.Fatalf("incident = %+v, %v; want resolved without services", got, err)
+	}
+
+	// An incident with services still needs at least one.
+	inc := manageIncident(t, e, "Slow ERP", store.ServiceImpact{ServiceID: erp, Impact: store.StatusDegraded})
+	r = e.post(fmt.Sprintf("/manage/incidents/%d/updates", inc.ID), url.Values{"status": {"resolved"}, "message": {"Fixed."}})
+	manageStatus(t, r, http.StatusUnprocessableEntity)
+	mustContain(t, r.Body, "Please select at least one affected service.")
+}
+
+// TestManageTextLimits: titles have at most 200, messages and descriptions
+// at most 10000 characters (not bytes; a line break counts once, as in the
+// browser, although it is sent as CRLF).
+func TestManageTextLimits(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	erp, _ := manageServices(t, e)
+	e.loginAs("editor@example.com", store.RoleEditor)
+	title := strings.Repeat("ű", maxTitleLen)
+	text := strings.Repeat("ő\r\nő", (maxTextLen-1)/3) + "ő" // 10000 characters in the browser
+	impact := manageImpactField(erp)
+
+	r := e.post("/manage/incidents", url.Values{"title": {title}, "status": {"investigating"}, "message": {text}, impact: {"degraded"}})
+	manageStatus(t, r, http.StatusSeeOther)
+	open, _ := e.Store.ListOpenIncidents(ctx)
+	if len(open) != 1 {
+		t.Fatalf("open incidents = %d, want 1", len(open))
+	}
+	path := fmt.Sprintf("/manage/incidents/%d", open[0].ID)
+	r = e.post("/manage/incidents", url.Values{"title": {title + "ű"}, "status": {"investigating"}, "message": {text + "ő"}, impact: {"degraded"}})
+	manageStatus(t, r, http.StatusUnprocessableEntity)
+	mustContain(t, r.Body, "The title is too long (at most 200 characters).", "The message is too long (at most 10000 characters).",
+		`maxlength="10000"`)
+	r = e.post(path+"/updates", url.Values{"status": {"monitoring"}, "message": {text + "ő"}, impact: {"degraded"}})
+	manageStatus(t, r, http.StatusUnprocessableEntity)
+	mustContain(t, r.Body, "The message is too long (at most 10000 characters).")
+	manageStatus(t, e.post(path+"/updates", url.Values{"status": {"monitoring"}, "message": {text}, impact: {"degraded"}}), http.StatusSeeOther)
+
+	form := url.Values{"title": {title}, "description": {text + "ő"}, "starts_at": {"2030-01-15T10:00"}, "ends_at": {"2030-01-15T12:00"},
+		"services": {strconv.FormatInt(erp, 10)}}
+	r = e.post("/manage/maintenance", form)
+	manageStatus(t, r, http.StatusUnprocessableEntity)
+	mustContain(t, r.Body, "The description is too long (at most 10000 characters).", `maxlength="10000"`)
+	form.Set("description", text)
+	manageStatus(t, e.post("/manage/maintenance", form), http.StatusSeeOther)
 }

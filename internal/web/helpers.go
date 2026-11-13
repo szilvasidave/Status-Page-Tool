@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/store"
@@ -27,9 +28,14 @@ var flashKinds = map[string]bool{"success": true, "info": true, "warning": true,
 
 const flashCookie = "sp_flash"
 
-// flash stores a message that is shown on the next page (use before a redirect).
+// flashMaxLen is the maximum length of a flash message in bytes, so that the
+// cookie stays well below the 4 KB limit of browsers.
+const flashMaxLen = 1000
+
+// flash stores a message that is shown on the next page (use before a
+// redirect). Longer messages are shortened.
 func (s *Server) flash(w http.ResponseWriter, r *http.Request, kind, msg string) {
-	v := base64.RawURLEncoding.EncodeToString([]byte(kind + "|" + msg))
+	v := base64.RawURLEncoding.EncodeToString([]byte(kind + "|" + truncate(msg, flashMaxLen)))
 	http.SetCookie(w, &http.Cookie{Name: flashCookie, Value: v, Path: "/", HttpOnly: true, Secure: auth.IsHTTPS(r), SameSite: http.SameSiteLaxMode})
 }
 
@@ -87,17 +93,41 @@ func formBool(r *http.Request, name string) bool {
 	return v == "on" || v == "true" || v == "1" || v == "yes"
 }
 
-// formInt parses an integer form field, returning def if empty/invalid.
-func formInt(r *http.Request, name string, def int) int {
-	v, err := strconv.Atoi(strings.TrimSpace(r.FormValue(name)))
-	if err != nil {
-		return def
-	}
-	return v
-}
-
 // formTrim returns the trimmed value of a form field.
 func formTrim(r *http.Request, name string) string { return strings.TrimSpace(r.FormValue(name)) }
+
+// Maximum lengths (in characters) of the free-text fields of editors.
+const (
+	maxTitleLen = 200   // incident and maintenance titles
+	maxTextLen  = 10000 // incident messages and maintenance descriptions
+)
+
+// tooLong reports whether s is longer than max characters. Length limits
+// count characters (runes) like the maxlength attribute of the inputs, not
+// bytes.
+func tooLong(s string, max int) bool { return utf8.RuneCountInString(s) > max }
+
+// ------------------------------------------------------------------ text helpers
+
+// plural returns e.g. "1 group" or "3 groups".
+func plural(n int, unit string) string {
+	if n == 1 {
+		return "1 " + unit
+	}
+	return strconv.Itoa(n) + " " + unit + "s"
+}
+
+// truncate shortens s to at most n bytes, cut at a rune boundary, and
+// appends "…" if it was shortened.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
+}
 
 // InputTimeLayout is the layout of <input type="datetime-local"> values.
 const InputTimeLayout = "2006-01-02T15:04"
@@ -247,12 +277,6 @@ func humanizeDuration(d time.Duration) string {
 	}
 	mins := int(d.Minutes())
 	days, hours, m := mins/(60*24), (mins/60)%24, mins%60
-	plural := func(n int, unit string) string {
-		if n == 1 {
-			return "1 " + unit
-		}
-		return strconv.Itoa(n) + " " + unit + "s"
-	}
 	switch {
 	case days > 0 && hours > 0:
 		return plural(days, "day") + " " + plural(hours, "hour")

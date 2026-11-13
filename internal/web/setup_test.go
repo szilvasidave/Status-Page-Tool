@@ -54,6 +54,48 @@ func setupHasAdmin(t *testing.T, e *testEnv) bool {
 	return ok
 }
 
+// setupFakeHostname makes the setup wizard see name as the computer name.
+func setupFakeHostname(t *testing.T, name string) {
+	t.Helper()
+	orig := setupHostname
+	setupHostname = func() (string, error) { return name, nil }
+	t.Cleanup(func() { setupHostname = orig })
+}
+
+func TestSetupSuggestBaseURL(t *testing.T) {
+	setupFakeHostname(t, "SRV-STATUS")
+	for _, c := range []struct {
+		host string
+		tls  bool
+		want string
+	}{
+		{"localhost:8080", false, "http://srv-status:8080"},
+		{"127.0.0.1:8080", false, "http://srv-status:8080"},
+		{"[::1]:8080", false, "http://srv-status:8080"},
+		{"localhost", true, "https://srv-status"},
+		{"status.example.com:8080", false, "http://status.example.com:8080"},
+		{"status.example.com", true, "https://status.example.com"},
+		{"10.0.0.5:8080", false, "http://10.0.0.5:8080"},
+		{"[fd00::5]:8080", false, "http://[fd00::5]:8080"},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/setup", nil)
+		r.Host = c.host
+		if c.tls {
+			r.Header.Set("X-Forwarded-Proto", "https")
+		}
+		if got := setupSuggestBaseURL(r); got != c.want {
+			t.Errorf("Host %q: got %q, want %q", c.host, got, c.want)
+		}
+	}
+	// No usable computer name: no suggestion rather than localhost.
+	setupHostname = func() (string, error) { return "", errors.New("no name") }
+	r := httptest.NewRequest(http.MethodGet, "/setup", nil)
+	r.Host = "localhost:8080"
+	if got := setupSuggestBaseURL(r); got != "" {
+		t.Errorf("without a computer name: got %q, want empty", got)
+	}
+}
+
 func TestSetupAdminStep(t *testing.T) {
 	e := newTestEnvNoAdmin(t)
 	tokenFile := filepath.Join(e.DataDir, config.SetupTokenFile)
@@ -64,11 +106,15 @@ func TestSetupAdminStep(t *testing.T) {
 	if r := e.get("/"); r.Status != http.StatusSeeOther || r.Location != "/setup" {
 		t.Fatalf("GET / before setup: %d %q", r.Status, r.Location)
 	}
+	setupFakeHostname(t, "Status-SRV")
 	r := e.get("/setup")
 	if r.Status != http.StatusOK {
 		t.Fatalf("GET /setup: %d", r.Status)
 	}
-	mustContain(t, r.Body, "Create the administrator", `value="admin"`, `value="`+e.Server.URL+`"`, `value="UTC"`,
+	// The page is opened from the server itself (127.0.0.1): the suggested
+	// base URL uses the computer name, which other computers can reach.
+	port := e.Server.URL[strings.LastIndex(e.Server.URL, ":"):]
+	mustContain(t, r.Body, "Create the administrator", `value="admin"`, `value="http://status-srv`+port+`"`, `value="UTC"`,
 		`aria-current="step"`, "Administrator", `name="csrf_token"`)
 	if strings.Contains(r.Body, `name="setup_token"`) {
 		t.Error("the setup token is asked for a local request")
@@ -227,6 +273,13 @@ type setupModeEnv struct {
 
 func newSetupModeEnv(t *testing.T, activateErr error) *setupModeEnv {
 	t.Helper()
+	return newSetupModeEnvListen(t, activateErr, "")
+}
+
+// newSetupModeEnvListen is newSetupModeEnv for a server started with the
+// listen address listen (http.Server.Addr, like app.Run sets it).
+func newSetupModeEnvListen(t *testing.T, activateErr error, listen string) *setupModeEnv {
+	t.Helper()
 	m := &setupModeEnv{t: t, DataDir: t.TempDir()}
 	h, err := NewSetupHandler(Deps{
 		DataDir: m.DataDir, Version: "test", SetupToken: setupTestToken,
@@ -239,7 +292,9 @@ func newSetupModeEnv(t *testing.T, activateErr error) *setupModeEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.Server = httptest.NewServer(h)
+	m.Server = httptest.NewUnstartedServer(h)
+	m.Server.Config.Addr = listen
+	m.Server.Start()
 	t.Cleanup(m.Server.Close)
 	jar, _ := cookiejar.New(nil)
 	m.Client = &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -355,7 +410,7 @@ func TestSetupDatabaseStepSQLite(t *testing.T) {
 		t.Fatalf("test SQLite: %d %s", r.Status, r.Body)
 	}
 	mustContain(t, r.Body, "Everything is fine")
-	if config.Exists(m.DataDir) || len(m.Activated) != 0 {
+	if _, err := os.Stat(config.Path(m.DataDir)); err == nil || len(m.Activated) != 0 {
 		t.Fatal("test connection wrote the configuration")
 	}
 
@@ -382,6 +437,41 @@ func TestSetupDatabaseStepSQLite(t *testing.T) {
 	// The token is remembered for the administrator step.
 	if sc := strings.Join(r.Header.Values("Set-Cookie"), "\n"); !strings.Contains(sc, setupTokenCookie+"="+setupTestToken+"; Path=/setup") {
 		t.Errorf("setup token not remembered: %s", sc)
+	}
+
+	// A second submission that still reaches the setup handler (another tab,
+	// or a click while the first one was saving) continues with the next
+	// step and neither rewrites config.json nor activates again.
+	before, err := os.ReadFile(config.Path(m.DataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = m.post(url.Values{"driver": {"postgres"}, "pg_host": {"db.example.com"}, "action": {"save"}, "setup_token": {setupTestToken}}, nil)
+	if r.Status != http.StatusSeeOther || r.Location != "/setup" {
+		t.Fatalf("second save: %d %q %s", r.Status, r.Location, r.Body)
+	}
+	if after, _ := os.ReadFile(config.Path(m.DataDir)); string(after) != string(before) || len(m.Activated) != 1 {
+		t.Fatalf("second save changed the configuration (activated %d times):\n%s", len(m.Activated), after)
+	}
+}
+
+// TestSetupDatabaseStepKeepsListenHost: a server started with
+// -listen 127.0.0.1:<port> (e.g. behind a reverse proxy) keeps listening on
+// the loopback interface only after a restart without -listen.
+func TestSetupDatabaseStepKeepsListenHost(t *testing.T) {
+	m := newSetupModeEnvListen(t, nil, "127.0.0.1:0")
+	r := m.get("/setup")
+	port := m.Server.URL[strings.LastIndex(m.Server.URL, ":")+1:]
+	mustContain(t, r.Body, "keeps listening on port "+port+".")
+	if r := m.post(url.Values{"driver": {"sqlite"}, "action": {"save"}}, nil); r.Status != http.StatusSeeOther {
+		t.Fatalf("save: %d %s", r.Status, r.Body)
+	}
+	cfg, err := config.Load(m.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "127.0.0.1:" + port; cfg.Listen != want {
+		t.Errorf("listen = %q, want %q", cfg.Listen, want)
 	}
 }
 

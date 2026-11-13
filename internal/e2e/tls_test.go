@@ -85,8 +85,8 @@ func TestTLS(t *testing.T) {
 
 	p := b.get(app.URL + "/setup").expectStatus(200).expectText("Create the administrator")
 	f := p.form("/setup")
-	if f.value("base_url") != app.URL {
-		t.Errorf("suggested base URL %q, want %q", f.value("base_url"), app.URL)
+	if want := suggestedBaseURL(app.URL); f.value("base_url") != want {
+		t.Errorf("suggested base URL %q, want %q", f.value("base_url"), want)
 	}
 	p = f.set("password", adminPW).set("password_confirm", adminPW).set("site_name", "TLS Status").post()
 	p.expectRedirect("/admin/settings")

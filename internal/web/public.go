@@ -152,7 +152,7 @@ func publicHistoryBar(days []store.DayStatus) ([]publicHistoryDay, string) {
 			continue
 		case d.Incidents > 0:
 			incidentDays++
-			out[i] = publicHistoryDay{Title: fmt.Sprintf("%s – %s (%s)", date, d.Status.Label(), publicPlural(d.Incidents, "incident"))}
+			out[i] = publicHistoryDay{Title: fmt.Sprintf("%s – %s (%s)", date, d.Status.Label(), plural(d.Incidents, "incident"))}
 		default:
 			if d.Status == store.StatusMaintenance {
 				maintenanceDays++
@@ -166,20 +166,13 @@ func publicHistoryBar(days []store.DayStatus) ([]publicHistoryDay, string) {
 	case incidentDays == 0 && maintenanceDays == 0:
 		summary += "no incidents"
 	case maintenanceDays == 0:
-		summary += "incidents on " + publicPlural(incidentDays, "day")
+		summary += "incidents on " + plural(incidentDays, "day")
 	case incidentDays == 0:
-		summary += "maintenance on " + publicPlural(maintenanceDays, "day")
+		summary += "maintenance on " + plural(maintenanceDays, "day")
 	default:
-		summary += "incidents on " + publicPlural(incidentDays, "day") + ", maintenance on " + publicPlural(maintenanceDays, "day")
+		summary += "incidents on " + plural(incidentDays, "day") + ", maintenance on " + plural(maintenanceDays, "day")
 	}
 	return out, summary
-}
-
-func publicPlural(n int, unit string) string {
-	if n == 1 {
-		return "1 " + unit
-	}
-	return strconv.Itoa(n) + " " + unit + "s"
 }
 
 func publicStartOfDay(t time.Time) time.Time {
@@ -218,7 +211,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if v := strings.TrimSpace(r.URL.Query().Get("before")); v != "" {
 		d, err := time.ParseInLocation(publicDateLayout, v, loc)
 		if err != nil {
-			s.badRequest(w, r, fmt.Sprintf("Invalid date %q. Please use the format YYYY-MM-DD.", publicTruncate(v, 40)))
+			s.badRequest(w, r, fmt.Sprintf("Invalid date %q. Please use the format YYYY-MM-DD.", truncate(v, 40)))
 			return
 		}
 		if d.Before(latest) {
@@ -271,13 +264,6 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		m.Entries = append(m.Entries, e)
 	}
 	s.render(w, r, "history", "History", data)
-}
-
-func publicTruncate(v string, n int) string {
-	if r := []rune(v); len(r) > n {
-		return string(r[:n]) + "…"
-	}
-	return v
 }
 
 // ------------------------------------------------------------------ incident and maintenance pages
