@@ -28,6 +28,7 @@ import (
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
+	"github.com/szilvasidave/status-page-tool/internal/groupnames"
 	"github.com/szilvasidave/status-page-tool/internal/notify"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
@@ -37,13 +38,14 @@ var assets embed.FS
 
 // Deps are the dependencies of the web handlers.
 type Deps struct {
-	Config   *config.Config
-	DataDir  string
-	Store    *store.Store     // nil in setup mode
-	Auth     *auth.Manager    // nil in setup mode
-	Notifier *notify.Notifier // nil in setup mode
-	Version  string
-	Log      *slog.Logger
+	Config     *config.Config
+	DataDir    string
+	Store      *store.Store         // nil in setup mode
+	Auth       *auth.Manager        // nil in setup mode
+	Notifier   *notify.Notifier     // nil in setup mode
+	GroupNames *groupnames.Resolver // nil in setup mode (its methods then do nothing)
+	Version    string
+	Log        *slog.Logger
 
 	// Activate is called by the setup wizard (setup mode only) after the
 	// database connection was configured and the config file was written. It

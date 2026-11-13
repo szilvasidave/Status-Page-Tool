@@ -477,7 +477,36 @@ func (j *journey) singleSignOn() *browser {
 	alice.get(j.base + "/manage").expectStatus(403)
 	j.setGroupRole(j.ops, "editor")
 	alice.get(j.base + "/manage").expectStatus(200)
+
+	// App roles: with roles from app roles turned on, the app role for
+	// administrators in the roles claim makes Grace an administrator,
+	// without any group, until a sign-in without it.
+	j.appRoles(true)
+	grace := newBrowser(t, "grace")
+	graceUser := mockidp.User{Subject: "sub-grace", Email: "grace@e2e.example", Name: "Grace Approle", Groups: []string{}, Roles: []string{"Admin", "Reader"}}
+	j.ssoLogin(grace, graceUser, "/admin/settings").expectStatus(200).expectText("Grace Approle", "Settings")
+	grace.get(j.base+"/account").expectStatus(200).expectText("Administrator", "App roles", "Admin, Reader", "groups and app roles")
+	j.admin.get(j.base+"/admin/users").expectStatus(200).expectText("Grace Approle", "App roles: Admin, Reader")
+	j.appRoles(false) // takes effect at once, without a sign-in
+	grace.get(j.base + "/admin/settings").expectStatus(403)
+	j.appRoles(true)
+	grace.get(j.base + "/admin/settings").expectStatus(200)
+	graceUser.Roles = nil // the assignment was removed in the identity provider
+	j.idp.SetUser(graceUser)
+	if p := grace.open(j.base + "/auth/oidc/login?next=%2Faccount"); p.URL.Path != "/account" {
+		t.Fatalf("grace: second sign-in ends at %s", p.URL)
+	}
+	grace.get(j.base + "/admin/settings").expectStatus(403)
+	j.appRoles(false)
 	return alice
+}
+
+// appRoles turns roles from app roles on or off on the settings page.
+func (j *journey) appRoles(on bool) {
+	j.t.Helper()
+	p := j.admin.get(j.base+"/admin/settings").expectStatus(200).form("/admin/settings").tick("oidc_app_roles", "", on).post()
+	p.expectRedirect("/admin/settings")
+	p.follow().expectFlash("success", "Settings saved.")
 }
 
 // ------------------------------------------------------------------ e

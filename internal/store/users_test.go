@@ -179,7 +179,8 @@ func TestUserGroupsAndRole(t *testing.T) {
 		check(t, err)
 		equal(t, "groups", len(groups), 2)
 		equal(t, "ordered by name", groups[0].ExternalID, "g2")
-		equal(t, "name defaults to external id", groups[0].Name, "g2")
+		equal(t, "no name", groups[0].Name, "")
+		equal(t, "shown as the external id", groups[0].DisplayName(), "g2")
 		equal(t, "second", groups[1].Name, "Group One")
 		equal(t, "member count", groups[1].MemberCount, 1)
 		g1, g2 := groups[1], groups[0]

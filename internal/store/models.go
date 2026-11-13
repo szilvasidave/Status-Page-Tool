@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/szilvasidave/status-page-tool/internal/theme"
@@ -83,6 +84,21 @@ type Settings struct {
 	OIDCGroupsClaim  string // name of the ID token claim containing group ids/names
 	OIDCButtonLabel  string
 
+	// EntraGroupNames turns on looking up the display names of the groups
+	// whose external id is a Microsoft Entra ID object id (package
+	// groupnames), with Microsoft Graph and the app registration of the
+	// single sign-on settings (issuer, client ID, client secret).
+	EntraGroupNames bool
+
+	// OIDCAppRoles turns on roles from app roles: a user whose roles claim
+	// (OIDCRolesClaim) contained OIDCAdminRole or OIDCEditorRole at their
+	// last sign-in has that role, in addition to the roles of their groups
+	// (see AppRole).
+	OIDCAppRoles   bool
+	OIDCRolesClaim string // name of the claim containing the app role values
+	OIDCAdminRole  string // app role value of the Administrator role ("" = none)
+	OIDCEditorRole string // app role value of the Editor role ("" = none)
+
 	// LocalLoginEnabled allows the local administrator account to sign in.
 	// It can only be turned off while single sign-on works; the command
 	// "statuspage local-login enable" turns it on again.
@@ -142,6 +158,9 @@ func DefaultSettings() Settings {
 		OIDCScopes:      "openid profile email",
 		OIDCGroupsClaim: "groups",
 		OIDCButtonLabel: "Sign in with SSO",
+		OIDCRolesClaim:  "roles",
+		OIDCAdminRole:   "Admin",
+		OIDCEditorRole:  "Editor",
 		SMTPPort:        587,
 		SMTPSecurity:    "starttls",
 
@@ -212,6 +231,35 @@ func (s *Settings) OIDCConfigured() bool {
 	return s != nil && s.OIDCEnabled && s.OIDCIssuer != "" && s.OIDCClientID != ""
 }
 
+// GroupNamesActive reports whether the names of groups are looked up in
+// Microsoft Entra ID: turned on (EntraGroupNames) while single sign-on is
+// configured with a client secret, the app registration that Microsoft
+// Graph uses.
+func (s *Settings) GroupNamesActive() bool {
+	return s != nil && s.EntraGroupNames && s.OIDCConfigured() && s.OIDCClientSecret != ""
+}
+
+// AppRole returns the role that the app role values of a user give:
+// RoleAdmin if one of them is OIDCAdminRole, else RoleEditor if one is
+// OIDCEditorRole, else RoleNone; upper and lower case do not matter. It is
+// always RoleNone while roles from app roles (OIDCAppRoles) are off.
+func (s *Settings) AppRole(values []string) Role {
+	if s == nil || !s.OIDCAppRoles {
+		return RoleNone
+	}
+	admin, editor := strings.TrimSpace(s.OIDCAdminRole), strings.TrimSpace(s.OIDCEditorRole)
+	r := RoleNone
+	for _, v := range values {
+		switch {
+		case admin != "" && strings.EqualFold(v, admin):
+			return RoleAdmin
+		case editor != "" && strings.EqualFold(v, editor):
+			r = RoleEditor
+		}
+	}
+	return r
+}
+
 // ---------------------------------------------------------------- users & groups
 
 type User struct {
@@ -242,6 +290,10 @@ type User struct {
 	// Email was derived from PrincipalName (the SCIM userName): it changes
 	// with the user name.
 	EmailFromUserName bool
+	// AppRoles are the values of the roles claim at the user's last sign-in
+	// (Microsoft Entra ID: the app roles assigned to the user or to their
+	// groups); nil if there were none. Settings.AppRole maps them to a role.
+	AppRoles []string
 }
 
 // DisplayName returns the best available human readable name.
@@ -266,10 +318,12 @@ type UserWithGroups struct {
 
 // Group is a group that originates from the identity provider.
 type Group struct {
-	ID           int64
-	ExternalID   string // value as it appears in the groups claim / directory object id
-	Name         string // display name (falls back to ExternalID)
-	Role         Role   // RoleNone (members are viewers), RoleEditor or RoleAdmin
+	ID         int64
+	ExternalID string // value as it appears in the groups claim / directory object id
+	// Name is the name given by an administrator or, for provisioned
+	// groups, by provisioning; "" if there is none (see DisplayName).
+	Name         string
+	Role         Role // RoleNone (members are viewers), RoleEditor or RoleAdmin
 	MemberCount  int
 	ServiceIDs   []int64
 	LastSyncedAt *time.Time // last change by provisioning
@@ -277,12 +331,22 @@ type Group struct {
 	// Provisioned reports that the group's members are managed by SCIM
 	// provisioning (sign-in does not change them).
 	Provisioned bool
+	// DirectoryName is the group's display name in Microsoft Entra ID, as
+	// last looked up with Microsoft Graph (package groupnames); "" if it was
+	// never found. DirectoryCheckedAt is when it was last looked up (nil:
+	// never).
+	DirectoryName      string
+	DirectoryCheckedAt *time.Time
 }
 
-// DisplayName returns Name or ExternalID.
+// DisplayName returns the name to show: Name, else DirectoryName, else
+// ExternalID.
 func (g *Group) DisplayName() string {
-	if g.Name != "" {
+	switch {
+	case g.Name != "":
 		return g.Name
+	case g.DirectoryName != "":
+		return g.DirectoryName
 	}
 	return g.ExternalID
 }
@@ -303,6 +367,9 @@ type OIDCUser struct {
 	// PrincipalName is the user name at the identity provider (claim
 	// preferred_username, else upn), as sent; may be empty.
 	PrincipalName string
+	// AppRoles are the values of the roles claim of this sign-in (nil:
+	// none). They replace the user's app roles (see User.AppRoles).
+	AppRoles []string
 }
 
 // Recipient is a user that should receive a notification e-mail.

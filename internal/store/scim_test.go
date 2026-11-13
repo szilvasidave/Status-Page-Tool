@@ -483,7 +483,7 @@ func TestSignInLeavesProvisionedGroups(t *testing.T) {
 			check(t, err)
 			var out []string
 			for _, g := range gs {
-				out = append(out, g.Name)
+				out = append(out, g.DisplayName())
 			}
 			return out
 		}

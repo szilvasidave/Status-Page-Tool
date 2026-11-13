@@ -4,6 +4,28 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org/); the release notes on GitHub start
 with the section of the released version.
 
+## Unreleased
+
+- **Group names from Microsoft Entra ID.** The groups claim of Entra ID holds
+  only the groups' object IDs, so groups were shown by their IDs. With the
+  new setting *Look up group names in Microsoft Entra ID* the status page
+  reads their names with Microsoft Graph (application permission
+  GroupMember.Read.All on the single sign-on app registration) and shows them
+  with the IDs in Admin → Groups, the service form, Admin → Users and the
+  account page. A new group gets its name a few seconds after the sign-in
+  that recorded it; all names are looked up again daily, or at once with
+  *Look up names now*; a group added by its object ID is checked in Entra ID
+  right away. A display name given in the status page takes precedence.
+- **Roles from app roles.** With *Assign roles with app roles*, users get the
+  Administrator or Editor role from the app roles assigned to them, or to
+  their groups, in Microsoft Entra ID (the `roles` claim; values `Admin` and
+  `Editor` by default), in addition to the roles of their groups. The local
+  administrator sign-in can also be turned off when somebody has signed in
+  with the app role for administrators.
+- Groups recorded from sign-ins no longer get their ID as their name: a
+  group without a name of its own shows its name from Entra ID, else its ID.
+  The upgrade clears the names that only repeat the ID.
+
 ## 1.0.0 – 2026-11-13
 
 First stable release: a small, self-hosted status page for internal IT

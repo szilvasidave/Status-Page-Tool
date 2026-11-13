@@ -22,8 +22,9 @@ var ErrUsernameTaken = errors.New("another local account already has this user n
 var (
 	// ErrSSONotConfigured: single sign-on is not enabled and configured.
 	ErrSSONotConfigured = errors.New("single sign-on is not enabled and configured")
-	// ErrNoAdminGroup: no group has the Administrator role.
-	ErrNoAdminGroup = errors.New("no group has the Administrator role")
+	// ErrNoAdmin: nobody could sign in as an administrator with single
+	// sign-on (see HasSSOAdmin).
+	ErrNoAdmin = errors.New("no group has the Administrator role and nobody signed in with the administrator app role")
 )
 
 // localLoginKey is the settings key of Settings.LocalLoginEnabled (see
@@ -64,27 +65,66 @@ func (s *Store) UpdateLocalAdmin(ctx context.Context, id int64, username, name s
 // CheckLocalLoginOff reports whether sign-in with the local administrator
 // account may be turned off with the settings st without locking everybody
 // out: single sign-on must be enabled and configured (issuer URL, client ID
-// and client secret), and at least one group must have the Administrator
-// role. It returns nil, ErrSSONotConfigured, ErrNoAdminGroup or a database
-// error.
+// and client secret), and somebody must be able to sign in with it as an
+// administrator (HasSSOAdmin). It returns nil, ErrSSONotConfigured,
+// ErrNoAdmin or a database error.
 func (s *Store) CheckLocalLoginOff(ctx context.Context, st *Settings) error {
 	if !st.OIDCConfigured() || st.OIDCClientSecret == "" {
 		return ErrSSONotConfigured
 	}
-	n, err := s.AdminGroupCount(ctx, 0)
+	ok, err := s.HasSSOAdmin(ctx, st, 0)
 	if err != nil {
 		return err
 	}
-	if n == 0 {
-		return ErrNoAdminGroup
+	if !ok {
+		return ErrNoAdmin
 	}
 	return nil
 }
 
+// HasSSOAdmin reports whether somebody can sign in as an administrator with
+// single sign-on with the settings st, not counting the group except (0 =
+// none): a group has the Administrator role, or, with roles from app roles
+// (st.OIDCAppRoles), an active user had the administrator app role at their
+// last sign-in. While the sign-in with the local administrator account is
+// off, the groups page uses it to keep the last group with the
+// Administrator role (see CheckLocalLoginOff).
+func (s *Store) HasSSOAdmin(ctx context.Context, st *Settings, except int64) (bool, error) {
+	n, err := s.AdminGroupCount(ctx, except)
+	if err != nil || n > 0 {
+		return n > 0, err
+	}
+	n, err = s.AppRoleAdminCount(ctx, st)
+	return n > 0, err
+}
+
+// AppRoleAdminCount returns the number of active users (not local
+// administrators) whose app roles at their last sign-in give them the
+// Administrator role with the settings st (see Settings.AppRole); 0 while
+// roles from app roles are off or no app role is set for administrators.
+func (s *Store) AppRoleAdminCount(ctx context.Context, st *Settings) (int, error) {
+	if st.AppRole([]string{st.OIDCAdminRole}) != RoleAdmin {
+		return 0, nil
+	}
+	values, err := queryAll(ctx, s.db, func(sc scanner) (string, error) {
+		var v string
+		err := sc.Scan(&v)
+		return v, err
+	}, `SELECT app_roles FROM users WHERE app_roles <> '' AND active = ? AND is_local_admin = ?`, true, false)
+	if err != nil {
+		return 0, fmt.Errorf("check for users with the administrator app role: %w", err)
+	}
+	n := 0
+	for _, v := range values {
+		if st.AppRole(decodeAppRoles(v)) == RoleAdmin {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // AdminGroupCount returns the number of groups with the Administrator role,
-// not counting the group except (0 = count all). While the sign-in with the
-// local administrator account is off, the groups page uses it to keep the
-// last of them (see CheckLocalLoginOff).
+// not counting the group except (0 = count all).
 func (s *Store) AdminGroupCount(ctx context.Context, except int64) (int, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM idp_groups WHERE role = ? AND id <> ?`,

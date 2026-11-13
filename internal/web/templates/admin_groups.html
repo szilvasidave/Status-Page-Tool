@@ -3,8 +3,26 @@
 <h1>Groups</h1>
 <p class="lead">Groups come from the identity provider: from the groups claim when members sign in, or provisioned from
   Microsoft Entra ID (marked <span class="badge">Provisioned</span>; their members come from provisioning). Give a group
-  a role and choose the services its members are notified about. A user's role is the highest role of their groups;
-  everybody else who signs in is a viewer.</p>
+  a role and choose the services its members are notified about. A user's role is the highest role of their groups{{if $.Settings.OIDCAppRoles}}
+  and app roles{{end}}; everybody else who signs in is a viewer.</p>
+
+{{- if .Names.Active}}
+<div class="row">
+  <p class="help spacer">Names are looked up in Microsoft Entra ID{{if not .Names.Status.At.IsZero}} (latest lookup:
+    <time datetime="{{isoTime .Names.Status.At}}" title="{{fmtTime .Names.Status.At}}">{{ago .Names.Status.At}}</time>){{end}}.
+    A display name you give a group takes precedence.</p>
+  <form method="post" action="/admin/groups/names" class="inline">
+    {{template "csrf" $}}
+    <button type="submit" class="btn-small">Look up names now</button>
+  </form>
+</div>
+{{- with .Names.Status.Err}}
+<p class="flash flash-warning" role="alert">The names of the groups could not be looked up in Microsoft Entra ID: {{.}}</p>
+{{- end}}
+{{- else if .Names.Hint}}
+<p class="notice">Groups from Microsoft Entra ID are shown by their object IDs. To show their names, turn on <em>Look up group
+  names in Microsoft Entra ID</em> in <a href="/admin/settings#sso">Settings → Single sign-on</a>.</p>
+{{- end}}
 
 {{- if .InUse}}
 <div class="card table-wrap" tabindex="0" role="region" aria-label="Groups with a role, services or provisioning">
@@ -71,7 +89,8 @@
         </div>
         <div class="field">
           <label for="name">Display name <span class="muted">(optional)</span></label>
-          <input id="name" name="name" type="text" value="{{.Name}}" maxlength="256"{{if .Errors.name}} aria-invalid="true"{{end}}>
+          <input id="name" name="name" type="text" value="{{.Name}}" maxlength="256" aria-describedby="name-help"{{if .Errors.name}} aria-invalid="true"{{end}}>
+          <span class="help" id="name-help">{{if .Names.Active}}Empty: the name in Microsoft Entra ID is shown; it is looked up now.{{else}}Empty: the group ID is shown.{{end}}</span>
           {{template "field-error" .Errors.name}}
         </div>
         <div class="form-actions"><button type="submit" class="btn-primary">Add group</button></div>

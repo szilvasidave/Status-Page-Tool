@@ -41,6 +41,9 @@ func adminSettingsForm(st *store.Settings) url.Values {
 		"oidc_scopes":       {st.OIDCScopes},
 		"oidc_groups_claim": {st.OIDCGroupsClaim},
 		"oidc_button_label": {st.OIDCButtonLabel},
+		"oidc_roles_claim":  {st.OIDCRolesClaim},
+		"oidc_admin_role":   {st.OIDCAdminRole},
+		"oidc_editor_role":  {st.OIDCEditorRole},
 		"smtp_host":         {st.SMTPHost},
 		"smtp_port":         {strconv.Itoa(st.SMTPPort)},
 		"smtp_security":     {st.SMTPSecurity},
@@ -55,6 +58,12 @@ func adminSettingsForm(st *store.Settings) url.Values {
 	}
 	if st.OIDCEnabled {
 		f.Set("oidc_enabled", "on")
+	}
+	if st.EntraGroupNames {
+		f.Set("entra_group_names", "on")
+	}
+	if st.OIDCAppRoles {
+		f.Set("oidc_app_roles", "on")
 	}
 	return f
 }
@@ -72,7 +81,7 @@ func TestAdminAccessControl(t *testing.T) {
 	e := newTestEnv(t)
 	pages := []string{"/admin", "/admin/settings", "/admin/services", "/admin/services/new", "/admin/groups",
 		"/admin/users", "/admin/notifications"}
-	posts := []string{"/admin/settings", "/admin/settings/test-email", "/admin/services", "/admin/groups"}
+	posts := []string{"/admin/settings", "/admin/settings/test-email", "/admin/services", "/admin/groups", "/admin/groups/names"}
 
 	for _, p := range pages {
 		if r := e.get(p); r.Status != http.StatusSeeOther || !strings.HasPrefix(r.Location, "/login") {
@@ -150,6 +159,7 @@ func TestAdminSettingsSave(t *testing.T) {
 		OIDCEnabled: true, OIDCIssuer: "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0",
 		OIDCClientID: "client-1", OIDCClientSecret: "very-secret-1", OIDCScopes: "openid profile email",
 		OIDCGroupsClaim: "groups", OIDCButtonLabel: "Sign in with Microsoft",
+		OIDCRolesClaim: "roles", OIDCAdminRole: "Admin", OIDCEditorRole: "Editor",
 		SMTPHost: "smtp.example.com", SMTPPort: 465, SMTPSecurity: "tls", SMTPUsername: "mailer",
 		SMTPPassword: "mail-pass-1", SMTPFrom: "IT Status <status@example.com>",
 		LocalLoginEnabled: true, MailMethod: store.MailSMTP,

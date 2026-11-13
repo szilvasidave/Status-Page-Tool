@@ -1,7 +1,7 @@
 // Package msgraph is a small Microsoft Graph client that uses the client
 // credentials of an app registration in Microsoft Entra ID (the one of the
 // single sign-on settings). The status page uses it to send e-mail
-// (SendMail).
+// (SendMail) and to look up the names of groups (GroupNames).
 package msgraph
 
 import (
@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,8 @@ const (
 	timeout = 30 * time.Second // per request (access token or Microsoft Graph)
 	// maxErrorBody limits how much of an error response is read.
 	maxErrorBody = 64 << 10
+	// maxResponseBody limits how much of a successful response is read.
+	maxResponseBody = 4 << 20
 )
 
 // Client calls Microsoft Graph with an access token from the client
@@ -204,6 +207,120 @@ func userPath(id string) string {
 		return "/users('" + url.PathEscape(strings.ReplaceAll(id, "'", "''")) + "')"
 	}
 	return "/users/" + url.PathEscape(id)
+}
+
+// MaxGroupIDs is the number of group IDs GroupNames looks up with one
+// request: Microsoft Graph allows at most 15 values for the "in" operator of
+// a filter.
+const MaxGroupIDs = 15
+
+// maxGroupPages limits the pages of one GroupNames request (there is only
+// one: a page holds up to 100 groups).
+const maxGroupPages = 5
+
+// groupList is the response of GET /groups.
+type groupList struct {
+	Value []struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"displayName"`
+	} `json:"value"`
+	NextLink string `json:"@odata.nextLink"`
+}
+
+// GroupNames returns the display names of the groups with the given object
+// IDs, by ID in lower case, with GET
+// /groups?$filter=id in (…)&$select=id,displayName (MaxGroupIDs per
+// request). IDs that are not GUIDs are skipped; IDs that Microsoft Entra ID
+// does not know as groups (e.g. deleted groups) are missing from the
+// result. The app registration needs the application permission
+// GroupMember.Read.All. An error response of Microsoft Graph is returned as
+// *Error, and no names are returned with an error.
+func (c *Client) GroupNames(ctx context.Context, ids []string) (map[string]string, error) {
+	var valid []string
+	for _, id := range ids {
+		// Only GUIDs: the IDs are put into the filter expression.
+		if id = strings.ToLower(strings.TrimSpace(id)); isGUID(id) && !slices.Contains(valid, id) {
+			valid = append(valid, id)
+		}
+	}
+	names := make(map[string]string, len(valid))
+	for chunk := range slices.Chunk(valid, MaxGroupIDs) {
+		q := url.Values{}
+		q.Set("$filter", "id in ('"+strings.Join(chunk, "', '")+"')")
+		q.Set("$select", "id,displayName")
+		// Spaces as %20: OData does not read "+" as a space everywhere ("+"
+		// itself is encoded as %2B).
+		next := c.graphURL + "/v1.0/groups?" + strings.ReplaceAll(q.Encode(), "+", "%20")
+		for page := 0; next != ""; page++ {
+			if page == maxGroupPages {
+				return nil, errors.New("Microsoft Graph returned more pages of groups than expected")
+			}
+			// A next page link must not take the access token elsewhere.
+			if !strings.HasPrefix(next, c.graphURL+"/") {
+				return nil, errors.New("Microsoft Graph returned a next page link to another server")
+			}
+			var list groupList
+			if err := c.get(ctx, next, &list); err != nil {
+				return nil, err
+			}
+			for _, g := range list.Value {
+				names[strings.ToLower(g.ID)] = strings.TrimSpace(g.DisplayName)
+			}
+			next = list.NextLink
+		}
+	}
+	return names, nil
+}
+
+// isGUID reports whether s is a GUID in lower case
+// (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx), the form of object IDs.
+func isGUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// get requests the absolute URL u and decodes the JSON response into v. An
+// error response is returned as *Error.
+func (c *Client) get(ctx context.Context, u string, v any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	tok, err := c.accessToken(ctx)
+	if err != nil {
+		return err
+	}
+	tok.SetAuthHeader(req)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return requestError(ctx, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return readError(resp, time.Now())
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBody)).Decode(v); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return requestError(ctx, ctxErr)
+		}
+		return fmt.Errorf("could not read the response of Microsoft Graph: %w", err)
+	}
+	return nil
 }
 
 // post sends v as JSON. A 2xx response is success; its body is ignored.

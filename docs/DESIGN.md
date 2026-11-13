@@ -28,6 +28,9 @@ Later feedback:
 12. Easier forms: a time zone select, a category select for services.
 13. Each company can brand it: logos and colours for light and dark mode; no
     e-mail templating.
+14. Groups from Microsoft Entra ID show their names, not just their object
+    IDs, so that admins can assign roles and services; roles can also be
+    assigned in Entra ID with app roles.
 
 ## Architecture
 
@@ -45,7 +48,9 @@ internal/store         all application SQL; models; pure status computation (sta
 internal/secret        AES-GCM encryption of stored secrets and cookies, random tokens
 internal/auth          sessions, CSRF, local admin login (and its switch), OIDC login + group memberships at login
 internal/scim          SCIM 2.0 endpoint /scim/v2 for user and group provisioning from Microsoft Entra ID
-internal/msgraph       Microsoft Graph client: client-credentials token of the SSO app registration, sendMail
+internal/msgraph       Microsoft Graph client: client-credentials token of the SSO app registration, sendMail,
+                       group names
+internal/groupnames    worker that looks up the names of groups (Entra ID object IDs) with Microsoft Graph
 internal/notify        e-mail outbox, rendering, delivery with Microsoft Graph (default) or SMTP (go-mail),
                        maintenance start/end mails
 internal/theme         branding (leaf package, pure functions): colour tokens of light and dark mode derived
@@ -63,7 +68,10 @@ the connection and privilege checks of `internal/setup` and `tools/devseed`.
 The former `internal/directory` (a Microsoft Graph pull of group members) was
 removed; migration 2 deletes its setting and adds the provisioning columns,
 migration 3 adds `users.email_from_user_name`, migration 4 the table
-`brand_images` (logos and favicon; `{{BLOB}}` is `BLOB` or `BYTEA`).
+`brand_images` (logos and favicon; `{{BLOB}}` is `BLOB` or `BYTEA`),
+migration 5 `idp_groups.directory_name` and `directory_checked_at` (group
+names from Microsoft Entra ID; it clears the names that only repeat the
+external id, except those of provisioned groups) and `users.app_roles`.
 
 ## Key decisions
 
@@ -110,8 +118,16 @@ migration 3 adds `users.email_from_user_name`, migration 4 the table
   with the header `X-Status-Page: ok` counts (redirects are not followed),
   so that another program on the port does not, and a stopped service fails.
 * **Roles**: `viewer` (any signed-in user), `editor`, `admin`. Roles are
-  assigned to IdP *groups* in the admin UI (Groups page). A user's role is the
-  highest role of their groups, computed on every request. The local admin
+  assigned to IdP *groups* in the admin UI (Groups page), or with *app
+  roles*: every sign-in stores the values of the roles claim
+  (`Settings.OIDCRolesClaim`, default `roles`) in `users.app_roles` (JSON
+  array; trimmed, without duplicates, at most 100 values of at most 256
+  characters), and while `Settings.OIDCAppRoles` is on, `Settings.AppRole`
+  maps them to a role (`OIDCAdminRole`, default `Admin`, then
+  `OIDCEditorRole`, default `Editor`; case-insensitive; "" = none). A user's
+  role is the highest role of their groups and app roles, computed on every
+  request, so turning app roles off or changing the values applies at once;
+  an assignment in the IdP applies at the next sign-in. The local admin
   account is always admin. Failed local sign-ins are limited (in memory) to
   10 per 15 minutes per client address and user name.
 * **Local administrator**: exactly one break-glass account; there is no other
@@ -121,9 +137,11 @@ migration 3 adds `users.email_from_user_name`, migration 4 the table
   password (other sessions are signed out).
 * **Local sign-in switch**: `Settings.LocalLoginEnabled` (settings key
   `local_login_enabled`, default true). It can only be turned off while OIDC
-  is enabled and configured (issuer, client ID, client secret) and a group
-  has the admin role (`store.CheckLocalLoginOff`, used by the settings page
-  and `statuspage local-login disable`); the same check stops OIDC from being
+  is enabled and configured (issuer, client ID, client secret) and somebody
+  can sign in as admin with it (`store.HasSSOAdmin`: a group has the admin
+  role, or, with app roles on, an active user's stored app roles give admin;
+  `store.CheckLocalLoginOff`, used by the settings page and `statuspage
+  local-login disable`); the same check stops OIDC, or app roles, from being
   turned off while the switch is off. While off: `auth.LoginLocal` returns
   `ErrLocalLoginOff` (POST /login → 403) before the limiter and the password
   check; `loadIdentity` ignores sessions of local admins; the sign-in page
@@ -132,8 +150,9 @@ migration 3 adds `users.email_from_user_name`, migration 4 the table
   and, on Windows, the program path), and when it sees a browser that holds
   a local-admin session it ends that session and explains why. While it is
   off, Admin → Groups refuses to take the admin role from, or delete, the
-  only group that has it (`store.AdminGroupCount`; 422 on save, error flash
-  on delete). `statuspage local-login enable|disable|status` writes only
+  only group that has it unless an app role admin exists
+  (`store.HasSSOAdmin` without that group; 422 on save, error flash on
+  delete). `statuspage local-login enable|disable|status` writes only
   that key (`store.SetLocalLoginEnabled`) and deletes the local-admin
   sessions when the value changes; a running server picks it up through the
   settings cache. The settings page deletes them too when it turns the
@@ -202,7 +221,12 @@ migration 3 adds `users.email_from_user_name`, migration 4 the table
     groups* (the IdP must be configured to send it). Memberships stay
     unchanged only on Entra group overage (`_claim_names`/`hasgroups`) or
     when the userinfo request failed. A claim of an unexpected type is
-    logged and treated as no groups.
+    logged and treated as no groups. The roles claim is read the same way
+    and replaces the user's app roles at every sign-in, also while app roles
+    are off (so that turning them on uses those of the last sign-in, not
+    older ones); userinfo is asked for it only while they are on. When the
+    userinfo request fails, the user has no app roles until the next
+    sign-in (fail closed), while the group memberships stay.
   * Without provisioning only users who signed in at least once are known
     (and notified), with the groups of their last sign-in. Admins can remove
     a user who is not provisioned on Admin → Users (not the local admin); it
@@ -216,6 +240,31 @@ migration 3 adds `users.email_from_user_name`, migration 4 the table
     or before provisioning takes it over. The Groups page and the service
     form list provisioned groups even without a role or services; group
     display names have at most 256 characters, like in Entra ID and SCIM.
+  * **Group names** (`internal/groupnames`): the Entra groups claim holds
+    object IDs only (names only for groups assigned to the app, and then no
+    IDs), so groups keep the object ID as `external_id` and get their name
+    from Microsoft Graph as `directory_name` while `Settings.EntraGroupNames`
+    is on and OIDC is configured with a client secret
+    (`Settings.GroupNamesActive`). `GET /v1.0/groups?$filter=id in
+    (…)&$select=id,displayName` with up to 15 IDs per request (the limit of
+    `in`; only GUIDs go into the filter; spaces as `%20`), application
+    permission GroupMember.Read.All. `idp_groups.name` holds only a name
+    given by an admin or by provisioning: `Group.DisplayName` = name, else
+    directory name, else external id (also the SQL order); the edit page
+    stores a name equal to the directory name or the id as "", so that the
+    group follows renames. The worker (`Resolver.Run`) looks up the groups
+    that are not provisioned, have a GUID as external id and were not looked
+    up for 24 hours (`store.GroupsForNameLookup`): at its start, hourly and
+    2 s after `Wake` (after every OIDC sign-in and settings save), and
+    stores the names after each request (`SetGroupDirectoryNames`; a group
+    that is not found keeps its last name). After a failure it pauses for an
+    hour (Retry-After, at most an hour, when throttled) while issuer, client
+    ID and client secret stay the same; the last outcome is shown on Admin →
+    Groups, whose *Look up names now* (`LookUpAll`, 25 s, then the worker
+    goes on) ignores the pause and the 24 hours. Adding a group by object ID
+    looks it up at once (`LookUpGroup`, 10 s) and warns if Entra ID does not
+    know it. A lookup whose context ends (shutdown, request time) records
+    neither a success nor a failure. One lookup runs at a time.
 * **SCIM endpoint** (`/scim/v2`, Tenant URL `<Base URL>/scim/v2`): bearer
   token only – 32 random bytes base64url, generated in Admin → Settings,
   stored as SHA-256 hex (`Settings.SCIMTokenHash`) and compared in constant
@@ -483,7 +532,8 @@ Editors: `/manage…`. Admins: `/admin/settings` (also `POST
 provisioning token and redirect to the settings page, which shows it once –
 and `POST /admin/settings/scim-token/delete` – turn provisioning off),
 `/admin/branding` (`POST` multipart; `POST /admin/branding/reset` restores
-the defaults), `/admin/services`, `/admin/groups`, `/admin/users` (`POST
+the defaults), `/admin/services`, `/admin/groups` (`POST /admin/groups/names`
+looks up the names of all groups in Entra ID), `/admin/users` (`POST
 /admin/users/{id}/delete` removes a user who is not provisioned),
 `/admin/notifications`.
 Provisioning: `/scim/v2/…` (`Users`, `Groups`, `ServiceProviderConfig`,

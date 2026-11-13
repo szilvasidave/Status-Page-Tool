@@ -187,3 +187,74 @@ func TestFakeGraphFailures(t *testing.T) {
 		t.Errorf("unknown sender: %d %s", status, resp)
 	}
 }
+
+func get(t *testing.T, rawURL, token string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, rawURL, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// The groups endpoint checks the token and the query like Microsoft Graph
+// and reports requests the status page must not send.
+func TestFakeGraphGroups(t *testing.T) {
+	rec := &recorder{TB: t}
+	s := Start(rec)
+	const a, b = "0000000a-0000-4000-8000-000000000000", "0000000b-0000-4000-8000-000000000000"
+	s.SetGroup(strings.ToUpper(a), "IT Ops")
+	query := func(filter, sel string) string {
+		q := url.Values{"$filter": {filter}, "$select": {sel}}
+		return s.URL() + "/v1.0/groups?" + strings.ReplaceAll(q.Encode(), "+", "%20")
+	}
+	ok := query("id in ('"+a+"', '"+b+"')", "id,displayName")
+
+	if status, _ := get(t, ok, ""); status != 401 {
+		t.Errorf("no token: status %d, want 401", status)
+	}
+	token := getToken(t, s)
+	status, body := get(t, ok, token)
+	if status != 200 || !strings.Contains(body, `"displayName":"IT Ops"`) || strings.Contains(body, b) {
+		t.Errorf("groups: %d %s", status, body)
+	}
+	if errs := rec.take(); len(errs) != 0 {
+		t.Errorf("valid request reported: %q", errs)
+	}
+
+	var many []string
+	for i := 0; i < 16; i++ {
+		many = append(many, fmt.Sprintf("'%08x-0000-4000-8000-000000000000'", i))
+	}
+	for name, u := range map[string]string{
+		"plus for space": s.URL() + "/v1.0/groups?" + url.Values{"$filter": {"id in ('" + a + "')"}, "$select": {"id,displayName"}}.Encode(),
+		"select":         query("id in ('"+a+"')", "*"),
+		"filter":         query("displayName eq 'IT Ops'", "id,displayName"),
+		"16 IDs":         query("id in ("+strings.Join(many, ", ")+")", "id,displayName"),
+	} {
+		if status, _ := get(t, u, token); status != 400 {
+			t.Errorf("%s: status %d, want 400", name, status)
+		}
+		if errs := rec.take(); len(errs) != 1 {
+			t.Errorf("%s: reported %q, want one error", name, errs)
+		}
+	}
+
+	s.FailGroupsNext(GroupsDenied())
+	if status, body := get(t, ok, token); status != 403 || !strings.Contains(body, "Authorization_RequestDenied") {
+		t.Errorf("injected failure: %d %s", status, body)
+	}
+	s.RemoveGroup(a)
+	if status, body := get(t, ok, token); status != 200 || strings.Contains(body, a) {
+		t.Errorf("removed group: %d %s", status, body)
+	}
+	if requests, ids := s.GroupRequests(); requests != 3 || ids != 6 {
+		t.Errorf("GroupRequests = %d, %d; want 3, 6", requests, ids)
+	}
+}

@@ -100,9 +100,10 @@ func cmdLocalLogin(args []string, stdout, stderr io.Writer) error {
 		case errors.Is(err, store.ErrSSONotConfigured):
 			return errors.New("sign-in with the local administrator account cannot be turned off while single sign-on is not set up: " +
 				"enable and configure it in Admin > Settings first (issuer URL, client ID and client secret)")
-		case errors.Is(err, store.ErrNoAdminGroup):
+		case errors.Is(err, store.ErrNoAdmin):
 			return errors.New("sign-in with the local administrator account cannot be turned off while no group has the Administrator role: " +
-				"give a group the Administrator role in Admin > Groups first, so that somebody can still sign in as an administrator")
+				"give a group the Administrator role in Admin > Groups first (or, with roles from app roles, sign in once with the " +
+				"app role for administrators), so that somebody can still sign in as an administrator")
 		case err != nil:
 			return err
 		}

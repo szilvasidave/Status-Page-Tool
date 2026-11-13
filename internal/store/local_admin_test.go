@@ -63,11 +63,11 @@ func TestCheckLocalLoginOff(t *testing.T) {
 		st.OIDCEnabled, st.OIDCClientSecret = true, ""
 		want("no client secret", ErrSSONotConfigured)
 		st.OIDCClientSecret = "secret"
-		want("no groups", ErrNoAdminGroup)
+		want("no groups", ErrNoAdmin)
 
 		g := mustGroup(t, s, "editors", "Editors")
 		check(t, s.UpdateGroup(ctx, g.ID, g.Name, RoleEditor))
-		want("only an editor group", ErrNoAdminGroup)
+		want("only an editor group", ErrNoAdmin)
 		check(t, s.UpdateGroup(ctx, g.ID, g.Name, RoleAdmin))
 		want("administrator group", nil)
 	})

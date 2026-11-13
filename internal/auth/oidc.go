@@ -115,8 +115,9 @@ func (m *Manager) StartOIDC(w http.ResponseWriter, r *http.Request, returnTo str
 }
 
 // FinishOIDC handles the redirect back from the identity provider: verifies
-// state, exchanges the code, verifies the ID token, updates the user and its
-// groups, starts a session and returns the local path to redirect to.
+// state, exchanges the code, verifies the ID token, updates the user (with
+// its app roles) and its groups, starts a session and returns the local path
+// to redirect to.
 func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, error) {
 	ctx := r.Context()
 	saved, ok := m.readOIDCState(r)
@@ -188,25 +189,42 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 	user := oidcUserFromClaims(claims)
 	user.Subject = idt.Subject
 
-	groupsClaim := strings.TrimSpace(st.OIDCGroupsClaim)
-	if groupsClaim == "" {
-		groupsClaim = "groups"
-	}
+	groupsClaim := claimName(st.OIDCGroupsClaim, "groups")
+	rolesClaim := claimName(st.OIDCRolesClaim, "roles")
 	// Without a groups claim the user is in no groups (providers leave an
 	// empty claim out), unless the groups are unknown: Entra ID signals that
 	// they did not fit into the token (overage), or userinfo failed.
-	groups, found := m.claimStrings(claims, groupsClaim)
+	groups, found := m.claimStrings(claims, groupsClaim, claimGroups)
 	overage := groupOverage(claims, groupsClaim)
+	// Without a roles claim the user has no app roles; also when they are
+	// unknown because userinfo failed, as they grant roles (fail closed).
+	// They are recorded even while roles from app roles are off, so that
+	// turning it on uses those of the last sign-in, not older ones; only then
+	// is userinfo read for them, though (Entra ID has them in the ID token).
+	roles, rolesFound := m.claimStrings(claims, rolesClaim, claimRoles)
+	needGroups := !found && !overage
+	needRoles := !rolesFound && st.OIDCAppRoles
 	infoFailed := false
-	if !found && !overage && c.provider.UserInfoEndpoint() != "" {
+	if (needGroups || needRoles) && c.provider.UserInfoEndpoint() != "" {
 		info, err := m.userInfo(hctx, c, tok, idt.Subject)
 		if err != nil {
-			infoFailed = true
-			m.log.Warn("OIDC: could not read the userinfo endpoint; group memberships are left unchanged",
-				"subject", idt.Subject, "err", err)
+			infoFailed = needGroups
+			msg := "OIDC: could not read the userinfo endpoint; group memberships are left unchanged"
+			switch {
+			case needGroups && needRoles:
+				msg += " and the user has no app roles until the next sign-in"
+			case needRoles:
+				msg = "OIDC: could not read the userinfo endpoint; the user has no app roles until the next sign-in"
+			}
+			m.log.Warn(msg, "subject", idt.Subject, "err", err)
 		} else {
-			groups, found = m.claimStrings(info, groupsClaim)
-			overage = groupOverage(info, groupsClaim)
+			if needGroups {
+				groups, found = m.claimStrings(info, groupsClaim, claimGroups)
+				overage = groupOverage(info, groupsClaim)
+			}
+			if !rolesFound {
+				roles, _ = m.claimStrings(info, rolesClaim, claimRoles)
+			}
 			fromInfo := oidcUserFromClaims(info)
 			if user.Email == "" {
 				user.Email = fromInfo.Email
@@ -223,6 +241,7 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 		}
 	}
 
+	user.AppRoles = roles
 	u, err := m.store.UpsertOIDCUser(ctx, user)
 	if errors.Is(err, store.ErrUserDeactivated) {
 		m.log.Info("OIDC: sign-in refused: the user was deactivated by provisioning", "subject", idt.Subject,
@@ -256,7 +275,7 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 	if err := m.StartSession(ctx, w, r, u.ID); err != nil {
 		return "", err
 	}
-	m.log.Info("OIDC login", "user", u.DisplayName(), "email", u.Email, "groups", len(groups), "ip", ClientIP(r))
+	m.log.Info("OIDC login", "user", u.DisplayName(), "email", u.Email, "groups", len(groups), "app_roles", u.AppRoles, "ip", ClientIP(r))
 	return SafeReturnTo(saved.ReturnTo), nil
 }
 
@@ -488,10 +507,25 @@ func isFalse(v any) bool {
 	return false
 }
 
+// claimName returns the configured claim name, or def if none is set.
+func claimName(configured, def string) string {
+	if name := strings.TrimSpace(configured); name != "" {
+		return name
+	}
+	return def
+}
+
+// What a claim read by claimStrings holds.
+const (
+	claimGroups = "groups"
+	claimRoles  = "roles"
+)
+
 // claimStrings returns the values of a claim that is an array of strings or
 // a single string. found is false if the claim is absent. A claim of another
-// type is logged and counts as an empty list.
-func (m *Manager) claimStrings(c map[string]any, name string) (values []string, found bool) {
+// type is logged (what: claimGroups or claimRoles) and counts as an empty
+// list.
+func (m *Manager) claimStrings(c map[string]any, name, what string) (values []string, found bool) {
 	switch v := c[name].(type) {
 	case nil:
 		return nil, false
@@ -508,7 +542,11 @@ func (m *Manager) claimStrings(c map[string]any, name string) (values []string, 
 		}
 		return values, true
 	default:
-		m.log.Warn("OIDC: the groups claim is neither a list of strings nor a string; the user is treated as a member of no groups",
+		consequence := "the user is treated as a member of no groups"
+		if what == claimRoles {
+			consequence = "the user is treated as having no app roles"
+		}
+		m.log.Warn("OIDC: the "+what+" claim is neither a list of strings nor a string; "+consequence,
 			"claim", name, "type", fmt.Sprintf("%T", v))
 		return nil, true
 	}

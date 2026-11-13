@@ -1,5 +1,5 @@
 // Package fakegraph is a fake Microsoft Entra ID token endpoint and
-// Microsoft Graph sendMail endpoint for tests.
+// Microsoft Graph sendMail and groups endpoints for tests.
 //
 // The token endpoint (POST /{tenant}/oauth2/v2.0/token) checks the client
 // credentials request and answers like Entra ID (e.g. AADSTS7000215 for a
@@ -8,7 +8,10 @@
 // which a sender that begins with "$" needs) checks the bearer token, the
 // sender mailbox in the path and the JSON body: one recipient, a subject, an
 // HTML or text body and "saveToSentItems": false. Accepted messages are
-// kept; failures (throttling, access denied, …) can be injected.
+// kept; failures (throttling, access denied, …) can be injected. The groups
+// endpoint (GET /v1.0/groups?$filter=id in (…)&$select=id,displayName)
+// checks the bearer token and the query (at most 15 IDs) and answers with
+// the groups added with SetGroup; failures can be injected (FailGroupsNext).
 //
 //	fg := fakegraph.Start(t) // also points internal/msgraph to the fake server
 //	// configure the application with the issuer fg.Issuer(), fg.ClientID,
@@ -30,6 +33,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/mail"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -92,6 +96,12 @@ func ServerError(status int) Failure {
 	return Failure{Status: status, Code: "UnknownError", Message: http.StatusText(status)}
 }
 
+// GroupsDenied is the answer of the groups endpoint when the app has no
+// permission to read groups (HTTP 403), e.g. no GroupMember.Read.All.
+func GroupsDenied() Failure {
+	return Failure{Status: http.StatusForbidden, Code: "Authorization_RequestDenied", Message: "Insufficient privileges to complete the operation."}
+}
+
 // Server is a running fake.
 type Server struct {
 	// Tenant, ClientID and ClientSecret of the app registration that may get
@@ -115,6 +125,11 @@ type Server struct {
 	recipients map[string]Failure       // answers for messages to these recipients (lower case)
 	respond    func(m Message) *Failure // decides about the other requests; nil accepts
 	received   chan struct{}            // signalled after every accepted message
+
+	groups        map[string]string // object ID (lower case) → display name
+	groupRequests int               // groups requests with a valid access token
+	groupIDs      int               // IDs asked for by them
+	groupFailures []Failure         // answers for the next groups requests
 }
 
 // Start starts the server on a random local port and points the Microsoft
@@ -131,11 +146,13 @@ func Start(t testing.TB) *Server {
 		tokens:       map[string]bool{},
 		recipients:   map[string]Failure{},
 		received:     make(chan struct{}, 1),
+		groups:       map[string]string{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /{tenant}/oauth2/v2.0/token", s.token)
 	mux.HandleFunc("POST /v1.0/users/{sender}/sendMail", s.sendMail)
 	mux.HandleFunc("POST /v1.0/{user}/sendMail", s.sendMail) // users('{sender}')
+	mux.HandleFunc("GET /v1.0/groups", s.listGroups)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("fakegraph: unexpected request %s %s", r.Method, r.URL)
 		graphError(w, Failure{Status: http.StatusBadRequest, Code: "BadRequest", Message: "Unsupported request."})
@@ -478,4 +495,109 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ------------------------------------------------------------------ groups
+
+// SetGroup adds a group with the object ID id, or renames it.
+func (s *Server) SetGroup(id, displayName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.groups[strings.ToLower(id)] = displayName
+}
+
+// RemoveGroup deletes the group with the object ID id.
+func (s *Server) RemoveGroup(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.groups, strings.ToLower(id))
+}
+
+// FailGroupsNext makes the next len(f) valid groups requests fail with f, in
+// order. A zero Failure answers its request normally, e.g. to make the second
+// request fail: FailGroupsNext(Failure{}, GroupsDenied()).
+func (s *Server) FailGroupsNext(f ...Failure) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.groupFailures = append(s.groupFailures, f...)
+}
+
+// GroupRequests returns the number of groups requests with a valid access
+// token (answered or failed) and the number of group IDs they asked for.
+func (s *Server) GroupRequests() (requests, ids int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.groupRequests, s.groupIDs
+}
+
+// groupFilter is the filter the status page sends: up to 15 object IDs.
+var (
+	groupFilter = regexp.MustCompile(`^id in \(('[0-9a-f-]{36}'(, )?)+\)$`)
+	groupID     = regexp.MustCompile(`'([0-9a-f-]{36})'`)
+)
+
+func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
+	auth, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.mu.Lock()
+	valid := ok && s.tokens[auth]
+	s.mu.Unlock()
+	if !valid {
+		graphError(w, Failure{Status: http.StatusUnauthorized, Code: "InvalidAuthenticationToken", Message: "Access token validation failure. Invalid audience."})
+		return
+	}
+	q := r.URL.Query()
+	filter := q.Get("$filter")
+	var ids []string
+	for _, m := range groupID.FindAllStringSubmatch(filter, -1) {
+		ids = append(ids, m[1])
+	}
+	problem := ""
+	switch {
+	case strings.Contains(r.URL.RawQuery, "+"):
+		problem = "the query encodes a space as +, which OData reads as a plus sign"
+	case q.Get("$select") != "id,displayName":
+		problem = fmt.Sprintf("$select = %q, want id,displayName", q.Get("$select"))
+	case !groupFilter.MatchString(filter):
+		problem = fmt.Sprintf("unexpected $filter %q", filter)
+	case len(ids) > 15:
+		problem = fmt.Sprintf("%d values for the in operator, at most 15 are allowed", len(ids))
+	}
+	if problem != "" {
+		s.t.Errorf("fakegraph: invalid groups request %s: %s", r.URL, problem)
+		graphError(w, Failure{Status: http.StatusBadRequest, Code: "Request_UnsupportedQuery", Message: problem})
+		return
+	}
+
+	type group struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"displayName"`
+	}
+	list := []group{}
+	s.mu.Lock()
+	s.groupRequests++
+	s.groupIDs += len(ids)
+	var f *Failure
+	if len(s.groupFailures) > 0 {
+		next := s.groupFailures[0]
+		s.groupFailures = s.groupFailures[1:]
+		if next.Status != 0 {
+			f = &next
+		}
+	}
+	if f == nil {
+		for _, id := range ids {
+			if name, found := s.groups[id]; found {
+				list = append(list, group{ID: id, DisplayName: name})
+			}
+		}
+	}
+	s.mu.Unlock()
+	if f != nil {
+		graphError(w, *f)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"@odata.context": "https://graph.microsoft.com/v1.0/$metadata#groups(id,displayName)",
+		"value":          list,
+	})
 }

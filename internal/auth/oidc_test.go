@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -987,7 +988,7 @@ func TestOIDCUserFromClaims(t *testing.T) {
 			store.OIDCUser{Email: "Eve@Corp.example.com", Name: "Eve", PrincipalName: "Eve@Corp.example.com"}},
 	}
 	for _, tc := range cases {
-		if got := oidcUserFromClaims(tc.claims); got != tc.want {
+		if got := oidcUserFromClaims(tc.claims); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%v → %+v, want %+v", tc.claims, got, tc.want)
 		}
 	}

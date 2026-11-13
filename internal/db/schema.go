@@ -183,6 +183,25 @@ CREATE TABLE brand_images (
 	updated_at   BIGINT NOT NULL
 );
 `,
+	// 5: group names from Microsoft Entra ID, and app roles.
+	//   idp_groups.directory_name       the group's display name in Microsoft
+	//                                   Entra ID, looked up with Microsoft Graph
+	//                                   (package groupnames). idp_groups.name is
+	//                                   from now on only a name given by an
+	//                                   administrator or by provisioning ('' =
+	//                                   none: the directory name, else the
+	//                                   external id is shown), so the names that
+	//                                   just repeat the external id are cleared
+	//   idp_groups.directory_checked_at when the directory name was last looked up
+	//   users.app_roles                 the values of the roles claim at the
+	//                                   user's last sign-in (a JSON array of
+	//                                   strings; '' = none)
+	`
+ALTER TABLE idp_groups ADD COLUMN directory_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE idp_groups ADD COLUMN directory_checked_at BIGINT;
+UPDATE idp_groups SET name = '' WHERE name = external_id AND provisioned = {{FALSE}};
+ALTER TABLE users ADD COLUMN app_roles TEXT NOT NULL DEFAULT '';
+`,
 }
 
 func (d *DB) dialect(sql string) string {

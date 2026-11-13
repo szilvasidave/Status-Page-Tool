@@ -77,6 +77,7 @@ func (s *Server) routes() {
 	m.Handle("POST /admin/services/{id}/delete", admin(s.handleServiceDelete))
 	m.Handle("GET /admin/groups", admin(s.handleGroups))
 	m.Handle("POST /admin/groups", admin(s.handleGroupCreate))
+	m.Handle("POST /admin/groups/names", admin(s.handleGroupNamesLookup))
 	m.Handle("GET /admin/groups/{id}", admin(s.handleGroupEdit))
 	m.Handle("POST /admin/groups/{id}", admin(s.handleGroupUpdate))
 	m.Handle("POST /admin/groups/{id}/delete", admin(s.handleGroupDelete))

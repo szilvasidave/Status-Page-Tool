@@ -2,7 +2,8 @@
 <h1>Users</h1>
 <p class="lead">Users and their groups come from the identity provider: users appear here when they sign in for the
   first time or when Microsoft Entra ID provisions them (<span class="badge">Provisioned</span>). Roles are assigned to
-  <a href="/admin/groups">groups</a>. Provisioned users are managed in Microsoft Entra ID: it deactivates them when they
+  <a href="/admin/groups">groups</a>{{if .Settings.OIDCAppRoles}} and with app roles (shown below the role, as of the user's last
+  sign-in){{end}}. Provisioned users are managed in Microsoft Entra ID: it deactivates them when they
   are disabled, deleted or unassigned there (<span class="badge badge-muted">Deactivated</span>: no e-mails, no sign-in)
   and removes them when it deletes them for good. Remove other users who left or changed teams to stop their e-mails;
   anybody who is still a member of a group at the identity provider comes back at their next sign-in.</p>
@@ -17,7 +18,8 @@
         <td>{{.DisplayName}}{{if .Provisioned}} <span class="badge">Provisioned</span>{{end}}{{if not .Active}} <span class="badge badge-muted">Deactivated</span>{{end}}
           {{- with .Username}}<div class="small muted mono">{{.}}</div>{{end}}</td>
         <td class="cell-wrap">{{with .Email}}{{.}}{{else}}<span class="muted">–</span>{{end}}</td>
-        <td>{{if gt .Role 1}}<span class="badge">{{.Role.Label}}</span>{{else}}<span class="muted">{{.Role.Label}}</span>{{end}}</td>
+        <td>{{if gt .Role 1}}<span class="badge">{{.Role.Label}}</span>{{else}}<span class="muted">{{.Role.Label}}</span>{{end}}
+          {{- if and $.Settings.OIDCAppRoles .AppRoles}}<div class="small muted">App roles: {{join .AppRoles ", "}}</div>{{end}}</td>
         <td class="cell-wrap">{{range $i, $g := .Groups}}{{if $i}}, {{end}}{{$g.Name}}{{else}}<span class="muted">–</span>{{end}}</td>
         <td>{{.SignIn}}</td>
         <td class="nowrap">{{with .LastLoginAt}}<time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}<span class="muted">never</span>{{end}}</td>

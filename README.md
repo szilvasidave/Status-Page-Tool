@@ -21,9 +21,12 @@ no runtime dependencies, installed on Windows with a normal setup wizard.
   affects the service. With Microsoft Entra ID, **SCIM provisioning** sends
   the members of the chosen groups to the status page, so people are notified
   even if they never signed in; with any provider, the groups claim updates
-  the groups of everybody who signs in.
-- **Roles per group:** *Viewer* (every signed-in user), *Editor* (posts
-  incidents and maintenance windows) and *Administrator* (configuration).
+  the groups of everybody who signs in. The names of Entra ID groups, whose
+  claim holds only object IDs, are looked up with Microsoft Graph.
+- **Roles per group or app role:** *Viewer* (every signed-in user), *Editor*
+  (posts incidents and maintenance windows) and *Administrator*
+  (configuration), given to groups in the web interface or assigned in
+  Microsoft Entra ID with app roles.
 - **E-mail** with Microsoft 365 through Microsoft Graph (default; uses the
   single sign-on app registration) or through any SMTP server.
 - **Branding:** your logo, favicon and colours for light and dark mode, set
@@ -44,6 +47,8 @@ only notification channel.
 - [Configuration in the web interface](#configuration-in-the-web-interface)
   - [Branding](#branding)
 - [Single sign-on](#single-sign-on)
+  - [Group names from Microsoft Entra ID](#group-names-from-microsoft-entra-id)
+  - [Roles from app roles](#roles-from-app-roles)
 - [How users and groups get into the status page](#how-users-and-groups-get-into-the-status-page)
 - [Roles and groups](#roles-and-groups)
 - [Services and notifications](#services-and-notifications)
@@ -366,7 +371,10 @@ with OpenID Connect* and enter the **issuer URL**, **client ID** and **client
 secret** (these three are shown also while sign-in is off, because
 [e-mail with Microsoft Graph](#microsoft-365-microsoft-graph) uses them too).
 **Scopes** default to `openid profile email`, the **groups claim** to
-`groups`; the **button label** is the text of the sign-in button.
+`groups`; the **button label** is the text of the sign-in button. **Look up
+group names in Microsoft Entra ID** and **Assign roles with app roles** are
+described in [Group names from Microsoft Entra ID](#group-names-from-microsoft-entra-id)
+and [Roles from app roles](#roles-from-app-roles).
 
 **Group memberships at sign-in.** At every sign-in the user's group
 memberships are replaced by the groups in the groups claim of the ID token
@@ -407,8 +415,11 @@ provisioning, not from the sign-in.
    - Groups claim: `groups`
 
    Group IDs in Entra ID are object IDs (GUIDs). Provisioning fills in the
-   names of the groups it provisions; for other groups you can type a display
-   name when you add or edit a group.
+   names of the groups it provisions; for the others, turn on
+   [Look up group names in Microsoft Entra ID](#group-names-from-microsoft-entra-id),
+   or type a display name when you add or edit a group.
+6. Optional: assign the roles in Entra ID with
+   [app roles](#roles-from-app-roles) instead of in **Admin → Groups**.
 
 This app registration is also used to
 [send e-mail with Microsoft Graph](#microsoft-365-microsoft-graph).
@@ -421,7 +432,81 @@ keeps the members of the provisioned groups up to date regardless. Without
 provisioning, choose *Groups assigned to the application* in step 4 and
 assign the relevant groups to the enterprise application of the app
 registration; note that this option only sends *direct* memberships, not
-nested groups.
+nested groups. [App roles](#roles-from-app-roles) have no such limit.
+
+### Group names from Microsoft Entra ID
+
+Microsoft Entra ID puts the **object IDs** of the user's groups into the
+groups claim, not their names (it can send names only for groups assigned to
+the application, and then no IDs). The status page identifies groups by
+these IDs – they never change, and provisioning uses them too – and looks up
+their names with Microsoft Graph:
+
+1. In the app registration open **API permissions → Add a permission →
+   Microsoft Graph → Application permissions**, add **GroupMember.Read.All**
+   and click **Grant admin consent for &lt;your organization&gt;**. It allows
+   reading the names and members of all groups; the status page reads only
+   the names of the groups it knows.
+2. In **Admin → Settings → Single sign-on** tick **Look up group names in
+   Microsoft Entra ID** and save.
+3. **Admin → Groups** shows the names, with the object IDs next to them; so
+   do the service form, **Admin → Users** and the users' account pages.
+   **Look up names now** looks up all names at once and reports the result,
+   e.g. a missing permission.
+
+When a sign-in records a new group, its name is looked up a few seconds
+later; every name is looked up again once a day, so that renamed groups
+follow. When you add a group by its object ID, its name is looked up at once,
+and you are warned if Microsoft Entra ID has no such group. A display name
+you give a group takes precedence over its name in Entra ID (leave it empty
+to show the name from Entra ID); the group page shows both. Provisioned groups
+get their names from provisioning and are not looked up; a group that Entra
+ID does not know (deleted, or the ID of another kind of object) keeps its
+last name, else it shows its ID. After a failure the lookup pauses for an
+hour (as long as Microsoft Graph asks when it is busy), unless the issuer,
+client ID or client secret change. The lookup needs outbound HTTPS to
+`login.microsoftonline.com` and `graph.microsoft.com`.
+
+### Roles from app roles
+
+Instead of, or as well as, giving groups a role in **Admin → Groups**, you can
+assign the roles in Microsoft Entra ID with *app roles*: the ID token then
+holds the values of the user's app roles in the `roles` claim.
+
+1. In the app registration open **App roles → Create app role** and create
+   these app roles, with **Allowed member types** *Users/Groups*:
+
+   | Display name | Value | Description |
+   |---|---|---|
+   | Status Page Administrator | `Admin` | Can change the settings, services and groups |
+   | Status Page Editor | `Editor` | Can post incidents and maintenance windows |
+
+   Values the status page does not know are ignored, so you can add e.g. a
+   *Status Page Viewer* (`Viewer`) for users who only read the status page
+   (every signed-in user is a viewer).
+2. In **Entra ID → Enterprise apps → the application → Users and groups →
+   Add user/group** assign users or groups to the app roles. Assigning groups
+   requires Microsoft Entra ID P1 or P2. Unless *Assignment required?* is set
+   to *Yes* in the application's properties, users without an assignment can
+   sign in as well, as viewers (or with the roles of their groups).
+3. In **Admin → Settings → Single sign-on** tick **Assign roles with app
+   roles**, check the values of the app roles for administrators and editors
+   (default `Admin` and `Editor`; upper and lower case do not matter; leave
+   one empty to give that role only to groups) and the roles claim (default
+   `roles`), and save.
+
+A user's role is the highest role of their groups and their app roles. The
+app roles are read at every sign-in, so a new or removed assignment in Entra
+ID applies at the user's next sign-in (sessions last up to 12 hours); turning
+the option off, or changing the values, applies at once. **Admin → Users**
+and the account page show the app roles of the user's last sign-in. The
+roles claim is read from the ID token, or from the userinfo endpoint if the
+ID token has none; if that endpoint cannot be read, the user has no app roles
+until their next sign-in.
+
+Other providers can send roles as well, e.g. Keycloak with a *User Client
+Role* mapper (*Add to ID token* on, *Multivalued* on, a token claim name such
+as `roles`).
 
 ### Keycloak
 
@@ -465,7 +550,9 @@ default) turns this sign-in off:
 
 - It can only be turned off while single sign-on is enabled and configured
   (issuer URL, client ID and client secret) and at least one group has the
-  Administrator role (**Admin → Groups**); otherwise saving shows an error.
+  Administrator role (**Admin → Groups**) – or, with
+  [roles from app roles](#roles-from-app-roles), somebody has signed in with
+  the app role for administrators; otherwise saving shows an error.
   For the same reason single sign-on cannot be turned off while the local
   sign-in is off.
 - While it is off, the sign-in page shows only the single sign-on button,
@@ -476,8 +563,10 @@ default) turns this sign-in off:
   Admin → Settings or on the command line, does not bring those sessions
   back: the local administrator signs in again.
 - While it is off, the only group with the Administrator role cannot be
-  given another role or deleted in **Admin → Groups**; give another group
-  the Administrator role first.
+  given another role or deleted in **Admin → Groups**, unless somebody has
+  signed in with the app role for administrators; give another group the
+  Administrator role first. Likewise, roles from app roles cannot be turned
+  off while they are the only way to sign in as an administrator.
 - **When single sign-on fails** (identity provider outage, expired client
   secret, no administrator group left), turn the local sign-in on again on
   the server, as administrator or root, e.g.
@@ -661,7 +750,8 @@ above.
 
 ## Roles and groups
 
-Roles are given to identity provider groups, not to individual users:
+Roles are given to identity provider groups, not to individual users – or,
+with Microsoft Entra ID, assigned with [app roles](#roles-from-app-roles):
 
 | Role          | Can                                                                 |
 |---------------|---------------------------------------------------------------------|
@@ -669,17 +759,18 @@ Roles are given to identity provider groups, not to individual users:
 | Editor        | additionally create and update incidents and maintenance windows (`/manage`) |
 | Administrator | additionally change settings, services and groups, see users and notifications, delete incidents and maintenance windows |
 
-A user's role is the highest role of their groups. **Admin → Groups** lists
-the groups that have a role or services, and all provisioned groups (badge
-*Provisioned*); the other groups – usually recorded from the members'
-sign-ins – are in the collapsed list *Other groups*. Open a group to choose
+A user's role is the highest role of their groups and their app roles.
+**Admin → Groups** lists the groups that have a role or services, and all
+provisioned groups (badge *Provisioned*); the other groups – usually recorded
+from the members' sign-ins – are in the collapsed list *Other groups*. Open a group to choose
 its role and the services its members are notified about. You can also add a
 group in advance by its ID as it appears in the groups claim (Entra ID object
 ID, Keycloak group name); provisioning takes such a group over.
 
 ![Group page](docs/screenshots/admin-group.png)
 
-**Admin → Users** lists the known users with their groups, role, sign-in
+**Admin → Users** lists the known users with their groups, role (with the
+app roles of their last sign-in, while roles from app roles are on), sign-in
 (*SSO*, *Never signed in* or *Local administrator*) and last sign-in, marked
 *Provisioned* or *Deactivated* where it applies. Administrators can remove a
 user who is not provisioned, e.g. someone who left the company, to stop their
@@ -1022,6 +1113,14 @@ statuspage local-login status -data /var/lib/statuspage
   proxy rule), only for the IP ranges of the AzureActiveDirectory service
   tag, and keep the web interface internal. The provisioning endpoint uses
   only its token: no cookies, no sessions.
+- **App registration.** Its client secret allows what the app registration
+  may do with Microsoft Graph: send e-mail (Mail.Send, or RBAC for
+  Applications) and, for group names, read all groups and their members
+  (GroupMember.Read.All). Grant only the permissions you use, and renew the
+  secret before it expires. Roles come from group memberships and app roles,
+  so whoever can change the members of a group with a role, or assign the
+  app roles of the enterprise application, decides who is an editor or
+  administrator.
 - **Logos and favicon** (`/brand/…`) can be read without signing in, even
   when public access is off (see [Branding](#branding)), so upload nothing
   confidential. Only images are accepted (SVG files only without scripts,

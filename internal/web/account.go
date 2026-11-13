@@ -18,6 +18,7 @@ type accountData struct {
 	User     *store.User
 	Role     store.Role
 	RoleHelp string
+	AppRoles []string        // the user's app roles, while roles from app roles are on
 	Groups   []store.Group   // SSO users only
 	Services []store.Service // services assigned to the user's groups
 
@@ -37,15 +38,20 @@ func (s *Server) accountData(r *http.Request) (*accountData, error) {
 	id := auth.FromContext(ctx)
 	d := &accountData{User: id.User, Role: id.Role, MinPasswordLength: auth.MinPasswordLength,
 		DetailsName: id.User.Name, DetailsUsername: id.User.Username, DetailsErrors: adminFormErrors{}}
+	source := " Your role is the highest role of your groups."
+	if s.settings(r).OIDCAppRoles {
+		source = " Your role is the highest role of your groups and app roles."
+		d.AppRoles = id.User.AppRoles
+	}
 	switch {
 	case id.User.IsLocalAdmin:
 		d.RoleHelp = "The local administrator account always has the Administrator role. Use it for the initial setup and when single sign-on is unavailable."
 	case id.Role >= store.RoleAdmin:
-		d.RoleHelp = "Administrators can post incidents and maintenance windows and change the configuration. Your role is the highest role of your groups."
+		d.RoleHelp = "Administrators can post incidents and maintenance windows and change the configuration." + source
 	case id.Role >= store.RoleEditor:
-		d.RoleHelp = "Editors can post incidents and maintenance windows. Your role is the highest role of your groups."
+		d.RoleHelp = "Editors can post incidents and maintenance windows." + source
 	default:
-		d.RoleHelp = "Viewers can see the status pages. Your role is the highest role of your groups."
+		d.RoleHelp = "Viewers can see the status pages." + source
 	}
 	if id.User.IsLocalAdmin {
 		return d, nil // not a member of identity provider groups
