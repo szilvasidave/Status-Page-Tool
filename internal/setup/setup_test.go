@@ -119,6 +119,34 @@ func TestCheckSQLiteErrors(t *testing.T) {
 	}
 }
 
+// TestApplySetupListenFile: "statuspage setup" without -listen, run after the
+// installer's database setup failed, keeps the installer's port (which setup
+// mode listens on and the firewall rule allows) instead of :8080 and removes
+// the hint file; -listen takes precedence.
+func TestApplySetupListenFile(t *testing.T) {
+	for _, tt := range []struct{ hint, listen, want string }{
+		{"\xef\xbb\xbf:9090\r\n", "", ":9090"},
+		{"junk", "", config.DefaultListen},
+		{":9090", ":9095", ":9095"},
+	} {
+		dataDir := t.TempDir()
+		hint := filepath.Join(dataDir, config.SetupListenFile)
+		if err := os.WriteFile(hint, []byte(tt.hint), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Apply(context.Background(), dataDir, Params{Driver: "sqlite", Listen: tt.listen})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Listen != tt.want {
+			t.Errorf("hint %q, -listen %q: listen = %q, want %q", tt.hint, tt.listen, cfg.Listen, tt.want)
+		}
+		if _, err := os.Stat(hint); !os.IsNotExist(err) {
+			t.Errorf("hint %q: %s not removed: %v", tt.hint, config.SetupListenFile, err)
+		}
+	}
+}
+
 func TestApplySQLite(t *testing.T) {
 	ctx := context.Background()
 	dataDir := filepath.Join(t.TempDir(), "data")

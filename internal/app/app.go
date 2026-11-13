@@ -168,11 +168,8 @@ func address(dataDir string, cfg *config.Config) (listen string, useTLS bool) {
 	if cfg != nil {
 		return cfg.Listen, cfg.TLSCert != "" && cfg.TLSKey != ""
 	}
-	if b, err := os.ReadFile(filepath.Join(dataDir, config.SetupListenFile)); err == nil {
-		l := strings.TrimSpace(string(config.TrimBOM(b)))
-		if _, _, err := net.SplitHostPort(l); err == nil {
-			return l, false
-		}
+	if l := config.SetupListen(dataDir); l != "" {
+		return l, false
 	}
 	return config.DefaultListen, false
 }

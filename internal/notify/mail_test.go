@@ -597,7 +597,7 @@ func TestSendDeliveredDespiteClosedConnection(t *testing.T) {
 	if errs[0] != nil {
 		t.Errorf("accepted message reported as failed: %v", errs[0])
 	}
-	if !errors.Is(err, errStopped) || !errors.Is(errs[1], errStopped) || !strings.Contains(err.Error(), "closed the connection") {
+	if !errors.Is(err, errConnClosed) || errors.Is(err, errStopped) || !errors.Is(errs[1], errConnClosed) || !strings.Contains(err.Error(), "closed the connection") {
 		t.Errorf("second message: %v (Send: %v), want not tried because the connection was closed", errs[1], err)
 	}
 	if n := len(srv.received()); n != 1 {
@@ -609,7 +609,7 @@ func TestSendDeliveredDespiteClosedConnection(t *testing.T) {
 	srv = &fakeSMTP{rejectNoop: true}
 	host, port = srv.start(t)
 	errs, err = Send(context.Background(), smtpSettings(host, port, "none"), msgs)
-	if err == nil || errors.Is(err, errStopped) || errs[0] != err || errs[1] != err {
+	if err == nil || errors.Is(err, errStopped) || errors.Is(err, errConnClosed) || errs[0] != err || errs[1] != err {
 		t.Errorf("connection check failed: %v, %v; want a connection error for every message", errs, err)
 	}
 }

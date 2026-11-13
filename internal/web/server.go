@@ -118,6 +118,9 @@ func (s *Server) wrapSetup(h http.Handler) http.Handler {
 	return h
 }
 
+// handleHealth answers "ok" when the server and its database work. The
+// header X-Status-Page tells "statuspage service start" that the status page
+// answered, not another program on the same port.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	if s.Store != nil {
@@ -126,6 +129,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	w.Header().Set("X-Status-Page", "ok")
 	fmt.Fprintln(w, "ok")
 }
 

@@ -63,7 +63,9 @@ the connection and privilege checks of `internal/setup` and `tools/devseed`.
   serves only `/setup` (choose SQLite or PostgreSQL, test connection, create
   tables). The Windows installer performs this step itself (custom wizard
   pages) by calling `statuspage.exe setup …`; if that fails it writes the
-  chosen port to `<data>/setup-listen.txt`, which setup mode listens on.
+  chosen port to `<data>/setup-listen.txt`, which setup mode listens on and
+  `statuspage setup` without `-listen` writes to `config.json`
+  (`config.SetupListen`).
   Afterwards `/setup` asks for the local administrator account (break-glass
   login, also used to configure OIDC). Opening `/setup` from a non-loopback
   address requires the setup token from `<data>/setup-token.txt`.
@@ -72,7 +74,9 @@ the connection and privilege checks of `internal/setup` and `tools/devseed`.
   the current exe and data directory (installer upgrades over a portable
   install). `service start`/`restart` poll `/healthz` for up to 15 s, because
   the service manager reports "running" before the server has opened the
-  database and the port; the installer relies on their exit code.
+  database and the port; the installer relies on their exit code. Only a 200
+  with the header `X-Status-Page: ok` counts (redirects are not followed),
+  so that another program on the port does not, and a stopped service fails.
 * **Roles**: `viewer` (any signed-in user), `editor`, `admin`. Roles are
   assigned to IdP *groups* in the admin UI (Groups page). A user's role is the
   highest role of their groups, computed on every request. The local admin
@@ -114,11 +118,14 @@ the connection and privilege checks of `internal/setup` and `tools/devseed`.
 * **Notifications**: e-mail only. Web handlers enqueue one row per recipient
   in the `notifications` outbox table; a worker delivers them and retries a
   failed delivery after 1, 5, 15 and 60 minutes before marking it failed.
-  When the server throttles or is unavailable, messages of the batch that
-  were not tried keep their attempts; a message the server accepted is never
-  marked failed or re-sent; results are recorded per message. Sent and
-  failed e-mails are deleted after 90 days; the admin list does not load the
-  bodies.
+  When the server throttles (temporary error: 1 minute pause) or closes the
+  connection (reconnect at once), messages of the batch (50 per connection)
+  that were not tried keep their attempts. A connection or sign-in failure
+  counts a failed attempt for every message of the batch, so after about 80
+  minutes of outage they are marked failed (outdated status mails are of
+  little value). A message the server accepted is never marked failed or
+  re-sent; results are recorded per message. Sent and failed e-mails are
+  deleted after 90 days; the admin list does not load the bodies.
   Recipients = known users with an e-mail who are members of a group
   assigned to an affected service. Sent on: incident created/updated (if
   "notify" ticked), maintenance scheduled/changed/cancelled (if ticked; a

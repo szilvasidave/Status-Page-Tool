@@ -70,7 +70,7 @@ program uses the port), the installer says so; the reason is in
 
 If the database setup fails during the installation, the service starts in
 setup mode on the chosen port and you can finish the database setup in the
-browser.
+browser (or with `statuspage setup`, which keeps that port).
 
 Unattended installation: `StatusPageSetup-<version>.exe /VERYSILENT` installs
 with SQLite on port 8080.
@@ -366,9 +366,13 @@ public access off so that everybody signs in.
 
 E-mails are queued in the database and delivered in the background. A failed
 delivery is retried after 1 minute, 5 minutes, 15 minutes and 1 hour; after
-that the e-mail is marked as *failed*. When the SMTP server throttles or is
-temporarily unavailable, the e-mails that were not tried yet wait without
-using up their retries, so none are lost; an e-mail the server has accepted
+that the e-mail is marked as *failed*. When the SMTP server throttles the
+delivery (the delivery pauses for a minute) or closes the connection (it
+reconnects at once), the e-mails that were not tried yet wait without using
+up their retries. When the SMTP server cannot be reached or rejects the
+sign-in, every e-mail of the batch being sent (up to 50) counts a failed
+attempt, so e-mails are marked as *failed* after about 80 minutes of outage:
+outdated status e-mails are of little use. An e-mail the server has accepted
 is never sent again. **Admin → Notifications** shows the latest e-mails with
 their delivery status and errors. Sent and failed e-mails are deleted after
 90 days.
@@ -455,7 +459,7 @@ next to the executable. Override with `-data DIR` or the environment variable
 | `statuspage.db` (+ `-wal`, `-shm`) | SQLite database |
 | `statuspage.log`, `statuspage.log.1` | log file (rotated at start when larger than 10 MB) |
 | `setup-token.txt` | setup token, only until the setup is complete |
-| `setup-listen.txt` | port for setup mode, only if the database setup in the installer failed |
+| `setup-listen.txt` | port for setup mode (and for `statuspage setup` without `-listen`), only if the database setup in the installer failed |
 
 **Backup.** Back up `config.json` and the database:
 - SQLite: stop the service and copy `statuspage.db`, or copy it online with
@@ -490,7 +494,8 @@ statuspage setup [-data DIR] (-params-file FILE | -db sqlite|postgres ...) [-che
       -pg-password PASSWORD   or environment variable STATUSPAGE_PG_PASSWORD
       -pg-sslmode MODE        disable, allow, prefer (default), require, verify-ca, verify-full
       -listen ADDR            web server address (default: the address in an existing
-                              config.json, otherwise :8080)
+                              config.json, else the port in setup-listen.txt left by
+                              the installer, otherwise :8080)
       -params-file FILE       read the settings from a JSON file instead (used by the installer)
       -check-only             only test, write nothing
       -result-file FILE       write "OK" or the error message to FILE
@@ -501,8 +506,9 @@ statuspage service install|uninstall|start|stop|restart|status [-data DIR]
       install    registers the service; on Windows an existing StatusPage
                  service is changed to run this program with DIR
       start, restart
-                 wait up to 15 seconds until the status page answers and
-                 fail (with the log file name) if it does not
+                 wait up to 15 seconds until the status page answers (another
+                 program on the port does not count) and fail (with the log
+                 file name) if it does not or the service stopped
       status     prints running, stopped or not installed
 
 statuspage reset-password -username NAME [-data DIR]

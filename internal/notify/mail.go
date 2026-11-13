@@ -33,9 +33,15 @@ const smtpTimeout = 15 * time.Second
 var testTLSConfig *tls.Config
 
 // errStopped marks the error of send when it stopped before the last
-// message because the SMTP server throttled the delivery or closed the
-// connection. The messages after the last reported one were not tried.
+// message because the SMTP server throttled the delivery. The messages after
+// the last reported one were not tried.
 var errStopped = errors.New("delivery stopped early")
+
+// errConnClosed marks the error of send when the SMTP server closed the
+// connection after at least one message was tried (e.g. a relay that takes
+// one message per connection). The messages after the last reported one
+// were not tried and can be sent over a new connection right away.
+var errConnClosed = errors.New("closed the connection")
 
 // Send delivers msgs over one SMTP connection using the SMTP settings.
 // It returns per-message errors (nil entries = delivered) and, if not all
@@ -59,8 +65,10 @@ func Send(ctx context.Context, st *store.Settings, msgs []Message) ([]error, err
 //     the first message: no message was tried;
 //   - ctx was cancelled;
 //   - the server answered with a temporary error that is not about the
-//     recipient, e.g. a rate limit (that message is reported with it), or
-//     it closed the connection: the error wraps errStopped.
+//     recipient, e.g. a rate limit (that message is reported with it): the
+//     error wraps errStopped;
+//   - the server closed the connection after a message: the error wraps
+//     errConnClosed.
 func send(ctx context.Context, st *store.Settings, msgs []Message, result func(i int, err error)) error {
 	if len(msgs) == 0 {
 		return nil
@@ -99,7 +107,7 @@ func send(ctx context.Context, st *store.Settings, msgs []Message, result func(i
 			if i == 0 {
 				return fmt.Errorf("SMTP server %s: %w", addr, err)
 			}
-			return fmt.Errorf("%w: SMTP server %s closed the connection: %w", errStopped, addr, err)
+			return fmt.Errorf("SMTP server %s %w: %w", addr, errConnClosed, err)
 		case errors.As(err, &se) && se.IsTemp() && se.Reason != mail.ErrSMTPRcptTo:
 			result(i, err)
 			return fmt.Errorf("%w: %w", errStopped, err)

@@ -198,8 +198,11 @@ const startTimeout = 15 * time.Second
 // waitUntilServing waits until the status page of data directory dir answers
 // on /healthz, so that a server that stops right after starting (port in
 // use, database unreachable, failed migration, …) is reported as an error
-// together with the log file. status reports the service state; a stopped
-// service fails at once.
+// together with the log file. Only a 200 response with the header
+// X-Status-Page (set by the status page's /healthz) counts, and redirects
+// are not followed, so that another program on the port does not count.
+// status reports the service state; a stopped service fails at once, even
+// if something answers.
 func waitUntilServing(status func() (service.Status, error), dir string, timeout time.Duration) error {
 	base, err := app.LocalURL(dir)
 	if err != nil {
@@ -210,19 +213,21 @@ func waitUntilServing(status func() (service.Status, error), dir string, timeout
 		Timeout: 2 * time.Second,
 		// Only checks that the server on this computer answers; its
 		// certificate is usually issued for another name.
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		Transport:     &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	deadline := time.Now().Add(timeout)
 	for {
-		resp, err := client.Get(base + "/healthz")
-		if err == nil {
+		serving := false
+		if resp, err := client.Get(base + "/healthz"); err == nil {
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return nil
-			}
+			serving = resp.StatusCode == http.StatusOK && resp.Header.Get("X-Status-Page") == "ok"
 		}
 		if st, err := status(); err == nil && st == service.StatusStopped {
 			return fmt.Errorf("the service stopped right after starting; see the log file %s", logFile)
+		}
+		if serving {
+			return nil
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("the service is running, but the status page does not answer at %s; see the log file %s (if the service uses another data directory, pass it with -data)", base, logFile)

@@ -50,7 +50,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) error {
 	pgUser := fs.String("pg-user", "statuspage", "PostgreSQL user")
 	pgPassword := fs.String("pg-password", "", "PostgreSQL password (default: env STATUSPAGE_PG_PASSWORD)")
 	pgSSLMode := fs.String("pg-sslmode", "prefer", "PostgreSQL SSL mode: "+strings.Join(setup.SSLModes, ", "))
-	listen := fs.String("listen", "", "address the web server listens on, e.g. :9090 (default: the address in an existing config.json, otherwise "+config.DefaultListen+")")
+	listen := fs.String("listen", "", "address the web server listens on, e.g. :9090 (default: the address in an existing config.json, else the port in "+config.SetupListenFile+" left by the installer, otherwise "+config.DefaultListen+")")
 	checkOnly := fs.Bool("check-only", false, "only test the settings, write nothing")
 	resultFile := fs.String("result-file", "", `write "OK" or the error message to this file (used by the installer)`)
 	if err := parseFlags(fs, args); err != nil {

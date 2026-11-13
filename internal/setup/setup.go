@@ -44,7 +44,8 @@ type Params struct {
 	SQLitePath string                `json:"sqlite_path,omitempty"` // optional; default <data>/statuspage.db
 	Postgres   config.PostgresParams `json:"postgres"`
 	// Listen is the web server address. Empty keeps the address of an
-	// existing config.json, or ":8080" for a new one.
+	// existing config.json, else uses the address in config.SetupListenFile
+	// (left by the installer), otherwise ":8080".
 	Listen string `json:"listen,omitempty"`
 }
 
@@ -112,15 +113,7 @@ func (p Params) Validate() error {
 }
 
 func validateListen(listen string) error {
-	_, port, err := net.SplitHostPort(listen)
-	if err == nil {
-		var n int
-		n, err = strconv.Atoi(port)
-		if err == nil && (n < 1 || n > 65535) {
-			err = errors.New("out of range")
-		}
-	}
-	if err != nil {
+	if !config.ValidListen(listen) {
 		return fmt.Errorf("invalid listen address %q: use a port such as \":8080\" or an address and port such as \"127.0.0.1:8080\"", listen)
 	}
 	return nil
@@ -150,7 +143,9 @@ func Check(ctx context.Context, dataDir string, p Params) error {
 // dataDir. A new secret key is generated unless config.json already exists,
 // in which case its secret key, TLS and log level settings (and its listen
 // address, unless p.Listen is set) are kept, so that encrypted settings stay
-// readable. Returns the written configuration.
+// readable. Without p.Listen and an existing listen address it uses the
+// address in config.SetupListenFile, if any. Returns the written
+// configuration.
 func Apply(ctx context.Context, dataDir string, p Params) (*config.Config, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
@@ -168,8 +163,12 @@ func Apply(ctx context.Context, dataDir string, p Params) (*config.Config, error
 			cfg.SecretKey = old.SecretKey
 		}
 		cfg.TLSCert, cfg.TLSKey, cfg.LogLevel = old.TLSCert, old.TLSKey, old.LogLevel
-		if keepListen && old.Listen != "" {
+	}
+	if keepListen {
+		if old != nil && old.Listen != "" {
 			cfg.Listen = old.Listen
+		} else if l := config.SetupListen(dataDir); l != "" {
+			cfg.Listen = l // the installer's port, which setup mode listens on
 		}
 	}
 	if err := config.EnsureDataDir(dataDir); err != nil {

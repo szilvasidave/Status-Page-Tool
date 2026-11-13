@@ -447,7 +447,8 @@ func TestNotifierRetryAndGiveUp(t *testing.T) {
 
 	// A connection error is a failed attempt for every e-mail. The delays
 	// after attempts 1-4 are 1 min, 5 min, 15 min and 1 h; the fifth failed
-	// attempt is the last one.
+	// attempt is the last one, so an outage of about 80 minutes marks the
+	// e-mails as failed (as README and DESIGN say).
 	for attempt, delay := range []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, 0} {
 		e.n.deliver(ctx)
 		for _, n := range e.outbox() {
@@ -573,8 +574,9 @@ func TestNotifierThrottled(t *testing.T) {
 }
 
 // TestNotifierDeliveredOnce: a server that closes the connection after
-// accepting an e-mail (so that the reset after it fails) gets every e-mail
-// exactly once, and none is marked as failed.
+// accepting an e-mail (so that the reset after it fails), like a relay that
+// takes one e-mail per connection, gets every e-mail exactly once and right
+// away (a new connection for each, no pause), and none is marked as failed.
 func TestNotifierDeliveredOnce(t *testing.T) {
 	e := newNotifyEnv(t)
 	srv := e.startSMTP(&fakeSMTP{dropAfterData: true})
@@ -586,9 +588,9 @@ func TestNotifierDeliveredOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for range 3 {
-		e.n.deliver(ctx)
-		e.clock = e.clock.Add(pauseAfterStop)
+	e.n.deliver(ctx)
+	if got := len(srv.received()); got != 3 {
+		t.Errorf("%d e-mails received at once, want 3", got)
 	}
 	e.clock = e.clock.Add(2 * time.Hour)
 	e.n.deliver(ctx)

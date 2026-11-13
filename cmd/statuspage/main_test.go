@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/kardianos/service"
 
+	"github.com/szilvasidave/status-page-tool/internal/app"
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
 	"github.com/szilvasidave/status-page-tool/internal/db"
@@ -110,35 +113,75 @@ func TestSetupSQLite(t *testing.T) {
 // TestWaitUntilServing: "service start" reports success only when the status
 // page answers, and an error with the log file when the service stops.
 func TestWaitUntilServing(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" {
-			http.NotFound(w, r)
-			return
-		}
-		fmt.Fprintln(w, "ok")
-	}))
-	defer srv.Close()
-	dir := t.TempDir()
-	cfg := &config.Config{Listen: strings.TrimPrefix(srv.URL, "http://"), DBDriver: config.DriverSQLite, SecretKey: config.NewSecretKey()}
-	if err := cfg.Save(dir); err != nil {
-		t.Fatal(err)
-	}
 	running := func() (service.Status, error) { return service.StatusRunning, nil }
 	stopped := func() (service.Status, error) { return service.StatusStopped, nil }
-
-	if err := waitUntilServing(running, dir, 5*time.Second); err != nil {
-		t.Fatalf("answering server: %v", err)
+	wantStopped := func(what, dir string, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), "stopped right after starting") || !strings.Contains(err.Error(), filepath.Join(dir, logFileName)) {
+			t.Errorf("%s, service stopped: %v", what, err)
+		}
 	}
 
-	srv.Close()
-	err := waitUntilServing(stopped, dir, 5*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "stopped right after starting") || !strings.Contains(err.Error(), filepath.Join(dir, logFileName)) {
-		t.Fatalf("stopped service: %v", err)
+	// The status page itself (in setup mode, on the installer's port).
+	dir := t.TempDir()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
+	addr := ln.Addr().String()
+	ln.Close()
+	if err := os.WriteFile(filepath.Join(dir, config.SetupListenFile), []byte(addr), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx, app.Options{DataDir: dir, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	}()
+	if err := waitUntilServing(running, dir, 10*time.Second); err != nil {
+		t.Errorf("status page: %v", err)
+	}
+	// Something answers (e.g. a status page started by hand), but the
+	// service stopped.
+	wantStopped("status page", dir, waitUntilServing(stopped, dir, 5*time.Second))
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Another program on the port: one that sends unknown paths to its login
+	// page, and one with its own /healthz.
+	for name, h := range map[string]http.HandlerFunc{
+		"redirect to login": func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/login" {
+				http.Redirect(w, r, "/login", http.StatusFound)
+				return
+			}
+			fmt.Fprintln(w, "<html>Sign in</html>")
+		},
+		"other health check": func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") },
+	} {
+		srv := httptest.NewServer(h)
+		dir := t.TempDir()
+		cfg := &config.Config{Listen: strings.TrimPrefix(srv.URL, "http://"), DBDriver: config.DriverSQLite, SecretKey: config.NewSecretKey()}
+		if err := cfg.Save(dir); err != nil {
+			t.Fatal(err)
+		}
+		wantStopped(name, dir, waitUntilServing(stopped, dir, 5*time.Second))
+		start := time.Now()
+		err := waitUntilServing(running, dir, time.Second)
+		if err == nil || !strings.Contains(err.Error(), "does not answer at "+srv.URL) || time.Since(start) > 10*time.Second {
+			t.Errorf("%s, service running: %v", name, err)
+		}
+		srv.Close()
+	}
+
+	// Nothing answers.
+	wantStopped("nothing on the port", dir, waitUntilServing(stopped, dir, 5*time.Second))
 	start := time.Now()
 	err = waitUntilServing(running, dir, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "does not answer at "+srv.URL) || time.Since(start) > 10*time.Second {
-		t.Fatalf("running service that does not answer: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "does not answer at http://"+addr) || time.Since(start) > 10*time.Second {
+		t.Errorf("running service that does not answer: %v", err)
 	}
 }
 
