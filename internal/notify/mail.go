@@ -13,6 +13,7 @@ import (
 	mail "github.com/wneessen/go-mail"
 	"github.com/wneessen/go-mail/smtp"
 
+	"github.com/szilvasidave/status-page-tool/internal/msgraph"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
@@ -21,7 +22,9 @@ type Message struct {
 	To      string // recipient address
 	Subject string
 	Text    string // plain text body
-	HTML    string // optional; if set the e-mail is multipart/alternative (Text + HTML)
+	// HTML is optional. If set, SMTP sends a multipart/alternative e-mail
+	// (Text + HTML) and Microsoft Graph sends the HTML body only.
+	HTML string
 }
 
 // smtpTimeout limits connecting to the SMTP server and every SMTP command.
@@ -32,35 +35,57 @@ const smtpTimeout = 15 * time.Second
 // certificates are always verified.
 var testTLSConfig *tls.Config
 
-// errStopped marks the error of send when it stopped before the last
-// message because the SMTP server throttled the delivery. The messages after
-// the last reported one were not tried.
+// errStopped marks the error of sendSMTP and sendGraph when they stopped
+// before the last message because the server throttled the delivery. The
+// messages after the last reported one were not tried.
 var errStopped = errors.New("delivery stopped early")
 
-// errConnClosed marks the error of send when the SMTP server closed the
+// errConnClosed marks the error of sendSMTP when the SMTP server closed the
 // connection after at least one message was tried (e.g. a relay that takes
 // one message per connection). The messages after the last reported one
 // were not tried and can be sent over a new connection right away.
 var errConnClosed = errors.New("closed the connection")
 
-// Send delivers msgs over one SMTP connection using the SMTP settings.
-// It returns per-message errors (nil entries = delivered) and, if not all
-// messages were tried, the reason (see send); the messages that were not
-// tried have that error too.
+// Send delivers msgs with the e-mail method of the settings: over one SMTP
+// connection, or with Microsoft Graph (one request per message, with a new
+// access token). It returns per-message errors (nil entries = delivered)
+// and, if not all messages were tried, the reason (see sendSMTP and
+// sendGraph); the messages that were not tried have that error too.
 func Send(ctx context.Context, st *store.Settings, msgs []Message) ([]error, error) {
 	errs := make([]error, len(msgs))
 	tried := 0
-	err := send(ctx, st, msgs, func(i int, e error) { errs[i], tried = e, i+1 })
+	err := sendWith(ctx, st, nil, msgs, func(i int, e error) { errs[i], tried = e, i+1 })
 	for i := tried; i < len(msgs); i++ {
 		errs[i] = err
 	}
 	return errs, err
 }
 
-// send delivers msgs over one SMTP connection and calls result right after
-// each message it tried, in order (err nil: the server accepted it), so
-// that the caller can record the result at once. It returns a non-nil error
-// if it did not try all messages:
+// sendWith delivers msgs with the e-mail method of the settings: sendSMTP,
+// or sendGraph with the Microsoft Graph client c (nil: a new client).
+func sendWith(ctx context.Context, st *store.Settings, c *msgraph.Client, msgs []Message, result func(i int, err error)) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	if st != nil && st.MailMethod == store.MailSMTP {
+		return sendSMTP(ctx, st, msgs, result)
+	}
+	if !st.GraphMailConfigured() {
+		return errors.New("e-mail is not configured: set the sender mailbox and the single sign-on app registration (issuer, client ID, client secret) in the settings")
+	}
+	if c == nil {
+		var err error
+		if c, err = newGraphClient(st); err != nil {
+			return err
+		}
+	}
+	return sendGraph(ctx, c, st.GraphSender, msgs, result)
+}
+
+// sendSMTP delivers msgs over one SMTP connection and calls result right
+// after each message it tried, in order (err nil: the server accepted it),
+// so that the caller can record the result at once. It returns a non-nil
+// error if it did not try all messages:
 //   - connecting or signing in failed, or the connection did not work for
 //     the first message: no message was tried;
 //   - ctx was cancelled;
@@ -69,7 +94,7 @@ func Send(ctx context.Context, st *store.Settings, msgs []Message) ([]error, err
 //     error wraps errStopped;
 //   - the server closed the connection after a message: the error wraps
 //     errConnClosed.
-func send(ctx context.Context, st *store.Settings, msgs []Message, result func(i int, err error)) error {
+func sendSMTP(ctx context.Context, st *store.Settings, msgs []Message, result func(i int, err error)) error {
 	if len(msgs) == 0 {
 		return nil
 	}

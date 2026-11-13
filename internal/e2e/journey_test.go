@@ -203,7 +203,7 @@ func (j *journey) settings() {
 	f.set("site_name", siteName).set("base_url", j.base).choose("timezone", berlinTZ).check("public_access", "")
 	f.check("oidc_enabled", "").set("oidc_issuer", j.idp.Issuer()).
 		set("oidc_client_id", j.idp.ClientID).set("oidc_client_secret", j.idp.ClientSecret)
-	f.set("smtp_host", j.smtp.Host()).set("smtp_port", strconv.Itoa(j.smtp.Port())).choose("smtp_security", "none").
+	f.choose("mail_method", "smtp").set("smtp_host", j.smtp.Host()).set("smtp_port", strconv.Itoa(j.smtp.Port())).choose("smtp_security", "none").
 		set("smtp_username", "").set("smtp_password", "").set("smtp_from", "IT Status <"+mailFrom+">")
 	p = f.post()
 	p.expectRedirect("/admin/settings")
