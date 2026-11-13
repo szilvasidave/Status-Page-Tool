@@ -43,7 +43,7 @@ func TestNetSMTP(t *testing.T) {
 // to the fake server and that multipart bodies are decoded.
 func TestNotifySend(t *testing.T) {
 	srv := Start(t)
-	st := &store.Settings{SMTPHost: srv.Host(), SMTPPort: srv.Port(), SMTPSecurity: "none", SMTPFrom: "Status <status@example.com>"}
+	st := &store.Settings{MailMethod: store.MailSMTP, SMTPHost: srv.Host(), SMTPPort: srv.Port(), SMTPSecurity: "none", SMTPFrom: "Status <status@example.com>"}
 	long := "https://status.example.com/incidents/12345?with=a&very=long&query=string&that=needs&soft=line&breaks=yes"
 	errs, err := notify.Send(context.Background(), st, []notify.Message{
 		{To: "a@example.com", Subject: "[Status] Update – Identified: Grüße", Text: "Line 1\nLink: " + long + "\n", HTML: "<p>html</p>"},

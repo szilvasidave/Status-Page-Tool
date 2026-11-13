@@ -2,7 +2,8 @@
 // members of the identity provider groups assigned to the affected services.
 // E-mails are written to the notifications outbox table and delivered by a
 // background worker (Run) so that sending never blocks a web request and
-// failed deliveries are retried.
+// failed deliveries are retried. They are sent with Microsoft Graph
+// (graph.go) or over SMTP (mail.go), as chosen in the settings.
 package notify
 
 import (
@@ -15,16 +16,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szilvasidave/status-page-tool/internal/msgraph"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
 const (
-	// batchSize is the number of e-mails delivered over one SMTP connection.
+	// batchSize is the number of e-mails delivered in one batch (over one
+	// SMTP connection).
 	batchSize = 50
 	// keepNotifications is how long sent and failed e-mails are kept.
 	keepNotifications = 90 * 24 * time.Hour
 	// pauseAfterStop is how long the delivery waits after the SMTP server
-	// throttled it (temporary error).
+	// throttled it (temporary error). Microsoft Graph says how long to wait
+	// (see sendGraph).
 	pauseAfterStop = time.Minute
 )
 
@@ -45,7 +49,10 @@ type Notifier struct {
 	maintenanceInterval time.Duration // "maintenance started/completed" check
 	cleanupInterval     time.Duration // removal of old e-mails
 
-	pausedUntil time.Time // no delivery before; only used by the worker (deliver)
+	// Only used by the worker (deliver):
+	pausedUntil time.Time       // no delivery before
+	graph       *msgraph.Client // Microsoft Graph client for graphFor, reused for its access token
+	graphFor    [3]string       // issuer, client ID and client secret of graph
 }
 
 // New creates a Notifier.
@@ -68,7 +75,7 @@ func New(st *store.Store, log *slog.Logger) *Notifier {
 // change when the editor ticked "notify subscribers". They look up the
 // recipients (members of groups assigned to the affected services), render
 // the e-mail and enqueue one message per recipient. They return the number of
-// queued e-mails. If SMTP is not configured they queue nothing and return 0.
+// queued e-mails. If e-mail is not configured they queue nothing and return 0.
 
 // IncidentCreated notifies about a new incident.
 func (n *Notifier) IncidentCreated(ctx context.Context, incidentID int64) (int, error) {
@@ -175,8 +182,9 @@ func (n *Notifier) queue(ctx context.Context, about string, serviceIDs []int64, 
 	return len(msgs), nil
 }
 
-// SendTestEmail sends a test e-mail synchronously with the current SMTP
-// settings and returns the delivery error, if any.
+// SendTestEmail sends a test e-mail synchronously with the current e-mail
+// settings and returns the delivery error, if any. With Microsoft Graph it
+// gets a new access token, so that permissions granted meanwhile apply.
 func (n *Notifier) SendTestEmail(ctx context.Context, to string) error {
 	to = strings.TrimSpace(to)
 	if to == "" {
@@ -199,14 +207,6 @@ func (n *Notifier) SendTestEmail(ctx context.Context, to string) error {
 // renderTestEmail renders the test e-mail sent from the settings page.
 func renderTestEmail(st *store.Settings) Email {
 	st = settingsOrDefault(st)
-	server := strings.TrimSpace(st.SMTPHost)
-	if st.SMTPPort != 0 {
-		server = net.JoinHostPort(server, strconv.Itoa(st.SMTPPort))
-	}
-	security := map[string]string{"starttls": "STARTTLS", "tls": "TLS", "none": "None"}[strings.ToLower(st.SMTPSecurity)]
-	if security == "" {
-		security = st.SMTPSecurity
-	}
 	v := emailView{
 		Subject:    subject(st, "Test e-mail"),
 		SiteName:   st.SiteName,
@@ -215,11 +215,25 @@ func renderTestEmail(st *store.Settings) Email {
 		Title:      "Test e-mail",
 		Intro:      "E-mail delivery works. Notifications will be sent with these settings.",
 		Facts: []emailFact{
+			{"Sent with", "Microsoft 365 (Microsoft Graph)"},
+			{"Sender", st.GraphSender},
+		},
+		Footer: "You receive this e-mail because an administrator sent a test e-mail from the settings page.",
+	}
+	if st.MailMethod == store.MailSMTP {
+		server := strings.TrimSpace(st.SMTPHost)
+		if st.SMTPPort != 0 {
+			server = net.JoinHostPort(server, strconv.Itoa(st.SMTPPort))
+		}
+		security := map[string]string{"starttls": "STARTTLS", "tls": "TLS", "none": "None"}[strings.ToLower(st.SMTPSecurity)]
+		if security == "" {
+			security = st.SMTPSecurity
+		}
+		v.Facts = []emailFact{
 			{"SMTP server", server},
 			{"Security", security},
 			{"Sender", st.SMTPFrom},
-		},
-		Footer: "You receive this e-mail because an administrator sent a test e-mail from the settings page.",
+		}
 	}
 	if base := baseURL(st); base != "" {
 		v.LinkURL = base + "/"
@@ -259,9 +273,10 @@ func (n *Notifier) Run(ctx context.Context) {
 }
 
 // deliver sends due e-mails in batches until none are left. It stops early
-// when the SMTP server cannot be reached; the next run tries again. After
-// the server throttled the delivery it waits pauseAfterStop; after the
-// server closed the connection it reconnects at once.
+// when the server (SMTP or Microsoft Graph) cannot be used; the next run
+// tries again. After the server throttled the delivery it pauses (see
+// sendBatch); after an SMTP server closed the connection it reconnects at
+// once.
 func (n *Notifier) deliver(ctx context.Context) {
 	for ctx.Err() == nil && !n.now().Before(n.pausedUntil) {
 		st, err := n.store.GetSettings(ctx)
@@ -283,14 +298,16 @@ func (n *Notifier) deliver(ctx context.Context) {
 	}
 }
 
-// sendBatch delivers the notifications over one SMTP connection and records
-// the result of each one right away, so that after a crash at most one
-// delivered e-mail is sent again. E-mails that were not tried (the server
-// throttled the delivery or closed the connection, or shutdown) keep their
-// attempts; if the server could not be reached or rejected the sign-in,
-// every e-mail counts a failed attempt. It reports whether the delivery may
-// go on right away: the batch was full, or the server closed the connection
-// after at least one e-mail (which was recorded, so this makes progress).
+// sendBatch delivers the notifications (over one SMTP connection, or one
+// Microsoft Graph request each) and records the result of each one right
+// away, so that after a crash at most one delivered e-mail is sent again.
+// E-mails that were not tried (the server throttled the delivery or closed
+// the connection, or shutdown) keep their attempts; if the server could not
+// be used at all (unreachable, sign-in or access token rejected, missing
+// permission, …) every remaining e-mail counts a failed attempt. It reports
+// whether the delivery may go on right away: the batch was full, or the
+// SMTP server closed the connection after at least one e-mail (which was
+// recorded, so this makes progress).
 func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []store.Notification) bool {
 	msgs := make([]Message, len(due))
 	for i, d := range due {
@@ -326,7 +343,7 @@ func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []stor
 	}
 
 	tried := 0
-	err := send(ctx, st, msgs, func(i int, sendErr error) {
+	err := n.send(ctx, st, msgs, func(i int, sendErr error) {
 		tried = i + 1
 		record(due[i], sendErr, true)
 	})
@@ -338,14 +355,19 @@ func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []stor
 		// The rest is sent over a new connection.
 		n.log.Debug("SMTP server closed the connection, reconnecting", "not_tried", len(due)-tried, "err", err)
 	case errors.Is(err, errStopped):
-		n.pausedUntil = n.now().Add(pauseAfterStop)
-		n.log.Warn("SMTP server throttled the delivery, pausing e-mail delivery",
-			"pause", pauseAfterStop, "not_tried", len(due)-tried, "err", err)
+		pause := pauseAfterStop
+		var pe *pauseError
+		if errors.As(err, &pe) {
+			pause = pe.pause // Microsoft Graph: its Retry-After
+		}
+		n.pausedUntil = n.now().Add(pause)
+		n.log.Warn("the server throttled the e-mail delivery, pausing it",
+			"pause", pause, "not_tried", len(due)-tried, "err", err)
 	default:
-		// Could not connect or sign in: a failed attempt for every e-mail,
-		// logged once. During a longer outage the e-mails are given up
-		// after the last retry, as outdated status e-mails are of little
-		// use.
+		// The server could not be used: a failed attempt for every
+		// remaining e-mail, logged once. During a longer outage the
+		// e-mails are given up after the last retry, as outdated status
+		// e-mails are of little use.
 		n.log.Warn("e-mails not delivered, will retry", "count", len(due)-tried, "err", err)
 		for _, d := range due[tried:] {
 			record(d, err, false)
@@ -355,6 +377,30 @@ func (n *Notifier) sendBatch(ctx context.Context, st *store.Settings, due []stor
 		n.log.Info("e-mails sent", "count", sent, "failed", failed)
 	}
 	return ok && (err == nil && len(due) == batchSize || errors.Is(err, errConnClosed))
+}
+
+// send delivers msgs with the e-mail method of the settings (see sendWith).
+// The Microsoft Graph client is kept, so that its access token is reused,
+// until the settings change or a delivery fails for a reason other than
+// throttling: the next batch then gets a new access token, e.g. one with a
+// permission that was granted meanwhile.
+func (n *Notifier) send(ctx context.Context, st *store.Settings, msgs []Message, result func(i int, err error)) error {
+	if st.MailMethod == store.MailSMTP {
+		return sendWith(ctx, st, nil, msgs, result)
+	}
+	key := [3]string{st.OIDCIssuer, st.OIDCClientID, st.OIDCClientSecret}
+	if n.graph == nil || n.graphFor != key {
+		c, err := newGraphClient(st)
+		if err != nil {
+			return err
+		}
+		n.graph, n.graphFor = c, key
+	}
+	err := sendWith(ctx, st, n.graph, msgs, result)
+	if err != nil && !errors.Is(err, errStopped) && ctx.Err() == nil {
+		n.graph = nil
+	}
+	return err
 }
 
 // nextAttempt returns when to retry after the given number of failed

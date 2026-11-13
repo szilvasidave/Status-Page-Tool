@@ -149,6 +149,7 @@ func TestAdminSettingsSave(t *testing.T) {
 	f.Set("smtp_username", "mailer")
 	f.Set("smtp_password", "mail-pass-1")
 	f.Set("smtp_from", "IT Status <status@example.com>")
+	f.Set("mail_method", "smtp")
 	r = e.post("/admin/settings", f)
 	if r.Status != http.StatusSeeOther || r.Location != "/admin/settings" {
 		t.Fatalf("save settings: got %d %s", r.Status, r.Body)
@@ -226,6 +227,9 @@ func TestAdminSettingsValidation(t *testing.T) {
 			f := adminSettingsForm(before)
 			for k, v := range tt.change {
 				f.Set(k, v)
+				if strings.HasPrefix(k, "smtp_") {
+					f.Set("mail_method", "smtp") // the SMTP fields are checked when SMTP is chosen
+				}
 			}
 			r := e.post("/admin/settings", f)
 			if r.Status != http.StatusUnprocessableEntity {
