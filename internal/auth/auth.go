@@ -151,7 +151,13 @@ func isSafeMethod(m string) bool {
 // against the request host and the configured base URL.
 func (m *Manager) sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
-	if origin == "" || origin == "null" {
+	if origin == "null" {
+		// Sent after a cross-origin redirect and from sandboxed frames; also
+		// by this site's own forms if a proxy sets "Referrer-Policy:
+		// no-referrer", which the browser's Sec-Fetch-Site tells apart.
+		return r.Header.Get("Sec-Fetch-Site") == "same-origin"
+	}
+	if origin == "" {
 		origin = r.Header.Get("Referer")
 	}
 	if origin == "" {
@@ -229,26 +235,31 @@ func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
 
 // LoginLocal verifies a local administrator's credentials and starts a
 // session. Returns ErrInvalidCredentials or ErrTooManyAttempts on failure.
+// Failed attempts are limited per client address and user name, so that
+// behind a reverse proxy (one address for everybody) failures for one name
+// do not lock out the others.
 func (m *Manager) LoginLocal(w http.ResponseWriter, r *http.Request, username, password string) error {
-	ip := ClientIP(r)
-	if !m.limiter.allow(ip) {
+	username = strings.ToLower(strings.TrimSpace(username))
+	key := ClientIP(r) + " " + username
+	if len(key) > 200 { // bound the limiter's memory
+		key = key[:200]
+	}
+	if !m.limiter.allow(key) {
 		return ErrTooManyAttempts
 	}
 	ctx := r.Context()
-	user, err := m.store.GetUserByUsername(ctx, strings.TrimSpace(username))
+	user, err := m.store.GetUserByUsername(ctx, username)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
 		CheckPassword(dummyHash, password) // keep timing similar
-		m.limiter.fail(ip)
 		return ErrInvalidCredentials
 	}
 	if user.PasswordHash == "" || !CheckPassword(user.PasswordHash, password) {
-		m.limiter.fail(ip)
 		return ErrInvalidCredentials
 	}
-	m.limiter.reset(ip)
+	m.limiter.reset(key)
 	return m.StartSession(ctx, w, r, user.ID)
 }
 
@@ -289,9 +300,17 @@ func ClientIP(r *http.Request) string {
 }
 
 // SafeReturnTo returns p if it is a local absolute path ("/..."), else "/".
-// Used to validate ?next= parameters and prevent open redirects.
+// Used to validate ?next= parameters and prevent open redirects. Browsers
+// drop tabs and newlines from URLs and read '\' as '/', and http.Redirect
+// cleans the path ("/./\x" becomes "/\x"), so control characters and
+// backslashes are rejected anywhere: a path like "/\t/evil.example" would
+// lead to another host.
 func SafeReturnTo(p string) string {
-	if p == "" || p[0] != '/' || strings.HasPrefix(p, "//") || strings.HasPrefix(p, `/\`) || strings.ContainsAny(p, "\r\n") {
+	if p == "" || p[0] != '/' || strings.HasPrefix(p, "//") ||
+		strings.ContainsFunc(p, func(r rune) bool { return r == '\\' || r < 0x20 || r == 0x7f }) {
+		return "/"
+	}
+	if u, err := url.Parse(p); err != nil || u.Scheme != "" || u.Host != "" {
 		return "/"
 	}
 	return p
@@ -311,41 +330,44 @@ const (
 
 func newLoginLimiter() *loginLimiter { return &loginLimiter{failures: map[string][]time.Time{}} }
 
-func (l *loginLimiter) prune(ip string, now time.Time) []time.Time {
-	list := l.failures[ip]
+func (l *loginLimiter) prune(key string, now time.Time) []time.Time {
+	list := l.failures[key]
 	i := 0
 	for i < len(list) && now.Sub(list[i]) > limiterWindow {
 		i++
 	}
 	list = list[i:]
 	if len(list) == 0 {
-		delete(l.failures, ip)
+		delete(l.failures, key)
 	} else {
-		l.failures[ip] = list
+		l.failures[key] = list
 	}
 	return list
 }
 
-func (l *loginLimiter) allow(ip string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.prune(ip, time.Now())) < limiterMax
-}
-
-func (l *loginLimiter) fail(ip string) {
+// allow reports whether key may try to log in. It counts the attempt as a
+// failure right away, before the password is checked, so that parallel
+// requests cannot get more than limiterMax tries; a successful login calls
+// reset.
+func (l *loginLimiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
-	l.failures[ip] = append(l.prune(ip, now), now)
+	list := l.prune(key, now)
+	if len(list) >= limiterMax {
+		return false
+	}
+	l.failures[key] = append(list, now)
 	if len(l.failures) > 10000 { // bound memory
 		for k := range l.failures {
 			l.prune(k, now)
 		}
 	}
+	return true
 }
 
-func (l *loginLimiter) reset(ip string) {
+func (l *loginLimiter) reset(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.failures, ip)
+	delete(l.failures, key)
 }

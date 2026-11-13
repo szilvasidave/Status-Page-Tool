@@ -605,18 +605,43 @@ func TestOIDCCustomGroupsClaim(t *testing.T) {
 	}
 }
 
-func TestOIDCMissingGroupsClaimKeepsMemberships(t *testing.T) {
+// TestOIDCMissingGroupsClaimRemovesMemberships: providers leave an empty
+// groups claim out (Entra ID, Keycloak), so a user without the claim is in no
+// groups and loses the roles of the groups they were removed from.
+func TestOIDCMissingGroupsClaimRemovesMemberships(t *testing.T) {
 	e := newOIDCEnv(t)
-	u := e.mustLogin(map[string]any{"sub": "user-1", "groups": []string{"keep"}})
+	u := e.mustLogin(map[string]any{"sub": "user-1", "groups": []string{"admins"}})
+	g, err := e.store.CreateGroup(context.Background(), "admins", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.UpdateGroup(context.Background(), g.ID, "Admins", store.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	role := func() store.Role {
+		t.Helper()
+		r, err := e.store.UserRole(context.Background(), u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if role() != store.RoleAdmin {
+		t.Fatalf("role = %v, want admin", role())
+	}
 
-	// Userinfo without groups.
+	// Neither the ID token nor userinfo has the claim.
 	e.idp.setUserinfo(map[string]any{"email": "x@example.com"})
 	e.mustLogin(map[string]any{"sub": "user-1"})
-	if got := e.groupsOf(u.ID); !slices.Equal(got, []string{"keep"}) {
-		t.Errorf("groups = %v, want [keep]", got)
+	if got := e.groupsOf(u.ID); len(got) != 0 {
+		t.Errorf("groups = %v, want none", got)
+	}
+	if role() != store.RoleViewer {
+		t.Errorf("role after removal from the last group = %v, want viewer", role())
 	}
 
 	// Provider without userinfo endpoint.
+	e.mustLogin(map[string]any{"sub": "user-1", "groups": []string{"admins"}})
 	e.idp.mu.Lock()
 	e.idp.noUserinfo = true
 	e.idp.mu.Unlock()
@@ -626,15 +651,92 @@ func TestOIDCMissingGroupsClaimKeepsMemberships(t *testing.T) {
 	if _, after := e.idp.hits(); after != before {
 		t.Error("userinfo called although the provider has no userinfo endpoint")
 	}
-	if got := e.groupsOf(u.ID); !slices.Equal(got, []string{"keep"}) {
-		t.Errorf("groups = %v, want [keep]", got)
+	if got := e.groupsOf(u.ID); len(got) != 0 {
+		t.Errorf("groups = %v, want none", got)
 	}
 
-	// A claim of the wrong type is ignored, too.
-	e.mustLogin(map[string]any{"sub": "user-1", "groups": map[string]any{"x": 1}})
+	// A claim of the wrong type (Keycloak may send {} for no groups) counts
+	// as no groups and is logged.
+	e.mustLogin(map[string]any{"sub": "user-1", "groups": []string{"admins"}})
+	e.mustLogin(map[string]any{"sub": "user-1", "groups": map[string]any{}})
+	if got := e.groupsOf(u.ID); len(got) != 0 {
+		t.Errorf("groups = %v, want none", got)
+	}
+	if log := e.logBuf.String(); !strings.Contains(log, "neither a list of strings nor a string") {
+		t.Errorf("wrong claim type not logged:\n%s", log)
+	}
+}
+
+// TestOIDCUserinfoFailureKeepsMemberships: when the groups are unknown
+// because userinfo failed, the memberships are left alone.
+func TestOIDCUserinfoFailureKeepsMemberships(t *testing.T) {
+	e := newOIDCEnv(t)
+	u := e.mustLogin(map[string]any{"sub": "user-1", "groups": []string{"keep"}})
+	e.idp.setUserinfo(nil) // the userinfo endpoint rejects the access token
+	e.mustLogin(map[string]any{"sub": "user-1"})
+	if _, hits := e.idp.hits(); hits != 1 {
+		t.Errorf("userinfo hits = %d, want 1", hits)
+	}
 	if got := e.groupsOf(u.ID); !slices.Equal(got, []string{"keep"}) {
 		t.Errorf("groups = %v, want [keep]", got)
 	}
+	if log := e.logBuf.String(); !strings.Contains(log, "could not read the userinfo endpoint; group memberships are left unchanged") {
+		t.Errorf("userinfo failure not logged:\n%s", log)
+	}
+}
+
+// TestOIDCDirectorySyncOwnsSyncedGroups: with directory sync on, a sign-in
+// does not remove memberships of groups the sync manages; the claim still
+// decides about the other groups, and adds synced groups it contains.
+func TestOIDCDirectorySyncOwnsSyncedGroups(t *testing.T) {
+	const (
+		synced = "aaaaaaaa-0000-4000-8000-000000000001"
+		other  = "bbbbbbbb-0000-4000-8000-000000000002" // synced, the user is not a member
+	)
+	ctx := context.Background()
+	e := newOIDCEnv(t)
+	e.saveSettings(func(s *store.Settings) { s.DirectorySyncEnabled = true })
+	e.idp.setUserinfo(map[string]any{}) // works, but has no groups
+	u := e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{"from-claim"}})
+
+	gs, err := e.store.CreateGroup(ctx, synced, "Synced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go2, err := e.store.CreateGroup(ctx, other, "Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SyncGroupMembers(ctx, gs.ID, "", []store.DirectoryUser{{DirectoryID: "oid-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SyncGroupMembers(ctx, go2.ID, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	want := func(step string, groups ...string) {
+		t.Helper()
+		slices.Sort(groups)
+		if got := e.groupsOf(u.ID); !slices.Equal(got, groups) {
+			t.Errorf("%s: groups = %v, want %v", step, got, groups)
+		}
+	}
+	want("after the sync", "from-claim", synced)
+
+	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{"new"}})
+	want("claim without the synced group", "new", synced)
+
+	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1"})
+	want("no groups claim", synced)
+
+	// The claim adds memberships of synced groups (no conflict with the
+	// membership kept from the sync); upper-case GUIDs are normalised.
+	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{strings.ToUpper(synced), other}})
+	want("claim with synced groups", synced, other)
+
+	// Directory sync off: the claim decides about all groups again.
+	e.saveSettings(func(s *store.Settings) { s.DirectorySyncEnabled = false })
+	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{"new"}})
+	want("directory sync off", "new")
 }
 
 func TestOIDCUserinfoFallback(t *testing.T) {
@@ -886,40 +988,23 @@ func TestOIDCTrailingSlashIssuer(t *testing.T) {
 func TestOIDCNotConfigured(t *testing.T) {
 	e := newOIDCEnv(t)
 	e.saveSettings(func(s *store.Settings) { s.OIDCEnabled = false })
-	if e.m.OIDCEnabled(context.Background()) {
-		t.Error("OIDCEnabled = true")
-	}
 	err := e.m.StartOIDC(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/auth/oidc/login", nil), "/")
 	if !errors.Is(err, ErrOIDCNotConfigured) {
 		t.Errorf("StartOIDC err = %v", err)
 	}
-	e.saveSettings(func(s *store.Settings) {})
-	if !e.m.OIDCEnabled(context.Background()) {
-		t.Error("OIDCEnabled = false")
-	}
 }
 
-func TestTestOIDC(t *testing.T) {
+func TestDiscoverOIDC(t *testing.T) {
 	e := newOIDCEnv(t)
 	ctx := context.Background()
-	if err := e.m.TestOIDC(ctx); err != nil {
-		t.Errorf("TestOIDC: %v", err)
+	if _, err := discoverOIDC(ctx, e.idp.issuer()); err != nil {
+		t.Errorf("discoverOIDC: %v", err)
 	}
-	e.saveSettings(func(s *store.Settings) { s.OIDCEnabled = false })
-	if err := e.m.TestOIDC(ctx); err != nil {
-		t.Errorf("TestOIDC with SSO disabled: %v", err)
+	if _, err := discoverOIDC(ctx, "not a url"); err == nil || !strings.Contains(err.Error(), "not a valid") {
+		t.Errorf("discoverOIDC with invalid issuer: %v", err)
 	}
-	e.saveSettings(func(s *store.Settings) { s.OIDCIssuer = "" })
-	if err := e.m.TestOIDC(ctx); err == nil || !strings.Contains(err.Error(), "issuer URL") {
-		t.Errorf("TestOIDC without issuer: %v", err)
-	}
-	e.saveSettings(func(s *store.Settings) { s.OIDCIssuer = "not a url" })
-	if err := e.m.TestOIDC(ctx); err == nil || !strings.Contains(err.Error(), "not a valid") {
-		t.Errorf("TestOIDC with invalid issuer: %v", err)
-	}
-	e.saveSettings(func(s *store.Settings) { s.OIDCIssuer = e.idp.issuer() + "/nothing-here" })
-	if err := e.m.TestOIDC(ctx); err == nil || !strings.Contains(err.Error(), "could not reach") {
-		t.Errorf("TestOIDC with wrong issuer: %v", err)
+	if _, err := discoverOIDC(ctx, e.idp.issuer()+"/nothing-here"); err == nil || !strings.Contains(err.Error(), "could not reach") {
+		t.Errorf("discoverOIDC with wrong issuer: %v", err)
 	}
 }
 

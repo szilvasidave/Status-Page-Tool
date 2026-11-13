@@ -70,34 +70,11 @@ type oidcState struct {
 	Expires  int64  `json:"e"` // unix seconds
 }
 
-// OIDCEnabled reports whether single sign-on is enabled and configured.
-func (m *Manager) OIDCEnabled(ctx context.Context) bool {
-	st, err := m.store.GetSettings(ctx)
-	return err == nil && st.OIDCConfigured()
-}
-
 // ResetOIDC drops the cached provider so that changed settings take effect.
 func (m *Manager) ResetOIDC() {
 	m.oidcMu.Lock()
 	m.oidc = nil
 	m.oidcMu.Unlock()
-}
-
-// TestOIDC checks the single sign-on settings by fetching the identity
-// provider's discovery document. Single sign-on does not have to be enabled.
-func (m *Manager) TestOIDC(ctx context.Context) error {
-	st, err := m.store.GetSettings(ctx)
-	if err != nil {
-		return err
-	}
-	switch {
-	case strings.TrimSpace(st.OIDCIssuer) == "":
-		return errors.New("enter the issuer URL first")
-	case strings.TrimSpace(st.OIDCClientID) == "":
-		return errors.New("enter the client ID first")
-	}
-	_, err = discoverOIDC(ctx, strings.TrimSpace(st.OIDCIssuer))
-	return err
 }
 
 // StartOIDC redirects the browser to the identity provider. returnTo is the
@@ -215,11 +192,16 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 	if groupsClaim == "" {
 		groupsClaim = "groups"
 	}
+	// Without a groups claim the user is in no groups (providers leave an
+	// empty claim out), unless the groups are unknown: Entra ID signals that
+	// they did not fit into the token (overage), or userinfo failed.
 	groups, found := m.claimStrings(claims, groupsClaim)
 	overage := groupOverage(claims, groupsClaim)
+	infoFailed := false
 	if !found && !overage && c.provider.UserInfoEndpoint() != "" {
 		info, err := m.userInfo(hctx, c, tok, idt.Subject)
 		if err != nil {
+			infoFailed = true
 			m.log.Warn("OIDC: could not read the userinfo endpoint; group memberships are left unchanged",
 				"subject", idt.Subject, "err", err)
 		} else {
@@ -246,17 +228,22 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 	case overage:
 		m.log.Warn("OIDC: the identity provider did not include the groups in the token because the user is a member of too many groups (group overage); group memberships were not changed. Enable the directory sync to keep them up to date.",
 			"user", u.DisplayName(), "claim", groupsClaim)
-	case found:
+	case infoFailed:
+		// Logged above.
+	default:
+		if !found {
+			m.log.Info("OIDC: no groups claim in the token or userinfo; the user is in no groups",
+				"user", u.DisplayName(), "claim", groupsClaim)
+		}
 		refs := make([]store.GroupRef, 0, len(groups))
 		for _, g := range groups {
 			refs = append(refs, store.GroupRef{ExternalID: g})
 		}
-		if err := m.store.SetUserGroups(ctx, u.ID, refs); err != nil {
+		// With directory sync, the sync alone removes members of the groups
+		// it manages.
+		if err := m.store.SetLoginGroups(ctx, u.ID, refs, st.DirectorySyncEnabled); err != nil {
 			return "", err
 		}
-	default:
-		m.log.Debug("OIDC: no groups claim in the token or userinfo; group memberships were not changed",
-			"user", u.DisplayName(), "claim", groupsClaim)
 	}
 
 	if err := m.StartSession(ctx, w, r, u.ID); err != nil {
@@ -489,8 +476,8 @@ func isFalse(v any) bool {
 }
 
 // claimStrings returns the values of a claim that is an array of strings or
-// a single string. found is false if the claim is absent (or has another
-// type, which is logged).
+// a single string. found is false if the claim is absent. A claim of another
+// type is logged and counts as an empty list.
 func (m *Manager) claimStrings(c map[string]any, name string) (values []string, found bool) {
 	switch v := c[name].(type) {
 	case nil:
@@ -508,9 +495,9 @@ func (m *Manager) claimStrings(c map[string]any, name string) (values []string, 
 		}
 		return values, true
 	default:
-		m.log.Warn("OIDC: the groups claim is neither a list of strings nor a string; group memberships were not changed",
+		m.log.Warn("OIDC: the groups claim is neither a list of strings nor a string; the user is treated as a member of no groups",
 			"claim", name, "type", fmt.Sprintf("%T", v))
-		return nil, false
+		return nil, true
 	}
 }
 

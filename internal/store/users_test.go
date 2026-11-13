@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestLocalAdmin(t *testing.T) {
@@ -299,5 +301,184 @@ func TestListUsers(t *testing.T) {
 		equal(t, "carl groups", len(users[2].Groups), 0)
 		equal(t, "admin role", users[3].Role, RoleAdmin)
 		equal(t, "user fields", users[0].User.Email, "alice@example.com")
+	})
+}
+
+// TestUpsertOIDCUserOtherDirectoryObject: an e-mail address shared by two
+// directory objects must not hand one identity's row (and sessions, and
+// therefore the other's groups) to the other.
+func TestUpsertOIDCUserOtherDirectoryObject(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		session := func(id string, userID int64) {
+			t.Helper()
+			check(t, s.CreateSession(ctx, &Session{ID: id, UserID: userID, CreatedAt: nowTime(), ExpiresAt: nowTime().Add(time.Hour)}))
+		}
+		a, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-a", DirectoryID: "d-a", Email: "x@example.com"})
+		check(t, err)
+		session("sess-a", a.ID)
+
+		b, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-b", DirectoryID: "d-b", Email: "X@example.com"})
+		check(t, err)
+		if b.ID == a.ID {
+			t.Fatal("another directory object with the same e-mail took over the row")
+		}
+		check(t, s.SetUserGroups(ctx, b.ID, []GroupRef{{ExternalID: "admins"}}))
+		sess, err := s.GetSession(ctx, "sess-a", time.Now())
+		check(t, err)
+		equal(t, "session of a", sess.UserID, a.ID)
+		got, err := s.GetUser(ctx, a.ID)
+		check(t, err)
+		equal(t, "a keeps its identity", [2]string{got.OIDCSubject, got.DirectoryID}, [2]string{"s-a", "d-a"})
+		equal(t, "the address moved to b", got.Email, "")
+
+		// A new subject for the same directory object (e.g. a new app
+		// registration) takes the row over; the sessions of the previous
+		// subject end. Sessions survive sign-ins with the same subject.
+		a2, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-a-new", DirectoryID: "d-a"})
+		check(t, err)
+		equal(t, "same row", a2.ID, a.ID)
+		_, err = s.GetSession(ctx, "sess-a", time.Now())
+		wantNotFound(t, "session of the previous subject", err)
+		session("sess-a2", a.ID)
+		_, err = s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-a-new", DirectoryID: "d-a", Name: "A"})
+		check(t, err)
+		_, err = s.GetSession(ctx, "sess-a2", time.Now())
+		check(t, err)
+
+		// Without a directory id (other providers) the e-mail still matches
+		// a row without one.
+		c, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-c", Email: "c@example.com"})
+		check(t, err)
+		c2, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-c-new", Email: "c@example.com"})
+		check(t, err)
+		equal(t, "matched by e-mail", c2.ID, c.ID)
+	})
+}
+
+// TestSetLoginGroupsKeepSynced: with directory sync on, a sign-in whose
+// groups claim lacks a synced group (e.g. a Microsoft 365 group, which the
+// "Security groups" claim leaves out) must not remove the membership and
+// with it the user's notifications.
+func TestSetLoginGroupsKeepSynced(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		staff := mustGroup(t, s, "aaaaaaaa-0000-4000-8000-000000000001", "All Staff")
+		vpn := mustService(t, s, "VPN", "", 0, staff.ID)
+		check(t, s.SyncGroupMembers(ctx, staff.ID, "", []DirectoryUser{{DirectoryID: "d-alice", Email: "alice@example.com"}}))
+		alice, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-alice", DirectoryID: "d-alice", Email: "alice@example.com"})
+		check(t, err)
+		recipients := func() int {
+			t.Helper()
+			r, err := s.RecipientsForServices(ctx, []int64{vpn.ID})
+			check(t, err)
+			return len(r)
+		}
+		groups := func() []string {
+			t.Helper()
+			gs, err := s.UserGroups(ctx, alice.ID)
+			check(t, err)
+			var out []string
+			for _, g := range gs {
+				out = append(out, g.Name)
+			}
+			return out
+		}
+		equal(t, "recipients after the sync", recipients(), 1)
+
+		check(t, s.SetLoginGroups(ctx, alice.ID, []GroupRef{{ExternalID: "security-group"}}, true))
+		equal(t, "recipients after sign-in", recipients(), 1)
+		equal(t, "groups after sign-in", groups(), []string{"All Staff", "security-group"})
+		check(t, s.SetLoginGroups(ctx, alice.ID, nil, true))
+		equal(t, "groups after sign-in without groups", groups(), []string{"All Staff"})
+		check(t, s.SetLoginGroups(ctx, alice.ID, []GroupRef{{ExternalID: staff.ExternalID}}, true))
+		equal(t, "synced group in the claim", groups(), []string{"All Staff"})
+
+		// Directory sync off: the claim replaces all memberships.
+		check(t, s.SetLoginGroups(ctx, alice.ID, []GroupRef{{ExternalID: "security-group"}}, false))
+		equal(t, "recipients with sync off", recipients(), 0)
+	})
+}
+
+// TestConcurrentSignInAndSync runs a directory sync of a group while its
+// members sign in for the first time (and get the group from the claim).
+// On PostgreSQL (READ COMMITTED) the users and memberships that the other
+// transaction inserts meanwhile must not fail them with duplicate keys.
+func TestConcurrentSignInAndSync(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		g := mustGroup(t, s, "aaaaaaaa-0000-4000-8000-000000000001", "")
+		const n = 16
+		dirUser := func(i int) DirectoryUser {
+			return DirectoryUser{DirectoryID: fmt.Sprint("d-", i), Email: fmt.Sprintf("user%d@example.com", i)}
+		}
+		signIn := func(i int) (*User, error) {
+			u := dirUser(i)
+			return s.UpsertOIDCUser(ctx, OIDCUser{Subject: fmt.Sprint("s-", i), DirectoryID: u.DirectoryID, Email: u.Email})
+		}
+		var wg sync.WaitGroup
+		errs := make(chan error, 2*n)
+		var members []DirectoryUser
+		for i := 0; i < n; i++ {
+			members = append(members, dirUser(i))
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				u, err := signIn(i)
+				if err == nil {
+					err = s.SetLoginGroups(ctx, u.ID, []GroupRef{{ExternalID: g.ExternalID}}, i%2 == 0)
+				}
+				errs <- err
+			}()
+			go func(members []DirectoryUser) {
+				defer wg.Done()
+				errs <- s.SyncGroupMembers(ctx, g.ID, "", members)
+			}(slices.Clone(members))
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			check(t, err)
+		}
+
+		// Afterwards every member is the signed-in user.
+		check(t, s.SyncGroupMembers(ctx, g.ID, "", members))
+		for i := 0; i < n; i++ {
+			u, err := signIn(i)
+			check(t, err)
+			groups, err := s.UserGroups(ctx, u.ID)
+			check(t, err)
+			equal(t, fmt.Sprint("groups of user ", i), len(groups), 1)
+		}
+	})
+}
+
+// TestConcurrentFirstSignIn: the first sign-ins of one user at the same time
+// (several browser tabs) create one user.
+func TestConcurrentFirstSignIn(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		const n = 20
+		ids := make(chan int64, n)
+		errs := make(chan error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				u, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-1", DirectoryID: "d-1", Email: "one@example.com"})
+				if err != nil {
+					errs <- err
+					return
+				}
+				ids <- u.ID
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		close(ids)
+		for err := range errs {
+			check(t, err)
+		}
+		first := <-ids
+		for id := range ids {
+			equal(t, "same user", id, first)
+		}
 	})
 }

@@ -215,6 +215,17 @@ func TestSyncNow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// carl is a member of C (from his sign-in), which was deleted since.
+	carl, err := e.store.UpsertOIDCUser(ctx, store.OIDCUser{Subject: "sub-carl", Email: "carl@contoso.com", DirectoryID: "u-carl"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetUserGroups(ctx, carl.ID, []store.GroupRef{{ExternalID: syncGroupC}}); err != nil {
+		t.Fatal(err)
+	}
+	if g := e.getGroup(gC.ID); g.MemberCount != 1 {
+		t.Fatalf("group C has %d members, want 1", g.MemberCount)
+	}
 
 	disabled := syncUser("u-old", "Disabled", "old@contoso.com")
 	disabled["accountEnabled"] = false
@@ -235,7 +246,7 @@ func TestSyncNow(t *testing.T) {
 		t.Errorf("result = %+v, want 2 groups and 4 members", res)
 	}
 	wantErrors := []string{
-		`group "Gone" (` + syncGroupC + `) no longer exists in the directory`,
+		`group "Gone" (` + syncGroupC + `) no longer exists in the directory; its members were removed`,
 		`group "IT-Admins" skipped: not a directory object id`,
 	}
 	if !slices.Equal(res.Errors, wantErrors) {
@@ -266,8 +277,10 @@ func TestSyncNow(t *testing.T) {
 	if g := e.getGroup(gB.ID); g.Name != "Editors" || g.Role != store.RoleEditor {
 		t.Errorf("group B = %+v", g)
 	}
-	if g := e.getGroup(gC.ID); g.Name != "Gone" || g.LastSyncedAt != nil {
-		t.Errorf("missing group C changed: %+v", g)
+	// The deleted group has no members any more (no more e-mails, no role);
+	// the group and its services stay until an admin deletes it.
+	if g := e.getGroup(gC.ID); g.Name != "Gone" || g.MemberCount != 0 || len(g.ServiceIDs) != 1 {
+		t.Errorf("deleted group C = %+v, want no members", g)
 	}
 	if g := e.getGroup(gD.ID); g.LastSyncedAt != nil || g.MemberCount != 0 {
 		t.Errorf("unused group D synchronised: %+v", g)
@@ -310,11 +323,21 @@ func TestSyncNow(t *testing.T) {
 		t.Errorf("%d Graph clients created, want 1", n)
 	}
 	e.settings(func(st *store.Settings) { st.OIDCClientSecret = "new-secret" })
+
+	// Name and e-mail changes in the directory reach users who never signed
+	// in (dave); alice keeps the values from her sign-in.
+	e.dir.set(syncGroupA, "Service Owners EU",
+		syncUser("u-alice", "Alice Renamed", "alice.renamed@contoso.com"),
+		syncUser("u-dave", "Dave Renamed", "Dave.New@contoso.com"))
 	if _, err := e.syncer.SyncNow(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if n := e.clients.Load(); n != 2 {
 		t.Errorf("%d Graph clients created after changing the secret, want 2", n)
+	}
+	wantA = []string{"alice@contoso.com|Alice|u-alice", "dave.new@contoso.com|Dave Renamed|u-dave"}
+	if got := e.members(gA.ID); !slices.Equal(got, wantA) {
+		t.Errorf("members of A after renames =\n%q\nwant\n%q", got, wantA)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -102,6 +103,15 @@ func TestCSRFMiddleware(t *testing.T) {
 		{"foreign referer", url.Values{CSRFField: {token}}, map[string]string{"Referer": "https://evil.example.com/page"}, http.StatusForbidden},
 		{"same-origin referer", url.Values{CSRFField: {token}}, map[string]string{"Referer": srv.URL + "/page"}, http.StatusOK},
 		{"base URL origin", url.Values{CSRFField: {token}}, map[string]string{"Origin": "https://status.example.com"}, http.StatusOK},
+		// "null" comes from cross-origin redirects and sandboxed frames; a
+		// same-site page can plant its own CSRF cookie, so the token alone
+		// is not enough.
+		{"null origin", url.Values{CSRFField: {token}}, map[string]string{"Origin": "null"}, http.StatusForbidden},
+		{"null origin, same-site", url.Values{CSRFField: {token}}, map[string]string{"Origin": "null", "Sec-Fetch-Site": "same-site"}, http.StatusForbidden},
+		{"null origin, same-origin referer", url.Values{CSRFField: {token}}, map[string]string{"Origin": "null", "Referer": srv.URL + "/page"}, http.StatusForbidden},
+		// A page of this site with "Referrer-Policy: no-referrer" (set by a
+		// proxy) sends "null" too; the browser marks it as same-origin.
+		{"null origin, same-origin fetch", url.Values{CSRFField: {token}}, map[string]string{"Origin": "null", "Sec-Fetch-Site": "same-origin"}, http.StatusOK},
 	}
 	st := store.DefaultSettings()
 	st.BaseURL = "https://status.example.com"
@@ -229,22 +239,105 @@ func TestLoginLimiter(t *testing.T) {
 			t.Fatalf("after reset, attempt %d: %v", i+1, err)
 		}
 	}
+
+	// The limit is per address and user name: behind a reverse proxy (one
+	// address for everybody) failures for other names do not lock out the
+	// administrator. The name is compared like at the login.
+	for i := 0; i < limiterMax; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/login", nil)
+		req.RemoteAddr = "192.0.2.50:1"
+		if err := m.LoginLocal(httptest.NewRecorder(), req, "someone-else", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("other user, attempt %d: %v", i+1, err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "192.0.2.50:2"
+	if err := m.LoginLocal(httptest.NewRecorder(), req, " Someone-Else ", "wrong"); !errors.Is(err, ErrTooManyAttempts) {
+		t.Errorf("same user name, other spelling: err = %v, want too many attempts", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "192.0.2.50:3"
+	if err := m.LoginLocal(httptest.NewRecorder(), req, "admin", "correct-password"); err != nil {
+		t.Errorf("administrator behind the same address: %v", err)
+	}
+}
+
+// TestLoginLimiterParallel checks that parallel attempts cannot check more
+// passwords than the limit: the attempt is counted before the (slow)
+// password check.
+func TestLoginLimiterParallel(t *testing.T) {
+	m, _ := authTestManager(t)
+	const n = 100
+	results := make(chan error, n)
+	var start sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < n; i++ {
+		go func() {
+			start.Wait()
+			req := httptest.NewRequest(http.MethodPost, "/login", nil)
+			req.RemoteAddr = "198.51.100.99:4444"
+			results <- m.LoginLocal(httptest.NewRecorder(), req, "admin", "wrong")
+		}()
+	}
+	start.Done()
+	checked := 0
+	for i := 0; i < n; i++ {
+		switch err := <-results; {
+		case errors.Is(err, ErrInvalidCredentials):
+			checked++
+		case !errors.Is(err, ErrTooManyAttempts):
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if checked != limiterMax {
+		t.Errorf("%d passwords checked in parallel, want %d", checked, limiterMax)
+	}
 }
 
 func TestSafeReturnTo(t *testing.T) {
 	cases := map[string]string{
-		"":                     "/",
-		"/":                    "/",
-		"/incidents/3?x=1":     "/incidents/3?x=1",
-		"https://evil.example": "/",
-		"//evil.example":       "/",
-		`/\evil.example`:       "/",
-		"relative":             "/",
-		"/a\r\nSet-Cookie: x":  "/",
+		"":                       "/",
+		"/":                      "/",
+		"/incidents/3?x=1":       "/incidents/3?x=1",
+		"/history?q=a%2Fb#top":   "/history?q=a%2Fb#top",
+		"https://evil.example":   "/",
+		"//evil.example":         "/",
+		`/\evil.example`:         "/",
+		"relative":               "/",
+		"/a\r\nSet-Cookie: x":    "/",
+		"/\t/evil.example":       "/", // browsers drop the tab: //evil.example
+		`/./\evil.example`:       "/", // http.Redirect cleans it to /\evil.example
+		`/a/../\evil.example`:    "/",
+		`/x?next=\evil`:          "/",
+		"/\x7f":                  "/",
+		"/%zz":                   "/", // not a valid URL
+		"/javascript:alert(1)":   "/javascript:alert(1)",
+		" /incidents":            "/",
+		"/incidents/../settings": "/incidents/../settings",
 	}
 	for in, want := range cases {
 		if got := SafeReturnTo(in); got != want {
 			t.Errorf("SafeReturnTo(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestSafeReturnToStaysOnSite redirects to hostile values like the login
+// handlers do and resolves the Location header like a browser (which drops
+// tabs and newlines and reads '\' as '/').
+func TestSafeReturnToStaysOnSite(t *testing.T) {
+	for _, next := range []string{
+		"/\t/evil.example/x", "/\n/evil.example", `/./\evil.example/x`, `/a/../\evil.example`,
+		"/.//evil.example", "/..//evil.example", `/\/evil.example`, "/%2F/evil.example", "/%5Cevil.example",
+		"///evil.example", "/ /evil.example",
+	} {
+		rec := httptest.NewRecorder()
+		http.Redirect(rec, httptest.NewRequest(http.MethodGet, "https://status.example.com/login", nil), SafeReturnTo(next), http.StatusSeeOther)
+		loc := strings.NewReplacer("\t", "", "\n", "", "\r", "", `\`, "/").Replace(rec.Header().Get("Location"))
+		base, _ := url.Parse("https://status.example.com/login")
+		target, err := base.Parse(loc)
+		if err != nil || target.Host != "status.example.com" {
+			t.Errorf("next=%q: Location %q leads to %v (%v)", next, rec.Header().Get("Location"), target, err)
 		}
 	}
 }

@@ -136,8 +136,10 @@ func (c *GraphClient) Group(ctx context.Context, id string) (Group, error) {
 	return g.group(), nil
 }
 
-// GroupMembers returns all enabled users that are direct or nested members of
-// the group with object id id.
+// GroupMembers returns the users that are direct or nested members of the
+// group with object id id. Disabled accounts are left out if Graph reports
+// accountEnabled, which it does only with the User.Read.All permission (with
+// User.ReadBasic.All the property is null and every member is returned).
 func (c *GraphClient) GroupMembers(ctx context.Context, id string) ([]store.DirectoryUser, error) {
 	if !IsGUID(id) {
 		return nil, fmt.Errorf("%q is not a Microsoft Entra ID group object id", id)
@@ -232,25 +234,7 @@ func (c *GraphClient) SearchGroups(ctx context.Context, query string, limit int)
 
 // IsGUID reports whether s looks like a GUID such as an Entra ID object id
 // (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
-func IsGUID(s string) bool {
-	if len(s) != 36 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch i {
-		case 8, 13, 18, 23:
-			if c != '-' {
-				return false
-			}
-		default:
-			if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
-				return false
-			}
-		}
-	}
-	return true
-}
+func IsGUID(s string) bool { return store.IsGUID(s) }
 
 // userEmail returns mail, or else the user principal name if it is a usable
 // e-mail address (guest UPNs like "jane_example.com#EXT#@contoso.onmicrosoft.com"

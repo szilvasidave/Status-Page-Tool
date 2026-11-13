@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/szilvasidave/status-page-tool/internal/db"
 )
 
@@ -75,6 +77,15 @@ func notFound(err error) error {
 		return ErrNotFound
 	}
 	return err
+}
+
+// isConflict reports whether err is a PostgreSQL unique violation or
+// deadlock caused by a concurrent transaction, so that retrying the
+// transaction can succeed. (SQLite serialises writing transactions and never
+// sees these races.)
+func isConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "23505" || pgErr.Code == "40P01")
 }
 
 // affected returns ErrNotFound when an UPDATE/DELETE did not touch any row.

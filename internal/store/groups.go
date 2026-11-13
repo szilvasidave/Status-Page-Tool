@@ -102,11 +102,46 @@ func (s *Store) GroupMembers(ctx context.Context, groupID int64) ([]User, error)
 	return users, nil
 }
 
+// IsGUID reports whether s looks like a GUID such as a Microsoft Entra ID
+// object id (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx, any case).
+func IsGUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// NormExternalID returns a group's external id as it is stored and looked
+// up: trimmed, and in lower case if it is a GUID. Entra ID puts object ids
+// into the groups claim in lower case, but tools often show them in upper
+// case. Other ids (e.g. Keycloak group names) keep their case.
+func NormExternalID(s string) string {
+	s = strings.TrimSpace(s)
+	if IsGUID(s) {
+		return strings.ToLower(s)
+	}
+	return s
+}
+
 // CreateGroup adds a group manually (before anyone of it signed in). If a
-// group with the same external id exists it is returned unchanged (its name
-// is set if it was empty/equal to the external id and name is given).
+// group with the same external id (see NormExternalID) exists it is returned
+// unchanged (its name is set if it was empty/equal to the external id and
+// name is given).
 func (s *Store) CreateGroup(ctx context.Context, externalID, name string) (*Group, error) {
-	externalID = strings.TrimSpace(externalID)
+	externalID = NormExternalID(externalID)
 	name = strings.TrimSpace(name)
 	if externalID == "" {
 		return nil, errors.New("add group: the group id must not be empty")
@@ -201,12 +236,11 @@ func (s *Store) GroupsToSync(ctx context.Context) ([]Group, error) {
 
 // SyncGroupMembers applies a directory sync result to one group: sets the
 // group name (if non-empty) and last_synced_at=now, finds or creates each
-// member (match by directory_id, then by email case-insensitively; update
-// directory_id/email/name if empty) and replaces the group's memberships with
-// exactly these users. Members without an e-mail address are still recorded.
-// Members that cannot be identified (neither directory id nor e-mail) or
-// cannot be saved are skipped; duplicates are recorded once. Returns
-// ErrNotFound for an unknown group.
+// member (see syncMember) and replaces the group's memberships with exactly
+// these users (an empty list removes all members). Members without an
+// e-mail address are still recorded. Members that cannot be identified
+// (neither directory id nor e-mail) or cannot be saved are skipped;
+// duplicates are recorded once. Returns ErrNotFound for an unknown group.
 func (s *Store) SyncGroupMembers(ctx context.Context, groupID int64, name string, members []DirectoryUser) error {
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		now := db.Now()
@@ -242,7 +276,8 @@ func (s *Store) SyncGroupMembers(ctx context.Context, groupID int64, name string
 			return err
 		}
 		for _, uid := range uniqueIDs(userIDs) {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)`, uid, groupID); err != nil {
+			// A sign-in may insert the same row concurrently (PostgreSQL).
+			if _, err := tx.ExecContext(ctx, insertMembershipSQL, uid, groupID); err != nil {
 				return err
 			}
 		}
@@ -273,6 +308,14 @@ func savepoint(ctx context.Context, tx *db.Tx, fn func() error) error {
 
 // syncMember finds or creates the user for a directory member and returns
 // its id (0 if the member cannot be identified).
+//
+// The member is matched by directory_id, else by e-mail (case-insensitive),
+// but never to the row of another directory object. The directory is
+// authoritative for users who never signed in: their e-mail address and name
+// follow it. For users who signed in, the values from the sign-in are kept
+// and only missing ones are filled in. Addresses are unique in the
+// directory, so an address it gives to this member is removed from the rows
+// of other directory objects (it is stale there, e.g. reassigned).
 func syncMember(ctx context.Context, tx *db.Tx, m DirectoryUser, now int64) (int64, error) {
 	dir := strings.TrimSpace(m.DirectoryID)
 	email := normEmail(m.Email)
@@ -281,14 +324,25 @@ func syncMember(ctx context.Context, tx *db.Tx, m DirectoryUser, now int64) (int
 		return 0, nil
 	}
 
+	if dir != "" && email != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND directory_id <> ?`, email, dir); err != nil {
+			return 0, err
+		}
+	}
+
 	const notAdmin = " AND u.is_local_admin = ?"
 	var u *User
 	err := ErrNotFound
 	if dir != "" {
 		u, err = findUser(ctx, tx, "u.directory_id = ?"+notAdmin, dir, false)
 	}
+	byDir := err == nil
 	if errors.Is(err, ErrNotFound) && email != "" {
-		u, err = findUser(ctx, tx, "u.email = ?"+notAdmin, email, false)
+		cond := "u.email = ?"
+		if dir != "" {
+			cond += " AND u.directory_id IS NULL"
+		}
+		u, err = findUser(ctx, tx, cond+notAdmin, email, false)
 	}
 	if errors.Is(err, ErrNotFound) {
 		var id int64
@@ -301,7 +355,9 @@ func syncMember(ctx context.Context, tx *db.Tx, m DirectoryUser, now int64) (int
 		return 0, err
 	}
 
-	// Fill empty fields; never take a value that another user already has.
+	// Fill in missing values, or take the directory's for a user who never
+	// signed in, but never a value that another user still has.
+	authoritative := byDir && u.OIDCSubject == ""
 	if u.DirectoryID == "" && dir != "" {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE users SET directory_id = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM users o WHERE o.directory_id = ?)`,
@@ -309,14 +365,14 @@ func syncMember(ctx context.Context, tx *db.Tx, m DirectoryUser, now int64) (int
 			return 0, err
 		}
 	}
-	if u.Email == "" && email != "" {
+	if email != "" && email != u.Email && (u.Email == "" || authoritative) {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE users SET email = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM users o WHERE o.email = ?)`,
 			email, u.ID, email); err != nil {
 			return 0, err
 		}
 	}
-	if u.Name == "" && name != "" {
+	if name != "" && name != u.Name && (u.Name == "" || authoritative) {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET name = ? WHERE id = ?`, name, u.ID); err != nil {
 			return 0, err
 		}
