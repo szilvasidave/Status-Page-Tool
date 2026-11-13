@@ -26,6 +26,8 @@ no runtime dependencies, installed on Windows with a normal setup wizard.
   incidents and maintenance windows) and *Administrator* (configuration).
 - **E-mail** with Microsoft 365 through Microsoft Graph (default; uses the
   single sign-on app registration) or through any SMTP server.
+- **Branding:** your logo, favicon and colours for light and dark mode, set
+  by administrators in the web interface ([Branding](#branding)).
 - **Storage:** built-in SQLite or PostgreSQL.
 - Administrators configure everything in the web interface, except the
   listen address, the TLS certificate and the database connection, which are
@@ -57,7 +59,8 @@ only notification channel.
 
 ### Windows (installer)
 
-1. Download `StatusPageSetup-<version>.exe` from the releases page and run it
+1. Download `StatusPageSetup-<version>.exe` from the
+   [releases page](https://github.com/szilvasidave/Status-Page-Tool/releases/latest) and run it
    (administrator rights are required; Windows 10 / Server 2016 or newer, x64).
 2. Choose the **HTTP port** (default 8080) and the **database**:
    - *SQLite* – built in, nothing else to install; recommended for small
@@ -1069,4 +1072,5 @@ development (see the comment in `tools/devseed/main.go`).
 
 GitHub Actions (`.github/workflows/build.yml`) runs the tests, builds binaries
 for Windows, Linux (amd64, arm64) and macOS (arm64) and the installer, and
-publishes them as a release for tags `v*`.
+publishes them as a release for tags `v*`; the release notes start with the
+version's section of [`CHANGELOG.md`](CHANGELOG.md).
