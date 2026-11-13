@@ -66,13 +66,14 @@
       {{with .Mail.GraphNote}}<p class="flash flash-warning">{{.}}</p>{{end}}
       <p class="help">Microsoft Graph sends with the app registration of the single sign-on settings. In the Microsoft Entra
         admin center, add the Microsoft Graph <em>application</em> permission <strong>Mail.Send</strong> to it and grant admin
-        consent.</p>
+        consent – or allow only this mailbox (below).</p>
       <details class="disclosure">
         <summary>Allow sending from this mailbox only</summary>
         <p class="help">Mail.Send lets the app send as any mailbox of your organisation. To allow only the sender mailbox, grant the
-          permission in Exchange Online instead, with RBAC for Applications: assign the role <em>Application Mail.Send</em> to the
-          app with a management scope that contains just this mailbox, and remove the Mail.Send consent in Entra ID (otherwise
-          both apply). Exchange Online can take up to two hours to apply the change.</p>
+          permission in Exchange Online instead, with RBAC for Applications (Exchange Online PowerShell): assign the role
+          <em>Application Mail.Send</em> to the app with a management scope that contains just this mailbox. Do not grant
+          Mail.Send in Entra ID as well, and remove it if it was granted: both grants apply, so the restriction would have no
+          effect. Exchange Online takes 30 minutes to 2 hours to apply the change.</p>
       </details>
     </div>
   </fieldset>

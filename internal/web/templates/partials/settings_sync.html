@@ -5,18 +5,18 @@
     <p class="help"><strong>Provisioning</strong> from Microsoft Entra ID sends all users of the groups assigned to the
       provisioning app – including people who never signed in, so that they are notified, too – and updates them and the
       group members about every 40 minutes.</p>
-    <p class="help"><strong>Sign-in</strong> updates the groups of the user who signs in from the groups claim. This works
-      with any OpenID Connect provider, but only for people who have signed in. The members of provisioned groups are left
-      to provisioning.</p>
+    <p class="help"><strong>Sign-in</strong> updates the signed-in user's groups from the groups claim. This works with any
+      OpenID Connect provider, but only for people who have signed in. The members of provisioned groups are left to
+      provisioning.</p>
     <div class="field">
       <span class="label">Tenant URL</span>
       <code class="code-box">{{.Sync.TenantURL}}</code>
       <span class="help">In the Microsoft Entra admin center create an enterprise application for provisioning (the app
         registration of single sign-on cannot provision): <em>Create your own application → Non-gallery</em> if Entra ID
         can reach this address from the internet (HTTPS with a publicly trusted certificate), otherwise the
-        <em>On-premises SCIM app</em> with the Microsoft Entra provisioning agent. Under <em>Provisioning</em> choose the
-        mode <em>Automatic</em>, enter this Tenant URL and the token as <em>Secret Token</em>, then assign the groups to the
-        application and start provisioning.
+        <em>On-premises SCIM app</em> with the Microsoft Entra provisioning agent. Under <em>Provisioning</em> enter this
+        Tenant URL and the token as <em>Secret Token</em> and test the connection; then assign the groups to the
+        application, start provisioning and give the groups a role and services under <a href="/admin/groups">Groups</a>.
         {{- if not .St.BaseURL}} The address is derived from this page – set the base URL above so that it does not
         change.{{end}}</span>
     </div>

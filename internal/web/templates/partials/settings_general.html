@@ -11,7 +11,7 @@
     <div class="field">
       <label for="base_url">Base URL</label>
       <input id="base_url" name="base_url" type="url" value="{{.St.BaseURL}}" placeholder="https://status.example.com"{{if .Errors.base_url}} aria-invalid="true"{{end}}>
-      <span class="help">The address users open, without a trailing slash. Used for links in e-mails and for the single sign-on redirect URI – recommended.</span>
+      <span class="help">The address users open, without a trailing slash. Used for links in e-mails, for the single sign-on redirect URI and for the provisioning Tenant URL, so set it first.</span>
       {{template "field-error" .Errors.base_url}}
       {{- if .General.LocalBaseURL}}
       <p class="flash flash-warning">This address only works on the server itself (localhost): links in e-mails and single sign-on
