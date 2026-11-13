@@ -14,7 +14,7 @@ import (
 // userCols are the columns read by scanUser (table alias u).
 const userCols = `u.id, u.email, u.name, u.oidc_subject, u.directory_id, u.username,
 	u.password_hash, u.is_local_admin, u.last_login_at, u.created_at,
-	u.principal_name, u.scim_external_id, u.active, u.provisioned`
+	u.principal_name, u.scim_external_id, u.active, u.provisioned, u.email_from_user_name`
 
 // userOrderSQL orders users by display name (table alias u).
 var userOrderSQL = "LOWER(" + displayNameSQL("u") + "), u.id"
@@ -27,7 +27,7 @@ func scanUser(sc scanner) (User, error) {
 		created                   int64
 	)
 	err := sc.Scan(&u.ID, &u.Email, &u.Name, &subject, &dir, &uname, &hash, &u.IsLocalAdmin, &lastLogin, &created,
-		&u.PrincipalName, &u.SCIMExternalID, &u.Active, &u.Provisioned)
+		&u.PrincipalName, &u.SCIMExternalID, &u.Active, &u.Provisioned, &u.EmailFromUserName)
 	if err != nil {
 		return u, err
 	}
@@ -134,7 +134,8 @@ var ErrUserDeactivated = errors.New("your account has been deactivated by your o
 
 // UpsertOIDCUser finds the user for a successful OIDC login and updates it,
 // or creates it. Matching order: oidc_subject, then directory_id (if given),
-// then principal_name (if given) and then email (if given); both
+// then principal_name (if given; only rows without a subject or provisioned
+// ones, as user names are reused) and then email (if given); both
 // case-insensitive and, with a directory id, only rows without one, so that
 // the row of another directory object is never taken over. The matched user
 // gets oidc_subject (taken over if it changed), directory_id (if given) and
@@ -173,7 +174,11 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 			u, err = findUser(ctx, tx, "u.directory_id = ?"+notAdmin, dir, false)
 		}
 		if errors.Is(err, ErrNotFound) && principal != "" {
-			u, err = findUser(ctx, tx, "LOWER(u.principal_name) = LOWER(?) AND u.principal_name <> ''"+noOtherObject+notAdmin, principal, false)
+			// User names are reused, so a row that another sign-in identity
+			// uses is only matched if it is provisioned (provisioning is
+			// authoritative for the user name).
+			u, err = findUser(ctx, tx, "LOWER(u.principal_name) = LOWER(?) AND u.principal_name <> '' AND (u.oidc_subject IS NULL OR u.provisioned = ?)"+
+				noOtherObject+notAdmin, principal, true, false)
 		}
 		if errors.Is(err, ErrNotFound) && email != "" {
 			u, err = findUser(ctx, tx, "u.email = ? AND u.email <> ''"+noOtherObject+notAdmin, email, false)

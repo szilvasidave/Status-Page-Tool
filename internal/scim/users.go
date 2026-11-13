@@ -6,7 +6,8 @@ package scim
 //	userName                   principal_name, as sent [userPrincipalName]
 //	externalId                 scim_external_id [mailNickname]
 //	emails                     e-mail: the work address, else the primary one, else the first;
-//	                           without one a user name that is an e-mail address [mail]
+//	                           without one a user name that is an e-mail address, which then
+//	                           follows changes of the user name [mail]
 //	displayName / name         name: displayName, else name.formatted, else givenName familyName
 //	active                     active [Not IsSoftDeleted]
 //
@@ -147,9 +148,13 @@ func (h *Handler) listUsers(req *request) error {
 	return nil
 }
 
+// enterpriseManager is the manager attribute of the enterprise extension, as
+// parsePath returns it.
+const enterpriseManager = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:user:manager"
+
 // userQuery turns filter conditions into a query. none is true if no user
-// can match (e.g. an id that is not a number, or an address type other than
-// "work").
+// can match (e.g. an id that is not a number, an address type other than
+// "work", or a manager).
 func userQuery(conds []cond) (q store.SCIMUserQuery, none bool, err error) {
 	set := func(field *string, value string) {
 		if *field != "" && !strings.EqualFold(*field, value) {
@@ -190,6 +195,11 @@ func userQuery(conds []cond) (q store.SCIMUserQuery, none bool, err error) {
 				}
 			}
 			set(&q.Email, c.value)
+		case p.is("manager", "") || p.is("manager", "value") || p.ext && (p.attr == enterpriseManager || p.attr == enterpriseManager+".value"):
+			// Microsoft Entra ID may check the manager before changing it. It
+			// is not stored, so no user matches; the change that follows is
+			// ignored.
+			none = true
 		default:
 			return q, false, errFilter("users can be filtered by userName, externalId, id and emails, not by %s.", pathString(p))
 		}
@@ -329,10 +339,11 @@ type email struct {
 }
 
 // userStateOf returns the state of a stored user (its address as the work
-// address).
+// address, unless it was derived from the user name: such an address is
+// derived again, so that it follows a new user name).
 func userStateOf(u *store.User) *userState {
 	s := &userState{userName: u.PrincipalName, externalID: u.SCIMExternalID, displayName: u.Name, active: u.Active}
-	if u.Email != "" {
+	if u.Email != "" && !(u.Provisioned && u.EmailFromUserName) {
 		s.emails = []email{{value: u.Email, typ: "work", primary: true}}
 	}
 	return s
@@ -356,6 +367,7 @@ func (s *userState) data() (store.SCIMUserData, error) {
 		return d, invalidValue("userName is required.")
 	}
 	d.Email = s.address()
+	d.EmailFromUserName = d.Email != "" && !slices.ContainsFunc(s.emails, func(e email) bool { return strings.TrimSpace(e.value) != "" })
 	if d.Email != "" && !looksLikeEmail(d.Email) {
 		return d, invalidValue("The e-mail address %q is not valid.", d.Email)
 	}

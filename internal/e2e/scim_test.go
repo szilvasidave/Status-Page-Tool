@@ -194,20 +194,22 @@ func runSCIMProvisioning(t *testing.T, cfg *config.Config) {
 	startApp(t, dataDir, addr, logs)
 	idp.RequireRedirectURI(base + "/auth/oidc/callback")
 
-	// The administrator generates the token: it is shown once, with the
-	// Tenant URL.
+	// The administrator generates the token: it is shown once (on the page
+	// the POST redirects to), with the Tenant URL.
 	admin := newBrowser(t, "admin")
 	p := admin.get(base+"/login?local=1&next=%2Fadmin%2Fsettings").expectStatus(http.StatusOK).
 		form("/login").set("username", "admin").set("password", scimAdminPW).post()
 	p.expectRedirect("/admin/settings")
 	p = p.follow().expectStatus(http.StatusOK).expectText(base+"/scim/v2", "No token – provisioning is off.")
-	p = p.form("/admin/settings/scim-token#provisioning").post().expectStatus(http.StatusOK).expectText("New token generated.")
+	p = p.form("/admin/settings/scim-token#provisioning").post().follow().expectStatus(http.StatusOK).expectText("New token generated.")
 	m := scimTokenRe.FindStringSubmatch(p.Body)
 	if m == nil {
 		t.Fatalf("no token on the page:\n%s", truncate(p.text(), 3000))
 	}
 	entra := &scimEntra{t: t, tenant: base + "/scim/v2", token: m[1]}
-	admin.get(base + "/admin/settings").expectStatus(http.StatusOK).expectText("Provisioning is on.").expectNoText(m[1])
+	// Reloading that page shows the token no more and does not replace it
+	// (the requests below use it).
+	admin.get(p.URL.String()).expectStatus(http.StatusOK).expectText("Provisioning is on.").expectNoText(m[1])
 
 	// "Test connection", then the provisioning cycle.
 	if found := entra.query("/Users", `userName eq "1d4e3f9a-0000-4000-8000-0123456789ab"`); len(found) != 0 {

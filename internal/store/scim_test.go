@@ -267,7 +267,7 @@ func TestSCIMGroupsCreateUpdateDelete(t *testing.T) {
 		check(t, err)
 		equal(t, "services kept", gs.ServiceIDs, []int64{svc.ID})
 
-		// Update: name, external id and members.
+		// Update: name and members; the real external id is kept.
 		up, err := s.UpdateSCIMGroup(ctx, g.ID, func(d *SCIMGroupData) error {
 			equal(t, "current", [2]any{d.DisplayName, d.Members}, [2]any{"Status Editors", []int64{u1.ID, u2.ID}})
 			d.DisplayName = "Editors"
@@ -276,15 +276,15 @@ func TestSCIMGroupsCreateUpdateDelete(t *testing.T) {
 			return nil
 		})
 		check(t, err)
-		equal(t, "updated", [2]string{up.Name, up.ExternalID}, [2]string{"Editors", "cccccccc-0000-4000-8000-000000000003"})
+		equal(t, "updated", [2]string{up.Name, up.ExternalID}, [2]string{"Editors", strings.ToLower(objectID)})
 		equal(t, "members", members(up), []int64{u2.ID, u3.ID})
 		up, err = s.UpdateSCIMGroup(ctx, g.ID, func(d *SCIMGroupData) error { d.ExternalID = ""; return nil })
 		check(t, err)
-		equal(t, "empty external id keeps it", up.ExternalID, "cccccccc-0000-4000-8000-000000000003")
+		equal(t, "empty external id keeps it", up.ExternalID, strings.ToLower(objectID))
 
 		_, err = s.UpdateSCIMGroup(ctx, g.ID, func(d *SCIMGroupData) error { d.DisplayName = "STATUS ADMINS"; return nil })
 		wantConflict(t, "rename to a taken name", err)
-		_, err = s.UpdateSCIMGroup(ctx, g.ID, func(d *SCIMGroupData) error { d.ExternalID = claimID; return nil })
+		_, err = s.UpdateSCIMGroup(ctx, noExt.ID, func(d *SCIMGroupData) error { d.ExternalID = claimID; return nil })
 		wantConflict(t, "external id of another group", err)
 		boom := errors.New("boom")
 		if _, err = s.UpdateSCIMGroup(ctx, g.ID, func(*SCIMGroupData) error { return boom }); err != boom {
@@ -573,7 +573,7 @@ func TestSCIMQueriesUseIndexes(t *testing.T) {
 	s := openSQLite(t)
 	for _, q := range []string{
 		`SELECT ` + userCols + ` FROM users u WHERE LOWER(u.principal_name) = LOWER(?) AND u.provisioned = ? AND u.is_local_admin = ? ORDER BY u.id LIMIT 1`,
-		`SELECT ` + userCols + ` FROM users u WHERE LOWER(u.principal_name) = LOWER(?) AND u.principal_name <> '' AND u.directory_id IS NULL AND u.is_local_admin = ? ORDER BY u.id LIMIT 1`,
+		`SELECT ` + userCols + ` FROM users u WHERE LOWER(u.principal_name) = LOWER(?) AND u.principal_name <> '' AND (u.oidc_subject IS NULL OR u.provisioned = ?) AND u.directory_id IS NULL AND u.is_local_admin = ? ORDER BY u.id LIMIT 1`,
 		`SELECT ` + userCols + ` FROM users u WHERE u.email = ? AND u.email <> '' AND u.provisioned = ? AND u.is_local_admin = ? ORDER BY u.id LIMIT 1`,
 		`SELECT COUNT(*) FROM users u WHERE u.is_local_admin = ? AND u.scim_external_id = ?`,
 		`SELECT COUNT(*) FROM users WHERE email = ? AND email <> '' AND provisioned = ? AND id <> ?`,

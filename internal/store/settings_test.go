@@ -46,6 +46,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		want := fullSettings()
 		in := want
 		in.BaseURL = " https://status.example.com// "
+		check(t, s.SetSCIMToken(ctx, want.SCIMTokenHash, want.SCIMTokenCreatedAt)) // not stored by SaveSettings
 		check(t, s.SaveSettings(ctx, &in))
 		equal(t, "input not modified", in.BaseURL, " https://status.example.com// ")
 

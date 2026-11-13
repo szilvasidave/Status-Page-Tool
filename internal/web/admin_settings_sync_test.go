@@ -96,17 +96,10 @@ func TestProvisioningToken(t *testing.T) {
 	}
 	provSCIM(t, e, http.MethodGet, "/scim/v2/Users", "anything", "").expectSCIMStatus(t, http.StatusUnauthorized)
 
-	// Generate: the token is shown once on the rendered page, only its hash
-	// is stored, and it is in no cookie, header or log line.
-	r = e.post("/admin/settings/scim-token", nil)
-	if r.Status != http.StatusOK {
-		t.Fatalf("generate token: %d %s", r.Status, r.Body)
-	}
-	m := provTokenRe.FindStringSubmatch(r.Body)
-	if m == nil {
-		t.Fatalf("no token on the page:\n%s", r.Body)
-	}
-	token := m[1]
+	// Generate: the token is shown once on the page the POST redirects to,
+	// only its hash is stored, and it is in no URL, cookie, header or log
+	// line.
+	token, gen, r := provGenerateToken(t, e)
 	mustContain(t, r.Body, "New token generated.", "shown only once", "Provisioning is on.", "Generate new token", "Turn off provisioning")
 	if strings.Contains(r.Body, "previous token no longer works") {
 		t.Error("the first token claims to replace one")
@@ -114,9 +107,11 @@ func TestProvisioningToken(t *testing.T) {
 	if r.Header.Get("Cache-Control") != "no-store" {
 		t.Errorf("Cache-Control %q", r.Header.Get("Cache-Control"))
 	}
-	for k, v := range r.Header {
-		if strings.Contains(strings.Join(v, " "), token) {
-			t.Errorf("the token is in the header %s", k)
+	for _, resp := range []Response{gen, r} {
+		for k, v := range resp.Header {
+			if strings.Contains(strings.Join(v, " "), token) {
+				t.Errorf("the token is in the header %s", k)
+			}
 		}
 	}
 	if strings.Contains(logs.String(), token) {
@@ -154,14 +149,13 @@ func TestProvisioningToken(t *testing.T) {
 	}
 
 	// A new token replaces the old one.
-	r = e.post("/admin/settings/scim-token", nil)
-	m = provTokenRe.FindStringSubmatch(r.Body)
-	if m == nil || m[1] == token {
-		t.Fatalf("no new token: %v", m)
+	newToken, _, r := provGenerateToken(t, e)
+	if newToken == token {
+		t.Fatal("no new token")
 	}
 	mustContain(t, r.Body, "The previous token no longer works.")
 	provSCIM(t, e, http.MethodGet, "/scim/v2/Users", token, "").expectSCIMStatus(t, http.StatusUnauthorized)
-	token = m[1]
+	token = newToken
 	provSCIM(t, e, http.MethodGet, "/scim/v2/Users", token, "").expectSCIMStatus(t, http.StatusOK)
 
 	// Turn off: the token is deleted, provisioned groups are handed back to

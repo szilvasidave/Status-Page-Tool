@@ -204,8 +204,13 @@ func groupQuery(conds []cond) (q store.SCIMGroupQuery, none bool, err error) {
 				none = true
 			}
 			q.ExternalID = c.value
+		case p.is("members", "") || p.is("members", "value"):
+			// Microsoft Entra ID may check a membership before changing it.
+			id, ok := parseID(c.value)
+			none = none || !ok
+			q.MemberIDs = append(q.MemberIDs, id)
 		default:
-			return q, false, errFilter("groups can be filtered by displayName, externalId and id, not by %s.", pathString(p))
+			return q, false, errFilter("groups can be filtered by displayName, externalId, id and members, not by %s.", pathString(p))
 		}
 	}
 	return q, none, nil

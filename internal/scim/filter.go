@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // path is an attribute path such as userName, name.givenName,
@@ -76,6 +78,11 @@ func parseFilter(s string) ([]cond, error) {
 		if err != nil {
 			return nil, errFilter("%q – %v.", s, err)
 		}
+		if !utf8.ValidString(value) || strings.ContainsFunc(value, unicode.IsControl) {
+			// The same rule as checkValue for request bodies; PostgreSQL
+			// rejects NUL and invalid UTF-8.
+			return nil, errFilter("%q – the value contains characters that are not allowed.", s)
+		}
 		p, err := parsePath(attr)
 		if err != nil {
 			return nil, errFilter("%q – %v.", s, err)
@@ -127,7 +134,8 @@ func (l *lexer) token() string {
 		}
 		l.pos++
 	}
-	return l.s[start:min(l.pos, len(l.s))]
+	l.pos = min(l.pos, len(l.s)) // an escape at the very end skips past it
+	return l.s[start:l.pos]
 }
 
 // value reads a comparison value: a JSON string, or a word such as true,
