@@ -64,8 +64,8 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.DataDir == "" {
 		opts.DataDir = config.DefaultDataDir()
 	}
-	if err := os.MkdirAll(opts.DataDir, 0o700); err != nil {
-		return fmt.Errorf("create data directory: %w", err)
+	if err := config.EnsureDataDir(opts.DataDir); err != nil {
+		return err
 	}
 	a := &app{opts: opts, log: opts.Log}
 	a.workers, a.stopWork = context.WithCancel(context.Background())
@@ -82,13 +82,18 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil && !needSetup {
 		return err
 	}
-
-	listen := opts.Listen
-	if listen == "" && cfg != nil {
-		listen = cfg.Listen
+	listen, useTLS := address(opts.DataDir, cfg)
+	if opts.Listen != "" {
+		listen = opts.Listen
 	}
-	if listen == "" {
-		listen = config.DefaultListen
+	// Load the certificate first, so that a wrong path is reported clearly
+	// instead of after "listening".
+	var tlsCert tls.Certificate
+	if useTLS {
+		certFile, keyFile := cfg.TLSFiles(opts.DataDir)
+		if tlsCert, err = tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+			return fmt.Errorf("could not load the TLS certificate (tls_cert and tls_key in %s): %w", config.Path(opts.DataDir), err)
+		}
 	}
 
 	if needSetup {
@@ -111,9 +116,8 @@ func Run(ctx context.Context, opts Options) error {
 		IdleTimeout:       120 * time.Second,
 		ErrorLog:          slog.NewLogLogger(a.log.Handler(), slog.LevelWarn),
 	}
-	useTLS := cfg != nil && cfg.TLSCert != "" && cfg.TLSKey != ""
 	if useTLS {
-		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{tlsCert}}
 	}
 
 	ln, err := net.Listen("tcp", listen)
@@ -136,7 +140,7 @@ func Run(ctx context.Context, opts Options) error {
 	errCh := make(chan error, 1)
 	go func() {
 		if useTLS {
-			errCh <- srv.ServeTLS(ln, cfg.TLSCert, cfg.TLSKey)
+			errCh <- srv.ServeTLS(ln, "", "")
 		} else {
 			errCh <- srv.Serve(ln)
 		}
@@ -154,6 +158,45 @@ func Run(ctx context.Context, opts Options) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// address returns the listen address and whether TLS is used for a server
+// started with dataDir and the configuration cfg (nil in setup mode, where
+// the installer's SetupListenFile, if present, gives the address).
+func address(dataDir string, cfg *config.Config) (listen string, useTLS bool) {
+	if cfg != nil {
+		return cfg.Listen, cfg.TLSCert != "" && cfg.TLSKey != ""
+	}
+	if b, err := os.ReadFile(filepath.Join(dataDir, config.SetupListenFile)); err == nil {
+		l := strings.TrimSpace(string(config.TrimBOM(b)))
+		if _, _, err := net.SplitHostPort(l); err == nil {
+			return l, false
+		}
+	}
+	return config.DefaultListen, false
+}
+
+// LocalURL returns the URL under which "statuspage run -data dataDir" (as
+// the service runs it) can be reached on this computer, e.g.
+// "http://localhost:8080".
+func LocalURL(dataDir string) (string, error) {
+	cfg, err := config.Load(dataDir)
+	if err != nil && !errors.Is(err, config.ErrNotConfigured) {
+		return "", err
+	}
+	listen, useTLS := address(dataDir, cfg)
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", fmt.Errorf("invalid listen address %q in %s", listen, config.Path(dataDir))
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		host = "localhost"
+	}
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), nil
 }
 
 // activate opens the database, applies migrations and switches the server to

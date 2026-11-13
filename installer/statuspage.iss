@@ -356,7 +356,7 @@ begin
 
   PgPage := CreateInputQueryPage(DbPage.ID,
     'PostgreSQL connection', 'How does the status page connect to PostgreSQL?',
-    'SSL mode: disable, prefer, require, verify-ca or verify-full. ' +
+    'SSL mode: disable, allow, prefer, require, verify-ca or verify-full. ' +
     'The connection is tested when you click Next.');
   PgPage.Add('&Server name:', False);
   PgPage.Add('P&ort:', False);
@@ -445,7 +445,8 @@ begin
     Exit;
 
   { Only SYSTEM (the service) and Administrators may access the data
-    directory: it contains the secret key and the database credentials. }
+    directory: it contains the secret key and the database credentials.
+    (statuspage.exe restricts it the same way when it starts.) }
   RunSystemTool('icacls.exe', AddQuotes(DataDir()) +
     ' /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /Q');
 
@@ -453,12 +454,19 @@ begin
   begin
     WizardForm.StatusLabel.Caption := 'Creating the database tables...';
     if not RunSetup(ExpandConstant('{app}\statuspage.exe'), False, ErrorMsg) then
+    begin
+      { The service starts in setup mode; this file makes it listen on the
+        chosen port (instead of 8080) until the setup is completed. }
+      SaveStringToFile(DataDir() + '\setup-listen.txt', ':' + GetPort(), False);
       SuppressibleMsgBox('The database could not be set up:' + #13#10#13#10 + ErrorMsg + #13#10#13#10 +
         'You can complete the database setup in the browser at ' + GetBaseURL('') + '/setup ' +
         'once the installation has finished.', mbError, MB_OK, IDOK);
+    end;
   end;
 
   WizardForm.StatusLabel.Caption := 'Installing the Windows service...';
+  { Also points an existing "StatusPage" service (e.g. registered by a
+    portable statuspage.exe) to this program and data directory. }
   if RunStatusPage('service install -data ' + AddQuotes(DataDir())) <> 0 then
     SuppressibleMsgBox('The Windows service could not be installed. See the setup log for details.', mbError, MB_OK, IDOK);
 
@@ -468,10 +476,15 @@ begin
     SetupFirewall();
   end;
 
+  { "service start" waits (up to 15 seconds) until the status page answers
+    and fails if it does not, e.g. because the port is used by another
+    program. }
   WizardForm.StatusLabel.Caption := 'Starting the Windows service...';
   if RunStatusPage('service start -data ' + AddQuotes(DataDir())) <> 0 then
-    SuppressibleMsgBox('The Windows service "{#AppName}" could not be started. ' +
-      'Please check ' + DataDir() + '\statuspage.log.', mbError, MB_OK, IDOK);
+    SuppressibleMsgBox('The Windows service "{#AppName}" did not start or does not answer at ' + GetBaseURL('') + '. ' +
+      'Please check the log file ' + DataDir() + '\statuspage.log' + #13#10#13#10 +
+      'A common cause is a port that is already used by another program: change "listen" in ' +
+      ConfigFile() + ' and restart the service.', mbError, MB_OK, IDOK);
 end;
 
 { ---------------------------------------------------------------- uninstall }

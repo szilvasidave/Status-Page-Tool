@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/szilvasidave/status-page-tool/internal/config"
 )
 
 const (
@@ -16,11 +18,21 @@ const (
 )
 
 // newLogger returns a text logger writing to stdout (if toStdout) and to
-// <dataDir>/statuspage.log, and makes it the default logger. The level is
-// read from STATUSPAGE_LOG_LEVEL (debug, info, warn, error; default info).
-// The returned function closes the log file.
+// <dataDir>/statuspage.log, and makes it the default logger. The level
+// (debug, info, warn, error; default info) is read from the environment
+// variable STATUSPAGE_LOG_LEVEL or else from "log_level" in config.json; the
+// latter also works for the Windows service, which does not see environment
+// variables set after the last reboot. The returned function closes the log
+// file.
 func newLogger(dataDir string, toStdout bool) (*slog.Logger, func()) {
-	level, levelErr := logLevel(os.Getenv("STATUSPAGE_LOG_LEVEL"))
+	name, source := os.Getenv("STATUSPAGE_LOG_LEVEL"), "STATUSPAGE_LOG_LEVEL"
+	if strings.TrimSpace(name) == "" {
+		// Errors are reported by the server when it loads the file.
+		if cfg, err := config.Load(dataDir); err == nil {
+			name, source = cfg.LogLevel, "log_level in "+config.FileName
+		}
+	}
+	level, levelErr := logLevel(name, source)
 
 	var out teeWriter
 	if toStdout {
@@ -46,15 +58,15 @@ func newLogger(dataDir string, toStdout bool) (*slog.Logger, func()) {
 	}
 }
 
-// logLevel parses a log level name; empty means info.
-func logLevel(s string) (slog.Level, error) {
+// logLevel parses a log level name from source; empty means info.
+func logLevel(s, source string) (slog.Level, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return slog.LevelInfo, nil
 	}
 	var l slog.Level
 	if err := l.UnmarshalText([]byte(s)); err != nil {
-		return slog.LevelInfo, fmt.Errorf("invalid STATUSPAGE_LOG_LEVEL %q (use debug, info, warn or error), using info", s)
+		return slog.LevelInfo, fmt.Errorf("invalid log level %q in %s (use debug, info, warn or error), using info", s, source)
 	}
 	return l, nil
 }
