@@ -99,6 +99,8 @@ func TestNotificationOutbox(t *testing.T) {
 		list, err := s.ListNotifications(ctx, 0)
 		check(t, err)
 		equal(t, "list newest first", []string{list[0].Subject, list[1].Subject, list[2].Subject}, []string{"third", "second", "first"})
+		equal(t, "list without bodies", [2]string{list[2].BodyText, list[2].BodyHTML}, [2]string{"", ""})
+		equal(t, "list fields", [2]any{list[2].Email, list[2].UserID}, [2]any{"u@example.com", u.ID})
 		sent := list[2]
 		equal(t, "sent status", sent.Status, NotificationSent)
 		equal(t, "sent attempts", sent.Attempts, 1)

@@ -169,10 +169,10 @@ func TestMaintenancesToNotify(t *testing.T) {
 
 		equal(t, "nothing yet", len(due(now)), 0)
 		equal(t, "started (at start time)", due(m.StartsAt), []int64{m.ID})
-		check(t, s.MarkMaintenanceNotified(ctx, m.ID, true))
+		check(t, s.MarkMaintenanceNotified(ctx, m, true))
 		equal(t, "start notified", len(due(now.Add(90*time.Minute))), 0)
 		equal(t, "ended", due(m.EndsAt), []int64{m.ID})
-		check(t, s.MarkMaintenanceNotified(ctx, m.ID, false))
+		check(t, s.MarkMaintenanceNotified(ctx, m, false))
 		equal(t, "all notified", len(due(now.Add(10*time.Hour))), 0)
 		got, err := s.GetMaintenance(ctx, m.ID)
 		check(t, err)
@@ -182,6 +182,61 @@ func TestMaintenancesToNotify(t *testing.T) {
 		mustExec(t, s, `UPDATE maintenances SET notified_start = ?, notified_end = ? WHERE id = ?`, false, false, m.ID)
 		equal(t, "both pending", due(now.Add(10*time.Hour)), []int64{m.ID})
 
-		wantNotFound(t, "mark unknown", s.MarkMaintenanceNotified(ctx, 999, true))
+		check(t, s.MarkMaintenanceNotified(ctx, &Maintenance{ID: 999}, true)) // unknown: nothing to do
+	})
+}
+
+// TestMarkMaintenanceNotifiedAfterReschedule: when an editor moves a window
+// while the worker announces it, the worker's mark must not swallow the
+// announcement of the new start or end.
+func TestMarkMaintenanceNotifiedAfterReschedule(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		now := time.Now().Truncate(time.Second)
+		m := &Maintenance{Title: "Window", Notify: true, StartsAt: now.Add(time.Hour), EndsAt: now.Add(2 * time.Hour)}
+		check(t, s.CreateMaintenance(ctx, m))
+		ids := func(at time.Time) []int64 {
+			t.Helper()
+			ms, err := s.MaintenancesToNotify(ctx, at)
+			check(t, err)
+			var out []int64
+			for _, x := range ms {
+				out = append(out, x.ID)
+			}
+			return out
+		}
+
+		// The worker reads the started window ...
+		ms, err := s.MaintenancesToNotify(ctx, m.StartsAt)
+		check(t, err)
+		equal(t, "due", len(ms), 1)
+		seen := ms[0]
+		// ... an editor moves it to tomorrow ...
+		moved := *m
+		moved.StartsAt, moved.EndsAt = now.Add(25*time.Hour), now.Add(26*time.Hour)
+		check(t, s.UpdateMaintenance(ctx, &moved))
+		// ... and the worker marks the window it announced.
+		check(t, s.MarkMaintenanceNotified(ctx, &seen, true))
+		got, err := s.GetMaintenance(ctx, m.ID)
+		check(t, err)
+		equal(t, "start flag of the moved window", got.NotifiedStart, false)
+		equal(t, "new start announced", ids(moved.StartsAt), []int64{m.ID})
+
+		// The same for the end: a running window is extended while its
+		// "completed" e-mail is being queued.
+		check(t, s.DeleteMaintenance(ctx, m.ID))
+		running := &Maintenance{Title: "Running", Notify: true, StartsAt: now.Add(-time.Hour), EndsAt: now.Add(time.Hour)}
+		check(t, s.CreateMaintenance(ctx, running))
+		ms, err = s.MaintenancesToNotify(ctx, running.EndsAt)
+		check(t, err)
+		equal(t, "end due", len(ms), 1)
+		seen = ms[0]
+		running.EndsAt = now.Add(3 * time.Hour)
+		check(t, s.UpdateMaintenance(ctx, running))
+		check(t, s.MarkMaintenanceNotified(ctx, &seen, false))
+		equal(t, "new end announced", ids(running.EndsAt), []int64{running.ID})
+
+		// An unchanged window is marked.
+		check(t, s.MarkMaintenanceNotified(ctx, running, false))
+		equal(t, "all notified", len(ids(running.EndsAt)), 0)
 	})
 }

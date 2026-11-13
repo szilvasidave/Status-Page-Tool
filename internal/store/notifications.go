@@ -16,6 +16,11 @@ const maxErrorLen = 1000
 const notificationCols = `id, user_id, email, subject, body_text, body_html, status, attempts, last_error,
 	next_attempt_at, created_at, sent_at`
 
+// notificationListCols are notificationCols with empty bodies, for lists
+// that do not show them (one e-mail can be several megabytes).
+const notificationListCols = `id, user_id, email, subject, '', '', status, attempts, last_error,
+	next_attempt_at, created_at, sent_at`
+
 func scanNotification(sc scanner) (Notification, error) {
 	var (
 		n              Notification
@@ -133,14 +138,15 @@ func (s *Store) MarkNotificationAttemptFailed(ctx context.Context, id int64, err
 	return err
 }
 
-// ListNotifications returns the most recent notifications, newest first.
-// A limit <= 0 means 100.
+// ListNotifications returns the most recent notifications, newest first,
+// without their bodies (BodyText and BodyHTML are empty). A limit <= 0
+// means 100.
 func (s *Store) ListNotifications(ctx context.Context, limit int) ([]Notification, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	out, err := queryAll(ctx, s.db, scanNotification,
-		`SELECT `+notificationCols+` FROM notifications ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
+		`SELECT `+notificationListCols+` FROM notifications ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list e-mails: %w", err)
 	}

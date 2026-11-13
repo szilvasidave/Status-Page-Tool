@@ -32,49 +32,81 @@ const smtpTimeout = 15 * time.Second
 // certificates are always verified.
 var testTLSConfig *tls.Config
 
+// errStopped marks the error of send when it stopped before the last
+// message because the SMTP server throttled the delivery or closed the
+// connection. The messages after the last reported one were not tried.
+var errStopped = errors.New("delivery stopped early")
+
 // Send delivers msgs over one SMTP connection using the SMTP settings.
-// Returns per-message errors (nil entries = delivered) and a non-nil error if
-// connecting/authenticating failed (then all messages failed).
+// It returns per-message errors (nil entries = delivered) and, if not all
+// messages were tried, the reason (see send); the messages that were not
+// tried have that error too.
 func Send(ctx context.Context, st *store.Settings, msgs []Message) ([]error, error) {
 	errs := make([]error, len(msgs))
-	failAll := func(err error) ([]error, error) {
-		for i := range errs {
-			errs[i] = err
-		}
-		return errs, err
+	tried := 0
+	err := send(ctx, st, msgs, func(i int, e error) { errs[i], tried = e, i+1 })
+	for i := tried; i < len(msgs); i++ {
+		errs[i] = err
 	}
+	return errs, err
+}
+
+// send delivers msgs over one SMTP connection and calls result right after
+// each message it tried, in order (err nil: the server accepted it), so
+// that the caller can record the result at once. It returns a non-nil error
+// if it did not try all messages:
+//   - connecting or signing in failed, or the connection did not work for
+//     the first message: no message was tried;
+//   - ctx was cancelled;
+//   - the server answered with a temporary error that is not about the
+//     recipient, e.g. a rate limit (that message is reported with it), or
+//     it closed the connection: the error wraps errStopped.
+func send(ctx context.Context, st *store.Settings, msgs []Message, result func(i int, err error)) error {
 	if len(msgs) == 0 {
-		return errs, nil
+		return nil
 	}
 	if !st.SMTPConfigured() {
-		return failAll(errors.New("e-mail is not configured: set the SMTP server and sender address in the settings"))
+		return errors.New("e-mail is not configured: set the SMTP server and sender address in the settings")
 	}
 	if err := mail.NewMsg().From(st.SMTPFrom); err != nil {
-		return failAll(fmt.Errorf("invalid sender address %q: %w", st.SMTPFrom, err))
+		return fmt.Errorf("invalid sender address %q: %w", st.SMTPFrom, err)
 	}
 
 	client, addr, err := newSMTPClient(st)
 	if err != nil {
-		return failAll(err)
+		return err
 	}
 	if err := client.DialWithContext(ctx); err != nil {
-		return failAll(connectError(ctx, addr, st, err))
+		return connectError(ctx, addr, st, err)
 	}
 	defer client.Close()
 
 	for i, m := range msgs {
 		if err := ctx.Err(); err != nil {
-			errs[i] = err
-			continue
+			return err
 		}
 		msg, err := buildMessage(st.SMTPFrom, m)
-		if err != nil {
-			errs[i] = err
-			continue
+		if err == nil {
+			// A message the server accepted counts as delivered even if the
+			// reset after it failed: sending it again would duplicate it.
+			if err = client.Send(msg); err != nil && msg.IsDelivered() {
+				err = nil
+			}
 		}
-		errs[i] = client.Send(msg)
+		var se *mail.SendError
+		switch {
+		case errors.As(err, &se) && se.Reason == mail.ErrConnCheck:
+			if i == 0 {
+				return fmt.Errorf("SMTP server %s: %w", addr, err)
+			}
+			return fmt.Errorf("%w: SMTP server %s closed the connection: %w", errStopped, addr, err)
+		case errors.As(err, &se) && se.IsTemp() && se.Reason != mail.ErrSMTPRcptTo:
+			result(i, err)
+			return fmt.Errorf("%w: %w", errStopped, err)
+		}
+		result(i, err)
 	}
-	return errs, nil
+	return nil
 }
 
 // newSMTPClient creates a go-mail client for the settings. It returns the
