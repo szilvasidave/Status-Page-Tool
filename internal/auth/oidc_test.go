@@ -686,8 +686,9 @@ func TestOIDCUserinfoFailureKeepsMemberships(t *testing.T) {
 }
 
 // TestOIDCDirectorySyncOwnsSyncedGroups: with directory sync on, a sign-in
-// does not remove memberships of groups the sync manages; the claim still
-// decides about the other groups, and adds synced groups it contains.
+// does not remove memberships of groups the sync manages (synchronised, with
+// a role or service); the claim still decides about the other groups, and
+// adds synced groups it contains.
 func TestOIDCDirectorySyncOwnsSyncedGroups(t *testing.T) {
 	const (
 		synced = "aaaaaaaa-0000-4000-8000-000000000001"
@@ -706,6 +707,11 @@ func TestOIDCDirectorySyncOwnsSyncedGroups(t *testing.T) {
 	go2, err := e.store.CreateGroup(ctx, other, "Other")
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, g := range []*store.Group{gs, go2} {
+		if err := e.store.UpdateGroup(ctx, g.ID, g.Name, store.RoleEditor); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := e.store.SyncGroupMembers(ctx, gs.ID, "", []store.DirectoryUser{{DirectoryID: "oid-1"}}); err != nil {
 		t.Fatal(err)
@@ -732,6 +738,14 @@ func TestOIDCDirectorySyncOwnsSyncedGroups(t *testing.T) {
 	// membership kept from the sync); upper-case GUIDs are normalised.
 	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{strings.ToUpper(synced), other}})
 	want("claim with synced groups", synced, other)
+
+	// A group without role and services is no longer synchronised: the
+	// claim decides about it again.
+	if err := e.store.UpdateGroup(ctx, gs.ID, gs.Name, store.RoleViewer); err != nil {
+		t.Fatal(err)
+	}
+	e.mustLogin(map[string]any{"sub": "user-1", "oid": "oid-1", "groups": []string{other}})
+	want("synced group no longer used", other)
 
 	// Directory sync off: the claim decides about all groups again.
 	e.saveSettings(func(s *store.Settings) { s.DirectorySyncEnabled = false })

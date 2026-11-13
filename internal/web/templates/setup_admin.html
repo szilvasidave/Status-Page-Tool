@@ -14,7 +14,7 @@
       <div class="field-row">
         <div class="field">
           <label for="username">User name</label>
-          <input id="username" name="username" type="text" value="{{.Username}}" required maxlength="64" autocomplete="username" autocapitalize="none" spellcheck="false"{{if .Errors.username}} aria-invalid="true"{{end}}>
+          <input id="username" name="username" type="text" value="{{.Username}}" required maxlength="64" placeholder="e.g. it-admin" autocomplete="username" autocapitalize="none" spellcheck="false"{{if .Errors.username}} aria-invalid="true"{{end}}>
           {{template "field-error" .Errors.username}}
         </div>
         <div class="field">

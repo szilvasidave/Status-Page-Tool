@@ -155,7 +155,7 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 			u, err = findUser(ctx, tx, "u.directory_id = ?"+notAdmin, dir, false)
 		}
 		if errors.Is(err, ErrNotFound) && email != "" {
-			cond := "u.email = ?"
+			cond := "u.email = ? AND u.email <> ''"
 			if dir != "" {
 				cond += " AND u.directory_id IS NULL"
 			}
@@ -177,14 +177,15 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 		// Free unique values that are held by other rows. (The subject, and
 		// the directory id of a new user, can only be held by a row that a
 		// concurrent transaction created after the lookup: then the write
-		// below fails and the lookup is repeated.)
+		// below fails and the lookup is repeated.) The repeated
+		// "email <> ''" lets SQLite use the partial index users_email_idx.
 		if dir != "" && u != nil {
 			if _, err := tx.ExecContext(ctx, `UPDATE users SET directory_id = NULL WHERE directory_id = ? AND id <> ?`, dir, id); err != nil {
 				return err
 			}
 		}
 		if email != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND id <> ?`, email, id); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND email <> '' AND id <> ?`, email, id); err != nil {
 				return err
 			}
 		}
@@ -249,9 +250,10 @@ func (s *Store) SetUserGroups(ctx context.Context, userID int64, groups []GroupR
 // is only overwritten when ref.Name is non-empty and differs from
 // ExternalID. Refs with an empty ExternalID are ignored.
 //
-// With keepSynced (directory sync enabled), memberships of groups managed by
-// the directory sync (last_synced_at set) are not removed: only the sync
-// removes those.
+// With keepSynced (directory sync enabled), memberships of groups the
+// directory sync manages are not removed: only the sync removes those. These
+// are the groups it currently synchronises (see GroupsToSync) and has
+// synchronised at least once (last_synced_at set).
 func (s *Store) SetLoginGroups(ctx context.Context, userID int64, groups []GroupRef, keepSynced bool) error {
 	// Unique refs (the first name wins), sorted so that concurrent logins
 	// lock the group rows in the same order.
@@ -278,7 +280,7 @@ func (s *Store) SetLoginGroups(ctx context.Context, userID int64, groups []Group
 		}
 		del := `DELETE FROM user_groups WHERE user_id = ?`
 		if keepSynced {
-			del += ` AND group_id NOT IN (SELECT id FROM idp_groups WHERE last_synced_at IS NOT NULL)`
+			del += ` AND group_id NOT IN (SELECT g.id FROM idp_groups g WHERE g.last_synced_at IS NOT NULL AND ` + groupInUseSQL + `)`
 		}
 		if _, err := tx.ExecContext(ctx, del, userID); err != nil {
 			return err

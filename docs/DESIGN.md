@@ -76,7 +76,8 @@ the connection and privilege checks of `internal/setup` and `tools/devseed`.
 * **Roles**: `viewer` (any signed-in user), `editor`, `admin`. Roles are
   assigned to IdP *groups* in the admin UI (Groups page). A user's role is the
   highest role of their groups, computed on every request. The local admin
-  account is always admin.
+  account is always admin. Failed local sign-ins are limited (in memory) to
+  10 per 15 minutes per client address and user name.
 * **Groups & members from the IdP**:
   * at every OIDC login the configured groups claim (default `groups`, from
     the ID token, else from userinfo) replaces the user's memberships; unknown
@@ -89,10 +90,10 @@ the connection and privilege checks of `internal/setup` and `tools/devseed`.
     members of all groups with a role or services via Microsoft Graph every
     hour (permissions GroupMember.Read.All + User.Read.All; disabled accounts
     are skipped), so members are notified even if they never signed in. The
-    sync is authoritative for the groups it manages (`last_synced_at` set):
-    sign-in leaves those memberships alone, the sync refreshes e-mail/name of
-    users that never signed in, and a group deleted in the directory (404)
-    loses its members and is reported;
+    sync is authoritative for the groups it manages (role or services, and
+    `last_synced_at` set): sign-in leaves those memberships alone, the sync
+    refreshes e-mail/name of users that never signed in, and a group deleted
+    in the directory (404) loses its members and is reported;
   * without the sync only users who signed in at least once are known (and
     notified), with the groups of their last sign-in. Admins can remove an
     SSO/directory user on Admin → Users (not the local admin); it is

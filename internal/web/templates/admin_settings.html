@@ -97,7 +97,7 @@
       <span class="help">Every hour the members of all groups that have a role or services are read from Microsoft Graph, so they
         are notified even if they never signed in, and groups can be searched by name. Uses the single sign-on client ID and
         secret; the app registration needs the Microsoft Graph <em>application</em> permissions
-        <strong>GroupMember.Read.All</strong> and <strong>User.ReadBasic.All</strong> with admin consent.</span>
+        <strong>GroupMember.Read.All</strong> and <strong>User.Read.All</strong> with admin consent.</span>
       {{template "field-error" .Errors.directory_sync_enabled}}
     </div>
     {{if .DirectoryEnabled}}

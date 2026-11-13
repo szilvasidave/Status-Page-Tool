@@ -333,7 +333,7 @@ func (e *graphError) Error() string {
 		msg += ": " + e.Message
 	}
 	if e.StatusCode == http.StatusForbidden {
-		msg += " – the app registration needs the Microsoft Graph application permissions GroupMember.Read.All and User.ReadBasic.All with admin consent"
+		msg += " – the app registration needs the Microsoft Graph application permissions GroupMember.Read.All and User.Read.All with admin consent"
 	}
 	return msg
 }

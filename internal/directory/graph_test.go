@@ -289,7 +289,7 @@ func TestGraphErrors(t *testing.T) {
 	if !errors.As(err, &ge) || ge.StatusCode != 403 || ge.Code != "Authorization_RequestDenied" {
 		t.Errorf("error = %#v", err)
 	}
-	for _, want := range []string{"HTTP 403", "Authorization_RequestDenied", "Insufficient privileges to complete the operation.", "GroupMember.Read.All"} {
+	for _, want := range []string{"HTTP 403", "Authorization_RequestDenied", "Insufficient privileges to complete the operation.", "GroupMember.Read.All and User.Read.All"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}

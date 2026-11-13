@@ -324,8 +324,9 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.settings(r)
+	// No user name is suggested: failed sign-ins lock a name out for a while
+	// (for everybody behind a reverse proxy), so it should not be guessable.
 	d := &setupAdminData{
-		Username:     "admin",
 		SiteName:     st.SiteName,
 		BaseURL:      st.BaseURL,
 		Timezone:     st.Timezone,

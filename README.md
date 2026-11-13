@@ -234,7 +234,8 @@ missing, the user is in no group any more**, so configure the identity
 provider to send it (see below). Memberships stay unchanged only when Entra
 ID reports that the user has too many groups for the token, or when the
 userinfo endpoint cannot be read. With the [directory sync](#microsoft-entra-id)
-on, memberships in the groups it manages are left to the sync. Group IDs that
+on, memberships in the groups it manages (groups with a role or a service,
+once they have been synchronised) are left to the sync. Group IDs that
 are GUIDs (Entra ID object IDs) are compared regardless of upper/lower case.
 
 The user's e-mail address is taken from the `email` claim (or
@@ -532,7 +533,13 @@ Example: `echo 'new-long-password' | statuspage reset-password -username admin -
   the page through it.
 - **Local administrator.** Use a long password and keep it for emergencies;
   daily work should use single sign-on. Reset it with
-  `statuspage reset-password`.
+  `statuspage reset-password`. Failed local sign-ins are limited to 10 per
+  15 minutes per client address and user name; after that, the name is
+  refused from that address for up to 15 minutes, even with the right
+  password (restarting the service clears the counter). Behind a reverse
+  proxy everyone has the proxy's address, so anybody who knows the
+  administrator's user name can lock it out: choose a name that is not easy
+  to guess (not `admin`).
 - **Data directory.** `config.json` contains the secret key and, for
   PostgreSQL, the database password. On Windows the installer and
   `statuspage.exe` itself (server, `setup` and `service install`) limit the

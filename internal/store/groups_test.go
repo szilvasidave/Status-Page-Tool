@@ -1,8 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestGroupExternalIDCase: Entra ID object ids are matched case-insensitively
@@ -100,6 +102,39 @@ func TestSyncGroupMembersDirectoryIsAuthoritative(t *testing.T) {
 		check(t, s.SyncGroupMembers(ctx, g2.ID, "", []DirectoryUser{{DirectoryID: "d-max", Email: "max.new@corp.example", Name: "Max"}}))
 		equal(t, "Max's new address", user(maxRow.ID).Email, "max.new@corp.example")
 	})
+}
+
+// TestSyncLargeGroupSQLite: on SQLite the sync of a group holds the write
+// lock, so it must stay fast for large groups. E-mail statements that cannot
+// use the partial index users_email_idx (they must repeat its condition) scan
+// the users table for every member: re-synchronising 5,000 members took
+// about 1.8 s instead of 0.2 s, 10,000 about 6 s, and sign-ins waiting for
+// the lock failed after the busy timeout (10 s).
+func TestSyncLargeGroupSQLite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large group")
+	}
+	s := openSQLite(t)
+	g := mustGroup(t, s, "all-staff", "All Staff")
+	const n = 5000
+	members := make([]DirectoryUser, n)
+	for i := range members {
+		members[i] = DirectoryUser{DirectoryID: fmt.Sprint("d-", i), Email: fmt.Sprintf("user%d@example.com", i), Name: fmt.Sprint("User ", i)}
+	}
+	check(t, s.SyncGroupMembers(ctx, g.ID, "", members))
+	start := time.Now()
+	check(t, s.SyncGroupMembers(ctx, g.ID, "", members))
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("re-synchronising %d members took %v", n, d)
+	}
+	got, err := s.GroupMembers(ctx, g.ID)
+	check(t, err)
+	equal(t, "members", len(got), n)
+	for _, u := range got {
+		if want := "user" + strings.TrimPrefix(u.DirectoryID, "d-") + "@example.com"; u.Email != want {
+			t.Fatalf("member %s has e-mail %q, want %q", u.DirectoryID, u.Email, want)
+		}
+	}
 }
 
 // mustMember returns the only member of a group.

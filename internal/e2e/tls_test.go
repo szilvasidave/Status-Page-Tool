@@ -88,7 +88,7 @@ func TestTLS(t *testing.T) {
 	if want := suggestedBaseURL(app.URL); f.value("base_url") != want {
 		t.Errorf("suggested base URL %q, want %q", f.value("base_url"), want)
 	}
-	p = f.set("password", adminPW).set("password_confirm", adminPW).set("site_name", "TLS Status").post()
+	p = f.set("username", "tls-admin").set("password", adminPW).set("password_confirm", adminPW).set("site_name", "TLS Status").post()
 	p.expectRedirect("/admin/settings")
 	secure := map[string]bool{}
 	for _, c := range p.Header.Values("Set-Cookie") {

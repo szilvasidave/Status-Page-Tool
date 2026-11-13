@@ -114,8 +114,8 @@ func TestSetupAdminStep(t *testing.T) {
 	// The page is opened from the server itself (127.0.0.1): the suggested
 	// base URL uses the computer name, which other computers can reach.
 	port := e.Server.URL[strings.LastIndex(e.Server.URL, ":"):]
-	mustContain(t, r.Body, "Create the administrator", `value="admin"`, `value="http://status-srv`+port+`"`, `value="UTC"`,
-		`aria-current="step"`, "Administrator", `name="csrf_token"`)
+	mustContain(t, r.Body, "Create the administrator", `name="username" type="text" value=""`, `placeholder="e.g. it-admin"`,
+		`value="http://status-srv`+port+`"`, `value="UTC"`, `aria-current="step"`, "Administrator", `name="csrf_token"`)
 	if strings.Contains(r.Body, `name="setup_token"`) {
 		t.Error("the setup token is asked for a local request")
 	}
@@ -126,6 +126,7 @@ func TestSetupAdminStep(t *testing.T) {
 	}{
 		{"password", "short", "at least 10 characters"},
 		{"password_confirm", "something-else", "The passwords do not match."},
+		{"username", "", "Enter a user name."},
 		{"username", "has space", "no spaces"},
 		{"site_name", "", "Enter a name for the status page."},
 		{"base_url", "ftp://example.com", "starting with http:// or https://"},

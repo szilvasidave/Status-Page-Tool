@@ -4,9 +4,9 @@
 //
 // It reuses the OIDC client id and secret from the settings (client
 // credentials flow). The app registration needs the Microsoft Graph
-// application permissions GroupMember.Read.All and User.ReadBasic.All.
-// Disabled accounts are only left out with User.Read.All instead of
-// User.ReadBasic.All: Graph returns accountEnabled only with that permission.
+// application permissions GroupMember.Read.All and User.Read.All (not
+// User.ReadBasic.All: Graph returns accountEnabled, which is needed to leave
+// out disabled accounts, only with User.Read.All).
 package directory
 
 import (

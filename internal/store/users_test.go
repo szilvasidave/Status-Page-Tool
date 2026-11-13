@@ -398,6 +398,42 @@ func TestSetLoginGroupsKeepSynced(t *testing.T) {
 	})
 }
 
+// TestSetLoginGroupsKeepsOnlyManagedGroups: a group that was synchronised
+// once but no longer has a role or service is no longer synchronised; the
+// sign-in decides about its memberships again. Otherwise a member removed in
+// the directory would keep it and get its role back as soon as the group is
+// used again (before the next sync).
+func TestSetLoginGroupsKeepsOnlyManagedGroups(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		g := mustGroup(t, s, "aaaaaaaa-0000-4000-8000-000000000001", "Status Admins")
+		check(t, s.UpdateGroup(ctx, g.ID, "Status Admins", RoleAdmin))
+		bob, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-bob", DirectoryID: "d-bob", Email: "bob@example.com"})
+		check(t, err)
+		check(t, s.SyncGroupMembers(ctx, g.ID, "", []DirectoryUser{{DirectoryID: "d-bob"}}))
+		role := func() Role {
+			t.Helper()
+			r, err := s.UserRole(ctx, bob.ID)
+			check(t, err)
+			return r
+		}
+		equal(t, "role after the sync", role(), RoleAdmin)
+
+		// The group is no longer used (no role, no services), so it is no
+		// longer synchronised; Bob signs in without it.
+		check(t, s.UpdateGroup(ctx, g.ID, "Status Admins", RoleViewer))
+		toSync, err := s.GroupsToSync(ctx)
+		check(t, err)
+		equal(t, "groups to sync", len(toSync), 0)
+		check(t, s.SetLoginGroups(ctx, bob.ID, nil, true))
+		groups, err := s.UserGroups(ctx, bob.ID)
+		check(t, err)
+		equal(t, "groups after sign-in", len(groups), 0)
+
+		check(t, s.UpdateGroup(ctx, g.ID, "Status Admins", RoleAdmin))
+		equal(t, "role when the group is used again", role(), RoleViewer)
+	})
+}
+
 // TestConcurrentSignInAndSync runs a directory sync of a group while its
 // members sign in for the first time (and get the group from the claim).
 // On PostgreSQL (READ COMMITTED) the users and memberships that the other

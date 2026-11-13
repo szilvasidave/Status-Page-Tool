@@ -223,11 +223,14 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 	return err
 }
 
+// groupInUseSQL is true for a group g that has a role or at least one
+// service assigned: the groups the directory sync manages.
+const groupInUseSQL = `(g.role <> '' OR EXISTS (SELECT 1 FROM service_groups sg WHERE sg.group_id = g.id))`
+
 // GroupsToSync returns the groups that matter for directory synchronisation:
 // groups with a role or with at least one service assigned.
 func (s *Store) GroupsToSync(ctx context.Context) ([]Group, error) {
-	groups, err := s.listGroups(ctx,
-		`WHERE g.role <> '' OR EXISTS (SELECT 1 FROM service_groups sg WHERE sg.group_id = g.id)`)
+	groups, err := s.listGroups(ctx, `WHERE `+groupInUseSQL)
 	if err != nil {
 		return nil, fmt.Errorf("list groups to synchronise: %w", err)
 	}
@@ -324,8 +327,10 @@ func syncMember(ctx context.Context, tx *db.Tx, m DirectoryUser, now int64) (int
 		return 0, nil
 	}
 
+	// The repeated "email <> ''" lets SQLite use the partial index
+	// users_email_idx; without it every member scans the users table.
 	if dir != "" && email != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND directory_id <> ?`, email, dir); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND email <> '' AND directory_id <> ?`, email, dir); err != nil {
 			return 0, err
 		}
 	}
@@ -338,7 +343,7 @@ func syncMember(ctx context.Context, tx *db.Tx, m DirectoryUser, now int64) (int
 	}
 	byDir := err == nil
 	if errors.Is(err, ErrNotFound) && email != "" {
-		cond := "u.email = ?"
+		cond := "u.email = ? AND u.email <> ''"
 		if dir != "" {
 			cond += " AND u.directory_id IS NULL"
 		}
@@ -367,7 +372,7 @@ func syncMember(ctx context.Context, tx *db.Tx, m DirectoryUser, now int64) (int
 	}
 	if email != "" && email != u.Email && (u.Email == "" || authoritative) {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE users SET email = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM users o WHERE o.email = ?)`,
+			`UPDATE users SET email = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM users o WHERE o.email = ? AND o.email <> '')`,
 			email, u.ID, email); err != nil {
 			return 0, err
 		}
