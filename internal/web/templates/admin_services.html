@@ -18,7 +18,7 @@
         <td>{{with .Category}}{{.}}{{else}}<span class="muted">–</span>{{end}}</td>
         <td>{{.SortOrder}}</td>
         <td>{{template "status-pill" .Status}}</td>
-        <td class="cell-wrap">{{with .GroupNames}}{{join . ", "}}{{else}}<span class="muted">none</span>{{end}}</td>
+        <td class="cell-wrap">{{range $i, $n := .GroupNames}}{{if $i}}, {{end}}<bdi>{{$n}}</bdi>{{else}}<span class="muted">none</span>{{end}}</td>
       </tr>
       {{- end}}
     </tbody>

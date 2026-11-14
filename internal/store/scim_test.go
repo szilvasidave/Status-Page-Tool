@@ -60,7 +60,8 @@ func TestSCIMCreateUser(t *testing.T) {
 		wantError(t, "empty user name", err)
 
 		// A user who signed in before is taken over: by user name …
-		signedIn, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-max", PrincipalName: "Max@Contoso.com", Email: "max@old.example", Name: "Max"})
+		signedIn, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-max", DirectoryID: "oid-max", PrincipalName: "Max@Contoso.com",
+			Email: "max@old.example", Name: "Max", AppRoles: []string{"Admin"}})
 		check(t, err)
 		session := &Session{ID: "sess-max", UserID: signedIn.ID, CreatedAt: nowTime(), ExpiresAt: nowTime().Add(time.Hour)}
 		check(t, s.CreateSession(ctx, session))
@@ -68,9 +69,15 @@ func TestSCIMCreateUser(t *testing.T) {
 		check(t, err)
 		equal(t, "adopted by user name", [2]any{adopted, u.ID}, [2]any{true, signedIn.ID})
 		equal(t, "provisioned values", [3]string{u.PrincipalName, u.Email, u.Name}, [3]string{"max@contoso.com", "max@contoso.com", "Max Mustermann"})
-		equal(t, "sign-in kept", u.OIDCSubject, "s-max")
+		// The takeover unlinks the sign-in identity, as the user name may
+		// belong to another person by now: its app roles and sessions are
+		// gone, and the next sign-in links the user again by user name.
+		equal(t, "sign-in unlinked", [3]any{u.OIDCSubject, u.DirectoryID, u.AppRoles}, [3]any{"", "", []string(nil)})
 		_, err = s.GetSession(ctx, "sess-max", time.Now())
-		check(t, err) // still signed in
+		wantNotFound(t, "session after the takeover", err)
+		again, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-max", DirectoryID: "oid-max", PrincipalName: "max@contoso.com"})
+		check(t, err)
+		equal(t, "linked again by user name", [3]any{again.ID, again.OIDCSubject, again.Name}, [3]any{signedIn.ID, "s-max", "Max Mustermann"})
 
 		// … or by e-mail address.
 		byMail, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-eve", Email: "Eve@contoso.com"})
@@ -135,7 +142,7 @@ func TestSCIMUpdateUser(t *testing.T) {
 		u, err = s.UpdateSCIMUser(ctx, signedIn.ID, replaceUser(SCIMUserData{UserName: "carl@contoso.com", Email: "carl@contoso.com", Active: true}))
 		check(t, err)
 		equal(t, "provisioned", u.Provisioned, true)
-		equal(t, "subject kept", u.OIDCSubject, "s-c")
+		equal(t, "subject unlinked by the takeover", u.OIDCSubject, "")
 
 		// Deactivation ends the sessions; reactivation works.
 		check(t, s.CreateSession(ctx, &Session{ID: "sess-b", UserID: b.ID, CreatedAt: nowTime(), ExpiresAt: nowTime().Add(time.Hour)}))
@@ -483,7 +490,7 @@ func TestSignInLeavesProvisionedGroups(t *testing.T) {
 			check(t, err)
 			var out []string
 			for _, g := range gs {
-				out = append(out, g.Name)
+				out = append(out, g.DisplayName())
 			}
 			return out
 		}
@@ -556,9 +563,16 @@ func TestSCIMConcurrentWithSignIns(t *testing.T) {
 		check(t, err)
 		equal(t, "one user per person", total, n)
 		for _, u := range users {
-			if !u.Provisioned || u.OIDCSubject == "" || u.Email != strings.ToLower(u.PrincipalName) {
+			// A row taken over after the sign-in is unlinked again.
+			if !u.Provisioned || (u.OIDCSubject != "" && u.OIDCSubject != "s-"+u.PrincipalName) || u.Email != strings.ToLower(u.PrincipalName) {
 				t.Errorf("user %+v", u)
 			}
+		}
+		// Everybody's next sign-in links the provisioned user.
+		for _, u := range users {
+			got, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-" + u.PrincipalName, PrincipalName: u.PrincipalName, Email: u.PrincipalName})
+			check(t, err)
+			equal(t, "linked "+u.PrincipalName, [2]any{got.ID, got.OIDCSubject}, [2]any{u.ID, "s-" + u.PrincipalName})
 		}
 		gs, err := s.GetGroup(ctx, g.ID)
 		check(t, err)

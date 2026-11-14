@@ -101,6 +101,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Auth.ResetOIDC()
+	s.GroupNames.Wake() // the lookup of group names may have been turned on
 	s.Log.Info("settings saved", "user", adminActor(r))
 	s.redirectWithFlash(w, r, "/admin/settings", "success", "Settings saved.")
 }

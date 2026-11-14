@@ -20,8 +20,10 @@ const localLoginUsage = `statuspage local-login enable|disable|status [-data DIR
 Turns the sign-in with the local administrator account on or off, or shows
 whether it is on and the user name of that account. "enable" always works:
 use it when single sign-on is unavailable and nobody can sign in. "disable"
-works only while single sign-on is set up and at least one group has the
-Administrator role, so that somebody can still sign in as an administrator.
+works only while single sign-on is set up and somebody can sign in with it
+as an administrator: at least one group has the Administrator role or, with
+roles from app roles, somebody has signed in with the app role for
+administrators in the last 30 days.
 Changing it signs out all sessions of the local administrator account. A
 running status page applies the change within about 10 seconds; no restart
 is needed.`
@@ -100,7 +102,11 @@ func cmdLocalLogin(args []string, stdout, stderr io.Writer) error {
 		case errors.Is(err, store.ErrSSONotConfigured):
 			return errors.New("sign-in with the local administrator account cannot be turned off while single sign-on is not set up: " +
 				"enable and configure it in Admin > Settings first (issuer URL, client ID and client secret)")
-		case errors.Is(err, store.ErrNoAdminGroup):
+		case errors.Is(err, store.ErrNoAdmin) && settings.AppRoleAdminSet():
+			return errors.New("sign-in with the local administrator account cannot be turned off while no group has the Administrator role " +
+				"and nobody has signed in with the app role for administrators in the last 30 days: give a group the Administrator role " +
+				"in Admin > Groups, or sign in with the app role for administrators, first, so that somebody can still sign in as an administrator")
+		case errors.Is(err, store.ErrNoAdmin):
 			return errors.New("sign-in with the local administrator account cannot be turned off while no group has the Administrator role: " +
 				"give a group the Administrator role in Admin > Groups first, so that somebody can still sign in as an administrator")
 		case err != nil:

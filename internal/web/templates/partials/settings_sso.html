@@ -47,6 +47,49 @@
         </div>
       </div>
       <div class="field">
+        <label class="checkbox"><input type="checkbox" name="entra_group_names" aria-describedby="entra_group_names_help"{{if .St.EntraGroupNames}} checked{{end}}{{if .Errors.entra_group_names}} aria-invalid="true"{{end}}> Look up group names in Microsoft Entra ID</label>
+        <span class="help" id="entra_group_names_help">Microsoft Entra ID puts the object IDs of the groups into the groups claim, not their names. With
+          this option the status page reads the names with Microsoft Graph – shortly after a sign-in records a new group, and once a
+          day so that renamed groups follow – and shows them in Admin → Groups and wherever groups are listed. It uses this app
+          registration, which needs the Microsoft Graph <em>application</em> permission <strong>GroupMember.Read.All</strong> with
+          admin consent.</span>
+        {{template "field-error" .Errors.entra_group_names}}
+      </div>
+      <div class="field">
+        <label class="checkbox"><input type="checkbox" name="oidc_app_roles" data-show-when="on" data-target="#app-role-fields" aria-describedby="oidc_app_roles_help"{{if .St.OIDCAppRoles}} checked{{end}}{{if .Errors.oidc_app_roles}} aria-invalid="true"{{end}}> Assign roles with app roles</label>
+        <span class="help" id="oidc_app_roles_help">Users whose roles claim contains one of the app roles below get that role, in addition to
+          the roles of their groups. In Microsoft Entra ID, create these app roles in the app registration (<em>App roles</em>), and
+          also a base app role such as <code>Viewer</code>, which gives no role here: once app roles exist, Entra ID asks for one with
+          every assignment. Assign users or groups to them in the enterprise application of this app registration (<em>Users and
+          groups</em>); a role assigned to a group reaches its direct members only. A change of the assignments applies at the
+          user's next sign-in.</span>
+        {{template "field-error" .Errors.oidc_app_roles}}
+      </div>
+      <div id="app-role-fields"{{if not .St.OIDCAppRoles}} hidden{{end}}>
+        <div class="field-row">
+          <div class="field">
+            <label for="oidc_admin_role">App role for administrators</label>
+            <input id="oidc_admin_role" name="oidc_admin_role" type="text" value="{{.St.OIDCAdminRole}}" maxlength="256" spellcheck="false" autocomplete="off"{{if .Errors.oidc_admin_role}} aria-invalid="true"{{end}}>
+            <span class="help">The <em>value</em> of the app role, e.g. <code>Admin</code>, exactly as defined (upper and lower case
+              count). Empty: none.</span>
+            {{template "field-error" .Errors.oidc_admin_role}}
+          </div>
+          <div class="field">
+            <label for="oidc_editor_role">App role for editors</label>
+            <input id="oidc_editor_role" name="oidc_editor_role" type="text" value="{{.St.OIDCEditorRole}}" maxlength="256" spellcheck="false" autocomplete="off"{{if .Errors.oidc_editor_role}} aria-invalid="true"{{end}}>
+            <span class="help">E.g. <code>Editor</code>, exactly as defined. Empty: none.</span>
+            {{template "field-error" .Errors.oidc_editor_role}}
+          </div>
+        </div>
+        <div class="field">
+          <label for="oidc_roles_claim">Roles claim</label>
+          <input id="oidc_roles_claim" name="oidc_roles_claim" type="text" value="{{.St.OIDCRolesClaim}}" maxlength="100" spellcheck="false"{{if .Errors.oidc_roles_claim}} aria-invalid="true"{{end}}>
+          <span class="help">The ID token claim that lists the user's app roles; default <code>roles</code> (Microsoft Entra ID). It must
+            hold only the roles of this application – with Keycloak, set the mapper's <em>Client ID</em> (see the README).</span>
+          {{template "field-error" .Errors.oidc_roles_claim}}
+        </div>
+      </div>
+      <div class="field">
         <label for="oidc_button_label">Button label</label>
         <input id="oidc_button_label" name="oidc_button_label" type="text" value="{{.St.OIDCButtonLabel}}" maxlength="60"{{if .Errors.oidc_button_label}} aria-invalid="true"{{end}}>
         <span class="help">Text of the sign-in button, e.g. “Sign in with Microsoft”.</span>
@@ -56,8 +99,8 @@
     <div class="field">
       <label class="checkbox"><input type="checkbox" name="local_login_enabled" aria-describedby="local_login_help"{{if .St.LocalLoginEnabled}} checked{{end}}{{if .Errors.local_login_enabled}} aria-invalid="true"{{end}}> Allow sign-in with the local administrator account</label>
       <span class="help" id="local_login_help">The break-glass login for when single sign-on is unavailable, at <a href="/login?local=1">/login?local=1</a>.
-        It can only be turned off while single sign-on is set up and a group has the Administrator role; turning it off signs the
-        local administrator out. To turn it on again without signing in, run this command on the server as administrator or
+        It can only be turned off while single sign-on is set up and a group has the Administrator role (or, with app roles,
+        somebody has signed in with the app role for administrators); turning it off signs the local administrator out. To turn it on again without signing in, run this command on the server as administrator or
         root – note it down for emergencies: <code class="code-box">{{.SSO.LocalLoginCommand}}</code></span>
       {{template "field-error" .Errors.local_login_enabled}}
     </div>

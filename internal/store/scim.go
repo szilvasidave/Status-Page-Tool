@@ -204,8 +204,9 @@ func (in SCIMUserData) clean() SCIMUserData {
 // CreateSCIMUser stores a user created by provisioning. A user who is not
 // provisioned yet (e.g. created by an earlier sign-in) with the same user
 // name (case-insensitive) or, failing that, the same e-mail address is taken
-// over instead of creating a second one (adopted = true). A provisioned user
-// with the same user name already exists: an error wrapping ErrSCIMConflict.
+// over instead of creating a second one (adopted = true; see writeSCIMUser
+// for what a takeover unlinks). A provisioned user with the same user name
+// already exists: an error wrapping ErrSCIMConflict.
 func (s *Store) CreateSCIMUser(ctx context.Context, in SCIMUserData) (u *User, adopted bool, err error) {
 	in = in.clean()
 	if in.UserName == "" {
@@ -237,7 +238,7 @@ func (s *Store) CreateSCIMUser(ctx context.Context, in SCIMUserData) (u *User, a
 		} else if err := tx.QueryRowContext(ctx, `INSERT INTO users (created_at) VALUES (?) RETURNING id`, db.Now()).Scan(&id); err != nil {
 			return err
 		}
-		if err := writeSCIMUser(ctx, tx, id, wasActive, in); err != nil {
+		if err := writeSCIMUser(ctx, tx, id, wasActive, adopted, in); err != nil {
 			return err
 		}
 		u, err = findUser(ctx, tx, "u.id = ?", id)
@@ -284,7 +285,7 @@ func (s *Store) UpdateSCIMUser(ctx context.Context, id int64, change func(cur *U
 		} else if !errors.Is(err, ErrNotFound) {
 			return err
 		}
-		if err := writeSCIMUser(ctx, tx, id, cur.Active, in); err != nil {
+		if err := writeSCIMUser(ctx, tx, id, cur.Active, !cur.Provisioned, in); err != nil {
 			return err
 		}
 		out, err = findUser(ctx, tx, "u.id = ?", id)
@@ -301,14 +302,20 @@ func (s *Store) UpdateSCIMUser(ctx context.Context, id int64, change func(cur *U
 	return out, nil
 }
 
-// writeSCIMUser stores the provisioned attributes of user id (wasActive: its
-// active value before). The e-mail address is taken from any other user that
-// still has it (provisioning is authoritative for it). Deactivating a user
-// ends their sessions. Activating a user again also unlinks the sign-in
-// identity (subject and directory id): Microsoft Entra ID finds users by
-// their user name, which may belong to another person by now, so the next
-// sign-in links the user again by user name or e-mail address.
-func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, wasActive bool, in SCIMUserData) error {
+// writeSCIMUser stores the provisioned attributes of user id. wasActive is
+// its active value before; takeover reports that the row was not provisioned
+// before (e.g. created by a sign-in) and provisioning takes it over now. The
+// e-mail address is taken from any other user that still has it
+// (provisioning is authoritative for it). Deactivating a user ends their
+// sessions. Taking a row over and activating a user again also unlink the
+// sign-in identity: the subject, the directory id, the app roles of its last
+// sign-in and the memberships its sign-ins recorded (of groups that are not
+// provisioned) are cleared and its sessions end. Microsoft Entra ID finds
+// users by their user name (or e-mail address), which may belong to another
+// person by now, so the next sign-in links the user again by user name or
+// e-mail address and records the groups again; the same person is signed out
+// once. Memberships of provisioned groups are left to provisioning.
+func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, wasActive, takeover bool, in SCIMUserData) error {
 	if in.Email != "" {
 		// The repeated "email <> ''" lets SQLite use users_email_idx.
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET email = '' WHERE email = ? AND email <> '' AND id <> ?`, in.Email, id); err != nil {
@@ -321,12 +328,17 @@ func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, wasActive bool, in 
 		in.UserName, in.ExternalID, in.Email, in.EmailFromUserName && in.Email != "", in.Name, in.Active, true, id); err != nil {
 		return err
 	}
-	if in.Active && !wasActive {
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET oidc_subject = NULL, directory_id = NULL WHERE id = ?`, id); err != nil {
+	unlink := takeover || (in.Active && !wasActive)
+	if unlink {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET oidc_subject = NULL, directory_id = NULL, app_roles = '' WHERE id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM user_groups WHERE user_id = ?
+			AND group_id IN (SELECT id FROM idp_groups WHERE provisioned = ?)`, id, false); err != nil {
 			return err
 		}
 	}
-	if !in.Active || !wasActive {
+	if unlink || !in.Active || !wasActive {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
 			return err
 		}
@@ -488,7 +500,9 @@ func (s *Store) CreateSCIMGroup(ctx context.Context, in SCIMGroupData) (g *Group
 			return err
 		}
 		if adopted {
-			if _, err := tx.ExecContext(ctx, `UPDATE idp_groups SET name = ?, provisioned = ?, last_synced_at = ? WHERE id = ?`,
+			// Provisioning names its groups: a looked-up directory name is
+			// dropped (see SetGroupDirectoryNames).
+			if _, err := tx.ExecContext(ctx, `UPDATE idp_groups SET name = ?, provisioned = ?, last_synced_at = ?, `+clearDirectoryNameSQL+` WHERE id = ?`,
 				name, true, now, id); err != nil {
 				return err
 			}
@@ -540,12 +554,16 @@ func (s *Store) UpdateSCIMGroup(ctx context.Context, id int64, change func(g *SC
 			return errors.New("the display name must not be empty")
 		}
 		var other int64
-		err = tx.QueryRowContext(ctx, `SELECT id FROM idp_groups WHERE LOWER(name) = LOWER(?) AND provisioned = ? AND id <> ? ORDER BY id LIMIT 1`,
-			name, true, id).Scan(&other)
-		if err == nil {
-			return scimConflict("Another group has the display name %q.", name)
-		} else if err = notFound(err); !errors.Is(err, ErrNotFound) {
-			return err
+		if name != cur.Name {
+			// Checked only when the name changes, so that an existing
+			// duplicate does not block the changes of the members.
+			err = tx.QueryRowContext(ctx, `SELECT id FROM idp_groups WHERE LOWER(name) = LOWER(?) AND provisioned = ? AND id <> ? ORDER BY id LIMIT 1`,
+				name, true, id).Scan(&other)
+			if err == nil {
+				return scimConflict("Another group has the display name %q.", name)
+			} else if err = notFound(err); !errors.Is(err, ErrNotFound) {
+				return err
+			}
 		}
 		ext := NormExternalID(data.ExternalID)
 		if ext == "" || !strings.HasPrefix(cur.ExternalID, SCIMGeneratedIDPrefix) {
@@ -562,7 +580,7 @@ func (s *Store) UpdateSCIMGroup(ctx context.Context, id int64, change func(g *SC
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE idp_groups SET name = ?, external_id = ?, provisioned = ?, last_synced_at = ? WHERE id = ?`,
+		if _, err := tx.ExecContext(ctx, `UPDATE idp_groups SET name = ?, external_id = ?, provisioned = ?, last_synced_at = ?, `+clearDirectoryNameSQL+` WHERE id = ?`,
 			name, ext, true, db.Now(), id); err != nil {
 			return err
 		}
@@ -583,10 +601,23 @@ func (s *Store) UpdateSCIMGroup(ctx context.Context, id int64, change func(g *SC
 	return out, nil
 }
 
+// clearDirectoryNameSQL is the SET clause that drops a group's looked-up
+// directory name (provisioning names the group instead).
+const clearDirectoryNameSQL = `directory_name = '', directory_checked_at = NULL, directory_found_at = NULL`
+
+// unprovisionGroupSQL is the SET clause for a group that stops being
+// provisioned: the name provisioning gave it becomes its directory name, so
+// that it is not taken for a name of its own; with the lookup of group names
+// it is due at once and follows renames from then on.
+const unprovisionGroupSQL = `provisioned = ?,
+	directory_name = CASE WHEN name <> '' AND name <> external_id THEN name ELSE directory_name END,
+	name = '', directory_checked_at = NULL, directory_found_at = NULL`
+
 // DeleteSCIMGroup handles the deletion of a provisioned group: its members
 // are removed and it is no longer provisioned, but the group stays with its
-// role and services (provisioning it again restores everything). Returns
-// ErrNotFound for an unknown or not provisioned group.
+// role and services (provisioning it again restores everything; see
+// unprovisionGroupSQL for its name). Returns ErrNotFound for an unknown or
+// not provisioned group.
 func (s *Store) DeleteSCIMGroup(ctx context.Context, id int64) error {
 	err := s.inTxRetry(ctx, func(tx *db.Tx) error {
 		if err := s.lockSCIMWrite(ctx, tx); err != nil {
@@ -598,7 +629,7 @@ func (s *Store) DeleteSCIMGroup(ctx context.Context, id int64) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM user_groups WHERE group_id = ?`, id); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE idp_groups SET provisioned = ?, last_synced_at = ? WHERE id = ?`, false, db.Now(), id)
+		_, err := tx.ExecContext(ctx, `UPDATE idp_groups SET `+unprovisionGroupSQL+`, last_synced_at = ? WHERE id = ?`, false, db.Now(), id)
 		return err
 	})
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -679,7 +710,7 @@ func (s *Store) SetSCIMToken(ctx context.Context, hash string, created time.Time
 		if hash != "" {
 			return nil
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE idp_groups SET provisioned = ? WHERE provisioned = ?`, false, true); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE idp_groups SET `+unprovisionGroupSQL+` WHERE provisioned = ?`, false, true); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE users SET provisioned = ? WHERE provisioned = ?`, false, true)

@@ -52,7 +52,7 @@
     <div class="checkbox-list">
       {{- range .Groups}}
       <label class="checkbox"><input type="checkbox" name="groups" value="{{.ID}}"{{if containsID $ids .ID}} checked{{end}}>
-        <span>{{.DisplayName}}{{if .Provisioned}} <span class="badge">Provisioned</span>{{end}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
+        <span><bdi>{{.DisplayName}}</bdi>{{if .Provisioned}} <span class="badge">Provisioned</span>{{end}}{{template "group-name-badges" (dict "G" . "D" $.Data)}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
       {{- end}}
     </div>
     {{- else if not .Other}}
@@ -65,7 +65,7 @@
       <div class="checkbox-list">
         {{- range .}}
         <label class="checkbox"><input type="checkbox" name="groups" value="{{.ID}}">
-          <span>{{.DisplayName}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
+          <span><bdi>{{.DisplayName}}</bdi>{{template "group-name-badges" (dict "G" . "D" $.Data)}}{{if ne .DisplayName .ExternalID}} <span class="small muted mono">{{.ExternalID}}</span>{{end}} <span class="small muted">· {{.MemberCount}} {{if eq .MemberCount 1}}member{{else}}members{{end}}</span></span></label>
         {{- end}}
       </div>
     </details>

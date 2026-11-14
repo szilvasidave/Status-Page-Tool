@@ -43,6 +43,9 @@ type User struct {
 	// Groups is the "groups" claim: nil leaves the claim out, an empty
 	// (non-nil) slice sends "groups": [].
 	Groups []string
+	// Roles is the "roles" claim (Microsoft Entra ID: the values of the
+	// user's app roles); nil leaves the claim out.
+	Roles []string
 }
 
 // claims returns the identity claims of u (without iss, aud, exp, …).
@@ -62,6 +65,9 @@ func (u User) claims() map[string]any {
 	}
 	if u.Groups != nil {
 		c["groups"] = slices.Clone(u.Groups)
+	}
+	if u.Roles != nil {
+		c["roles"] = slices.Clone(u.Roles)
 	}
 	return c
 }

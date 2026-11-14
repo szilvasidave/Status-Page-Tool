@@ -21,9 +21,13 @@ no runtime dependencies, installed on Windows with a normal setup wizard.
   affects the service. With Microsoft Entra ID, **SCIM provisioning** sends
   the members of the chosen groups to the status page, so people are notified
   even if they never signed in; with any provider, the groups claim updates
-  the groups of everybody who signs in.
-- **Roles per group:** *Viewer* (every signed-in user), *Editor* (posts
-  incidents and maintenance windows) and *Administrator* (configuration).
+  the groups of everybody who signs in. The names of Entra ID groups, whose
+  claim holds only object IDs, can be looked up with Microsoft Graph.
+- **Roles per group or app role:** *Viewer* (every signed-in user), *Editor*
+  (posts incidents and maintenance windows) and *Administrator*
+  (configuration), given to groups in the web interface or assigned to users
+  and groups at the identity provider with app roles (Microsoft Entra ID app
+  roles, Keycloak client roles).
 - **E-mail** with Microsoft 365 through Microsoft Graph (default; uses the
   single sign-on app registration) or through any SMTP server.
 - **Branding:** your logo, favicon and colours for light and dark mode, set
@@ -44,6 +48,8 @@ only notification channel.
 - [Configuration in the web interface](#configuration-in-the-web-interface)
   - [Branding](#branding)
 - [Single sign-on](#single-sign-on)
+  - [Group names from Microsoft Entra ID](#group-names-from-microsoft-entra-id)
+  - [Roles from app roles](#roles-from-app-roles)
 - [How users and groups get into the status page](#how-users-and-groups-get-into-the-status-page)
 - [Roles and groups](#roles-and-groups)
 - [Services and notifications](#services-and-notifications)
@@ -366,7 +372,10 @@ with OpenID Connect* and enter the **issuer URL**, **client ID** and **client
 secret** (these three are shown also while sign-in is off, because
 [e-mail with Microsoft Graph](#microsoft-365-microsoft-graph) uses them too).
 **Scopes** default to `openid profile email`, the **groups claim** to
-`groups`; the **button label** is the text of the sign-in button.
+`groups`; the **button label** is the text of the sign-in button. **Look up
+group names in Microsoft Entra ID** and **Assign roles with app roles** are
+described in [Group names from Microsoft Entra ID](#group-names-from-microsoft-entra-id)
+and [Roles from app roles](#roles-from-app-roles).
 
 **Group memberships at sign-in.** At every sign-in the user's group
 memberships are replaced by the groups in the groups claim of the ID token
@@ -375,7 +384,8 @@ status page does not know yet are created automatically. **If the claim is
 missing, the user is in no group any more**, so configure the identity
 provider to send it (see below). Memberships stay unchanged only when Entra
 ID reports that the user has too many groups for the token, or when the
-userinfo endpoint cannot be read. Memberships of
+groups had to come from the userinfo endpoint and it cannot be read.
+Memberships of
 [provisioned groups](#how-users-and-groups-get-into-the-status-page) are
 never changed by a sign-in. Group IDs that are GUIDs (Entra ID object IDs)
 are compared regardless of upper/lower case.
@@ -407,11 +417,16 @@ provisioning, not from the sign-in.
    - Groups claim: `groups`
 
    Group IDs in Entra ID are object IDs (GUIDs). Provisioning fills in the
-   names of the groups it provisions; for other groups you can type a display
-   name when you add or edit a group.
+   names of the groups it provisions; for the others, turn on
+   [Look up group names in Microsoft Entra ID](#group-names-from-microsoft-entra-id),
+   or type a display name when you add or edit a group.
+6. Optional: assign the roles in Entra ID with
+   [app roles](#roles-from-app-roles) instead of in **Admin → Groups**.
 
 This app registration is also used to
-[send e-mail with Microsoft Graph](#microsoft-365-microsoft-graph).
+[send e-mail with Microsoft Graph](#microsoft-365-microsoft-graph), to
+[look up group names](#group-names-from-microsoft-entra-id) and for
+[app roles](#roles-from-app-roles).
 [Provisioning](#set-up-provisioning-in-microsoft-entra-id) needs a second,
 separate enterprise application.
 
@@ -421,7 +436,124 @@ keeps the members of the provisioned groups up to date regardless. Without
 provisioning, choose *Groups assigned to the application* in step 4 and
 assign the relevant groups to the enterprise application of the app
 registration; note that this option only sends *direct* memberships, not
-nested groups.
+nested groups. [App roles](#roles-from-app-roles) are not affected by the
+200-group limit, but like *Groups assigned to the application* an app role
+assigned to a group reaches only its direct members, not the members of
+nested groups. Once the app registration has app roles, Entra ID asks for one
+with every assignment to its enterprise application: give groups that are
+assigned only for the groups claim the role *Status Page Viewer*.
+
+### Group names from Microsoft Entra ID
+
+By default Microsoft Entra ID puts the **object IDs** of the user's groups
+into the groups claim, not their names. It can send names instead – the
+on-premises *sAMAccountName* of groups synchronised from Active Directory
+(cloud-only groups are then left out), or the display names of cloud groups,
+but only for groups assigned to the application. The status page works best
+with the IDs (step 4: *Group ID*): they never change, and provisioning uses
+them too. It can look up their names with Microsoft Graph:
+
+1. In the app registration open **API permissions → Add a permission →
+   Microsoft Graph → Application permissions**, add **GroupMember.Read.All**
+   and click **Grant admin consent for &lt;your organization&gt;**. It is the
+   narrowest documented application permission for reading groups, and it
+   allows reading the names and members of all groups; the status page reads
+   only the names of the groups it uses (see below).
+2. In **Admin → Settings → Single sign-on** tick **Look up group names in
+   Microsoft Entra ID** and save.
+3. **Admin → Groups** and the service form show the names with the object
+   IDs; **Admin → Users** (point at a name to see its ID), the services list
+   and the users' account pages show the names. **Look up names now** looks
+   up all names at once and reports the result, e.g. a missing permission.
+   A permission granted a moment ago can take a few minutes to apply in
+   Entra ID; after a failed lookup (other than Microsoft Graph being busy)
+   the next one gets a new access token, with the permissions granted since.
+
+When a sign-in records a new group, its name is looked up a few seconds
+later; every name is looked up again once a day, so that renamed groups
+follow. Names are looked up only for the groups the status page uses –
+groups with members, a role or services, and groups recorded in the last
+half hour – and not for provisioned groups, which get their names from
+provisioning. When you add a group by its object ID, its name is looked up at
+once. Microsoft Graph may not know a group created a moment ago: such a group
+is looked up again every two minutes for a quarter of an hour before it
+counts as not found. A group that Entra ID does not know (any more) is marked
+*Not found in Entra ID* and keeps its last name, else it shows its ID.
+
+**Names are chosen by the groups' owners and are not unique.** In Entra ID
+the owners of a group can rename it, two groups can have the same name, and
+a name can imitate another. Groups with the same name are marked *Same name
+as another group*; check the object ID before you give a group a role or
+services. A display name you give a group in **Admin → Groups** takes
+precedence over its name in Entra ID and stays when the group is renamed
+there – also when you type the same name as in Entra ID; leave it empty to
+show (and follow) the name from Entra ID. The group page shows both.
+
+After a failure the lookup pauses for an hour (as long as Microsoft Graph
+asks when it is busy, at most an hour), unless the issuer, client ID or
+client secret change; **Look up names now** tries at once, and what it could
+not finish within 25 seconds is finished in the background. The lookup needs
+outbound HTTPS to `login.microsoftonline.com` and `graph.microsoft.com`.
+The names are stored in the database (and so in its backups); turning the
+option off stops the lookups, and the names already looked up stay and are
+still shown.
+
+### Roles from app roles
+
+Instead of, or as well as, giving groups a role in **Admin → Groups**, you can
+assign the roles in Microsoft Entra ID with *app roles*: the ID token then
+holds the values of the user's app roles in the `roles` claim.
+
+1. In the app registration open **App roles → Create app role** and create
+   these three app roles, with **Allowed member types** *Users/Groups*:
+
+   | Display name | Value | Description |
+   |---|---|---|
+   | Status Page Viewer | `Viewer` | Can read the status page |
+   | Status Page Administrator | `Admin` | Can change the settings, services and groups |
+   | Status Page Editor | `Editor` | Can post incidents and maintenance windows |
+
+   *Viewer* gives no role in the status page (every signed-in user is a
+   viewer), but you need it: once an app registration has app roles, Entra
+   ID asks for one with every user or group assignment to its enterprise
+   application – also for groups assigned only for the groups claim (see
+   [Microsoft Entra ID](#microsoft-entra-id)) and for everybody who may sign
+   in when *Assignment required?* is *Yes*. Give those assignments *Status
+   Page Viewer*.
+2. In **Entra ID → Enterprise apps →** the enterprise application of this app
+   registration (not the provisioning application) **→ Users and groups →
+   Add user/group** assign users or groups to the app roles. Assigning
+   groups requires Microsoft Entra ID P1 or P2, and an app role assigned to a
+   group reaches only its **direct members**, not the members of nested
+   groups: assign the nested groups as well. Unless *Assignment required?* is
+   set to *Yes* in the application's properties, users without an assignment
+   can sign in as well, as viewers (or with the roles of their groups).
+3. In **Admin → Settings → Single sign-on** tick **Assign roles with app
+   roles**, check the values of the app roles for administrators and editors
+   (default `Admin` and `Editor`, exactly as defined – upper and lower case
+   count; leave one empty to give that role only to groups) and the roles
+   claim (default `roles`), and save.
+
+A user's role is the highest role of their groups and their app roles. The
+app roles are read at every sign-in, so a new or removed assignment in Entra
+ID applies at the user's next sign-in (sessions last up to 12 hours; removing
+a user who is not provisioned on **Admin → Users** signs them out at once);
+turning the option off, or changing the values, applies at once. **Admin →
+Users** and the account page show the app roles of the user's last sign-in.
+The roles claim is read from the ID token – with Entra ID only from there,
+because its ID token holds all of the user's app roles; with other providers
+also from the userinfo endpoint if the ID token has none. If that endpoint
+cannot be read, the user has no app roles until their next sign-in.
+
+The values of the roles claim are stored at every sign-in, also while the
+option is off (so that turning it on applies at once), and logged with the
+sign-in. Whoever can assign the app roles in the enterprise application, or
+edit the app registration (its owners, Application Administrators), decides
+who is an editor or administrator of the status page.
+
+With Keycloak, use client roles (see [Keycloak](#keycloak), step 6). Other
+providers work as well if they put the roles of this application – and only
+those – into a claim of the ID token or of the userinfo response.
 
 ### Keycloak
 
@@ -440,8 +572,18 @@ nested groups.
    verified* for users created in the admin console, and *Trust Email* for an
    LDAP / Active Directory user federation. Users with an unverified address
    get no e-mails.
+6. Optional, [roles from app roles](#roles-from-app-roles) with client
+   roles: in **Clients → statuspage → Roles** create the roles `Admin` and
+   `Editor` and assign them to users or groups (**Role mapping**). Then add
+   them to the token: **Clients → statuspage → Client scopes →
+   statuspage-dedicated → Configure a new mapper → User Client Role**, with
+   **Client ID** `statuspage`, token claim name `roles`, *Multivalued* on and
+   *Add to ID token* on. **Set the Client ID**: without it the claim holds the
+   client roles of all clients of the realm, so that e.g. a role `Admin` of
+   another application would make its users administrators of the status
+   page. For the same reason, do not map realm roles into this claim.
 
-With this mapper the groups are identified by their names. Provisioning is
+With the Group Membership mapper the groups are identified by their names. Provisioning is
 made for Microsoft Entra ID; with Keycloak, users are known once they have
 signed in.
 
@@ -465,7 +607,10 @@ default) turns this sign-in off:
 
 - It can only be turned off while single sign-on is enabled and configured
   (issuer URL, client ID and client secret) and at least one group has the
-  Administrator role (**Admin → Groups**); otherwise saving shows an error.
+  Administrator role (**Admin → Groups**) – or, with
+  [roles from app roles](#roles-from-app-roles), somebody has signed in with
+  the app role for administrators in the last 30 days; otherwise saving shows
+  an error.
   For the same reason single sign-on cannot be turned off while the local
   sign-in is off.
 - While it is off, the sign-in page shows only the single sign-on button,
@@ -476,10 +621,14 @@ default) turns this sign-in off:
   Admin → Settings or on the command line, does not bring those sessions
   back: the local administrator signs in again.
 - While it is off, the only group with the Administrator role cannot be
-  given another role or deleted in **Admin → Groups**; give another group
-  the Administrator role first.
+  given another role or deleted in **Admin → Groups**, unless somebody has
+  signed in with the app role for administrators in the last 30 days; give
+  another group the Administrator role first. Likewise, roles from app roles
+  cannot be turned off, nor the value for administrators changed, while they
+  are the only way to sign in as an administrator.
 - **When single sign-on fails** (identity provider outage, expired client
-  secret, no administrator group left), turn the local sign-in on again on
+  secret, no administrator group left, nobody with the app role for
+  administrators any more), turn the local sign-in on again on
   the server, as administrator or root, e.g.
   `sudo statuspage local-login enable -data /var/lib/statuspage`, or on
   Windows `"C:\Program Files\Status Page\statuspage.exe" local-login enable`
@@ -519,6 +668,23 @@ two ways that work together.
 
 With provisioning, sign-ins still update the memberships of all groups that
 are not provisioned.
+
+**Which source decides what** with Microsoft Entra ID:
+
+| | With provisioning | Without provisioning |
+|---|---|---|
+| Who is known and notified | the members of the provisioned groups, signed in or not, and everybody who signed in | everybody who signed in, with the groups of their last sign-in |
+| Members of a group | provisioning (provisioned groups); the groups claim at sign-in (other groups) | the groups claim at sign-in |
+| Group names | provisioning; the [name lookup](#group-names-from-microsoft-entra-id) or names typed in **Admin → Groups** for other groups | the name lookup, or names typed in **Admin → Groups** |
+| Who is deactivated | provisioning (users disabled, deleted or unassigned in Entra ID) | nobody: remove people who left on **Admin → Users** |
+| Roles | the roles of the groups (**Admin → Groups**) and [app roles](#roles-from-app-roles), read at sign-in | the same |
+
+With provisioning, the groups claim and the name lookup are needed only for
+groups that are not provisioned, and the roles can come from app roles.
+Without provisioning – no Entra ID P1 or P2, or no way for Entra ID to reach
+the status page – sign-in with the groups claim, the name lookup and app
+roles work on their own, but notifications reach only people who have signed
+in.
 
 ![Provisioning settings](docs/screenshots/settings-provisioning.png)
 
@@ -584,7 +750,8 @@ Entra ID P1 or P2 to assign groups to an application.
 8. **Roles and services.** The provisioned groups appear in **Admin →
    Groups** and in the service form with the badge *Provisioned*, even
    before they have a role or services. Open each one and choose its role
-   and the services its members are notified about (see
+   (or assign the roles with [app roles](#roles-from-app-roles)) and the
+   services its members are notified about (see
    [Roles and groups](#roles-and-groups)).
 
 Users and groups the status page knows already are taken over instead of
@@ -592,7 +759,10 @@ being created twice: users who signed in before (found by user name, then by
 e-mail address), and groups recorded from sign-ins or added under **Admin →
 Groups** with the same object ID. Such a group keeps its role and services;
 its members are replaced by the provisioned ones. So you can prepare the
-roles and services of groups before you start provisioning.
+roles and services of groups before you start provisioning. A user who is
+taken over is signed out once and loses the app roles of their last sign-in:
+their next sign-in links them again (the user name may belong to somebody
+else by now). The same happens when provisioning activates a user again.
 
 ### Connectivity
 
@@ -628,7 +798,8 @@ above.
   no e-mails, are signed out at once and cannot sign in ("Sign-in failed:
   your account has been deactivated by your organisation's user
   provisioning"). Assigning or enabling them again activates them; their
-  next sign-in links them again by user name or e-mail address. Users that
+  next sign-in links them again by user name or e-mail address, with the app
+  roles of that sign-in. Users that
   Entra ID deletes for good (30 days after deletion) are removed from the
   status page. Provisioned users cannot be removed on **Admin → Users**:
   Entra ID manages them.
@@ -661,7 +832,9 @@ above.
 
 ## Roles and groups
 
-Roles are given to identity provider groups, not to individual users:
+Roles are given to identity provider groups in **Admin → Groups**, or
+assigned to users and groups at the identity provider with
+[app roles](#roles-from-app-roles):
 
 | Role          | Can                                                                 |
 |---------------|---------------------------------------------------------------------|
@@ -669,21 +842,25 @@ Roles are given to identity provider groups, not to individual users:
 | Editor        | additionally create and update incidents and maintenance windows (`/manage`) |
 | Administrator | additionally change settings, services and groups, see users and notifications, delete incidents and maintenance windows |
 
-A user's role is the highest role of their groups. **Admin → Groups** lists
-the groups that have a role or services, and all provisioned groups (badge
-*Provisioned*); the other groups – usually recorded from the members'
-sign-ins – are in the collapsed list *Other groups*. Open a group to choose
+A user's role is the highest role of their groups and their app roles.
+**Admin → Groups** lists the groups that have a role or services, and all
+provisioned groups (badge *Provisioned*); the other groups – usually recorded
+from the members' sign-ins – are in the collapsed list *Other groups*. Open a group to choose
 its role and the services its members are notified about. You can also add a
 group in advance by its ID as it appears in the groups claim (Entra ID object
 ID, Keycloak group name); provisioning takes such a group over.
 
 ![Group page](docs/screenshots/admin-group.png)
 
-**Admin → Users** lists the known users with their groups, role, sign-in
+**Admin → Users** lists the known users with their groups, role (with the
+app roles of their last sign-in, while roles from app roles are on), sign-in
 (*SSO*, *Never signed in* or *Local administrator*) and last sign-in, marked
 *Provisioned* or *Deactivated* where it applies. Administrators can remove a
 user who is not provisioned, e.g. someone who left the company, to stop their
-e-mails; a removed user comes back at their next sign-in. Provisioned users
+e-mails; a removed user who can still sign in comes back at their next
+sign-in, with the groups and app roles the identity provider sends then (to
+take a role away, change the group membership or app role assignment there).
+Provisioned users
 are managed in Microsoft Entra ID and cannot be removed here (*Managed in
 Entra ID*): Entra ID deactivates them when they are disabled, deleted or
 unassigned, and removes them when it deletes them for good. The local
@@ -961,7 +1138,9 @@ statuspage local-login enable|disable|status [-data DIR]
     whether it is on and the user name of the local administrator account.
     "enable" always works: use it when single sign-on is unavailable.
     "disable" works only while single sign-on is enabled and configured and
-    at least one group has the Administrator role. Changing it signs out all
+    at least one group has the Administrator role or, with roles from app
+    roles, somebody has signed in with the app role for administrators in
+    the last 30 days. Changing it signs out all
     sessions of the local administrator account. A running status page
     applies the change within about 10 seconds; no restart is needed.
 
@@ -1007,7 +1186,8 @@ statuspage local-login status -data /var/lib/statuspage
   proxy everyone has the proxy's address, so anybody who knows the
   administrator's user name can lock it out: choose a name that is not easy
   to guess (not `admin`). Once single sign-on works and a group has the
-  Administrator role, consider [turning the local sign-in off](#local-administrator-sign-in);
+  Administrator role (or somebody signs in with the app role for
+  administrators), consider [turning the local sign-in off](#local-administrator-sign-in);
   anybody who can run `statuspage local-login enable` on the server with
   access to the data directory can turn it on again.
 - **Provisioning token.** The token allows creating, changing and deleting
@@ -1022,6 +1202,22 @@ statuspage local-login status -data /var/lib/statuspage
   proxy rule), only for the IP ranges of the AzureActiveDirectory service
   tag, and keep the web interface internal. The provisioning endpoint uses
   only its token: no cookies, no sessions.
+- **App registration.** Its client secret allows what the app registration
+  may do with Microsoft Graph: send e-mail (Mail.Send, or RBAC for
+  Applications) and, for group names, read all groups and their members
+  (GroupMember.Read.All). Grant only the permissions you use, and renew the
+  secret before it expires. Roles come from group memberships and app roles,
+  so whoever can change the members of a group with a role, assign the app
+  roles of the enterprise application, or edit the app registration (its
+  owners and Application Administrators: app role values, token
+  configuration) decides who is an editor or administrator. Keep the owners
+  of the app registration to the administrators of the status page.
+- **Data from the identity provider.** The status page stores what it needs
+  about users: name, e-mail address, user name, groups and the app roles of
+  their last sign-in (also while roles from app roles are off), and – with
+  the name lookup – the names of the groups it uses. Administrators see all
+  of it on **Admin → Users** and **Admin → Groups**; it stays in the
+  database (and its backups) until the user or group is removed.
 - **Logos and favicon** (`/brand/…`) can be read without signing in, even
   when public access is off (see [Branding](#branding)), so upload nothing
   confidential. Only images are accepted (SVG files only without scripts,

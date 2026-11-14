@@ -183,6 +183,67 @@ CREATE TABLE brand_images (
 	updated_at   BIGINT NOT NULL
 );
 `,
+	// 5: group names from Microsoft Entra ID, and app roles.
+	//   idp_groups.directory_name       the group's display name in Microsoft
+	//                                   Entra ID, looked up with Microsoft Graph
+	//                                   (package groupnames). idp_groups.name is
+	//                                   from now on only a name given by an
+	//                                   administrator or by provisioning ('' =
+	//                                   none: the directory name, else the
+	//                                   external id is shown), so the names that
+	//                                   just repeat the external id are cleared
+	//   idp_groups.directory_checked_at when the directory name was last looked up
+	//   idp_groups.directory_found_at   when the lookup last found the group (a
+	//                                   group not found at the last lookup keeps
+	//                                   its last name)
+	//   users.app_roles                 the values of the roles claim at the
+	//                                   user's last sign-in (a JSON array of
+	//                                   strings; '' = none)
+	`
+ALTER TABLE idp_groups ADD COLUMN directory_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE idp_groups ADD COLUMN directory_checked_at BIGINT;
+ALTER TABLE idp_groups ADD COLUMN directory_found_at BIGINT;
+UPDATE idp_groups SET name = '' WHERE name = external_id AND provisioned = {{FALSE}};
+ALTER TABLE users ADD COLUMN app_roles TEXT NOT NULL DEFAULT '';
+`,
+}
+
+// columnRepairs are columns that a migration gained after builds of an
+// unreleased branch had already applied it: such a database records the
+// migration as applied but lacks the column. Migrate adds each column where
+// it is missing, once the schema has reached the migration (version).
+var columnRepairs = []struct {
+	version             int
+	table, column, kind string
+}{
+	// Added to migration 5 after the build of commit c22fd87 (branch
+	// builds only; 5 was first released with the column).
+	{5, "idp_groups", "directory_found_at", "BIGINT"},
+}
+
+// repairColumns adds the columns of columnRepairs that are missing.
+func (d *DB) repairColumns(ctx context.Context, version int) error {
+	for _, c := range columnRepairs {
+		if version < c.version {
+			continue
+		}
+		if d.IsPostgres() {
+			if _, err := d.ExecContext(ctx, `ALTER TABLE `+c.table+` ADD COLUMN IF NOT EXISTS `+c.column+` `+c.kind); err != nil {
+				return fmt.Errorf("add column %s.%s: %w", c.table, c.column, err)
+			}
+			continue
+		}
+		var n int
+		if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+c.table+`') WHERE name = ?`, c.column).Scan(&n); err != nil {
+			return fmt.Errorf("check column %s.%s: %w", c.table, c.column, err)
+		}
+		if n == 0 {
+			if _, err := d.ExecContext(ctx, `ALTER TABLE `+c.table+` ADD COLUMN `+c.column+` `+c.kind); err != nil {
+				return fmt.Errorf("add column %s.%s: %w", c.table, c.column, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (d *DB) dialect(sql string) string {
@@ -235,7 +296,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 			return fmt.Errorf("apply migration %d: %w", v, err)
 		}
 	}
-	return nil
+	return d.repairColumns(ctx, len(migrations))
 }
 
 func splitStatements(sql string) []string {

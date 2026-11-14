@@ -299,8 +299,9 @@ func TestTakeOverSignedInUser(t *testing.T) {
 		}
 		e.do(http.MethodPatch, fmt.Sprint("/scim/v2/Users/", alice.ID),
 			`{"Operations":[{"op":"Replace","path":"displayName","value":"Alice Example"}]}`).expect(t, http.StatusOK)
+		// Taken over: the sign-in identity is unlinked until the next sign-in.
 		a, _ := e.store.GetUser(ctx, alice.ID)
-		if !a.Provisioned || a.Name != "Alice Example" || a.OIDCSubject != "sub-alice" {
+		if !a.Provisioned || a.Name != "Alice Example" || a.OIDCSubject != "" {
 			t.Errorf("alice after PATCH: %+v", a)
 		}
 		// A user without user name is taken over by the e-mail address.

@@ -62,10 +62,11 @@ func TestGroupsCRUD(t *testing.T) {
 		check(t, err)
 		equal(t, "existing", *same, *ops)
 
-		// name defaults to the external id and is set later
+		// no name: the external id is shown; the name is set later
 		dev, err := s.CreateGroup(ctx, "ext-dev", "")
 		check(t, err)
-		equal(t, "default name", dev.Name, "ext-dev")
+		equal(t, "no name", dev.Name, "")
+		equal(t, "shown as", dev.DisplayName(), "ext-dev")
 		dev, err = s.CreateGroup(ctx, "ext-dev", "Developers")
 		check(t, err)
 		equal(t, "name set", dev.Name, "Developers")

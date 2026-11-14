@@ -142,8 +142,9 @@ func TestGraphMailJourney(t *testing.T) {
 // graphMailPrepare creates a configured data directory: the local
 // administrator "admin" (password adminPW), two users who signed in with
 // single sign-on before and are members of the group "ops", and the service
-// ERP, whose notifications go to "ops". It returns the id of ERP.
-func graphMailPrepare(t *testing.T, dataDir, baseURL string) string {
+// ERP, whose notifications go to "ops"; then it calls more with the store.
+// It returns the id of ERP.
+func graphMailPrepare(t *testing.T, dataDir, baseURL string, more ...func(*store.Store)) string {
 	t.Helper()
 	ctx := context.Background()
 	cfg := &config.Config{Listen: strings.TrimPrefix(baseURL, "http://"), DBDriver: config.DriverSQLite, DBDSN: "statuspage.db", SecretKey: config.NewSecretKey()}
@@ -192,5 +193,74 @@ func graphMailPrepare(t *testing.T, dataDir, baseURL string) string {
 	if err := st.CreateService(ctx, svc); err != nil {
 		t.Fatal(err)
 	}
+	for _, f := range more {
+		f(st)
+	}
 	return strconv.FormatInt(svc.ID, 10)
+}
+
+// TestGroupNamesJourney: group names from Microsoft Entra ID in the running
+// application. Turning the lookup on wakes the worker, which names the group
+// that a sign-in recorded by its object ID; a group added by its object ID
+// shows its name at once; "Look up names now" follows a rename.
+func TestGroupNamesJourney(t *testing.T) {
+	const opsID, staffID = "3f2b8c1e-5d4a-4e6b-9c7d-1a2b3c4d5e6f", "a1b2c3d4-0f9e-4d8c-b7a6-958473625140"
+	fg := fakegraph.Start(t) // before the application: stopped after it
+	logs := &logBuffer{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("application log:\n%s", logs)
+		}
+	})
+	dataDir, addr := t.TempDir(), freeAddr(t)
+	graphMailPrepare(t, dataDir, "http://"+addr, func(st *store.Store) {
+		// alice's last sign-in with Microsoft Entra ID: the groups claim
+		// holds object IDs.
+		u, err := st.UpsertOIDCUser(context.Background(), store.OIDCUser{Subject: "sub-alice"})
+		if err == nil {
+			err = st.SetUserGroups(context.Background(), u.ID, []store.GroupRef{{ExternalID: "ops"}, {ExternalID: opsID}})
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	fg.SetGroup(opsID, "IT-Operations")
+	base := startApp(t, dataDir, addr, logs).URL
+
+	admin := newBrowser(t, "admin")
+	p := admin.get(base+"/login?local=1&next=%2Fadmin%2Fgroups").expectStatus(200).
+		form("/login").set("username", "admin").set("password", adminPW).post()
+	p.expectRedirect("/admin/groups")
+	p.follow().expectStatus(200).expectText(opsID).expectNoText("IT-Operations")
+
+	// Turned on with the app registration of single sign-on: the worker is
+	// woken and looks up the name within seconds.
+	f := admin.get(base + "/admin/settings").expectStatus(200).form("/admin/settings")
+	p = f.check("oidc_enabled", "").set("oidc_issuer", fg.Issuer()).set("oidc_client_id", fg.ClientID).
+		set("oidc_client_secret", fg.ClientSecret).check("entra_group_names", "").post()
+	p.expectRedirect("/admin/settings")
+	p.follow().expectFlash("success", "Settings saved.")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		p = admin.get(base + "/admin/groups").expectStatus(200)
+		if strings.Contains(p.text(), "IT-Operations") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the name of the group was not looked up:\n%s", truncate(p.text(), 3000))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// A group added by its object ID gets its name at once.
+	fg.SetGroup(staffID, "All Staff")
+	p = p.form("/admin/groups").set("external_id", staffID).post()
+	p.follow().expectFlash("success", "Group “All Staff” added.")
+
+	// "Look up names now" follows a rename in Microsoft Entra ID.
+	fg.SetGroup(opsID, "IT Operations")
+	p = admin.get(base + "/admin/groups").expectStatus(200).form("/admin/groups/names").post()
+	p.expectRedirect("/admin/groups")
+	p.follow().expectFlash("success", "The names of 2 groups were looked up in Microsoft Entra ID.").expectText("IT Operations")
+	admin.get(base + "/admin/users").expectStatus(200).expectText("IT Operations")
 }

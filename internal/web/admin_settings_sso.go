@@ -13,8 +13,13 @@ import (
 	"strings"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
+	"github.com/szilvasidave/status-page-tool/internal/msgraph"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
+
+// adminAppRoleMax is the longest app role value (characters): longer values
+// in the roles claim are not stored (see store.User.AppRoles).
+const adminAppRoleMax = 256
 
 // adminSSOData is the view data of the single sign-on section.
 type adminSSOData struct {
@@ -72,7 +77,16 @@ func (s *Server) adminSSOSave(r *http.Request, cur, st *store.Settings, d *admin
 	if st.OIDCButtonLabel == "" {
 		st.OIDCButtonLabel = store.DefaultSettings().OIDCButtonLabel
 	}
-	s.adminLocalLoginSave(r, st, d)
+	st.EntraGroupNames = formBool(r, "entra_group_names")
+	st.OIDCAppRoles = formBool(r, "oidc_app_roles")
+	st.OIDCRolesClaim = formTrim(r, "oidc_roles_claim")
+	if st.OIDCRolesClaim == "" {
+		st.OIDCRolesClaim = store.DefaultSettings().OIDCRolesClaim
+	}
+	st.OIDCAdminRole = formTrim(r, "oidc_admin_role")
+	st.OIDCEditorRole = formTrim(r, "oidc_editor_role")
+	// After the app roles: they may be the way to sign in as administrator.
+	s.adminLocalLoginSave(r, cur, st, d)
 	// The fields are only checked while sign-in is enabled. The issuer,
 	// client ID and client secret are always shown, because e-mail with
 	// Microsoft Graph uses them, too (adminGraphAppProblem checks them for
@@ -97,14 +111,47 @@ func (s *Server) adminSSOSave(r *http.Request, cur, st *store.Settings, d *admin
 	if tooLong(st.OIDCButtonLabel, 60) {
 		errs.add("oidc_button_label", "The label is too long (at most 60 characters).")
 	}
+	if st.EntraGroupNames {
+		if _, err := msgraph.Tenant(st.OIDCIssuer); errors.Is(err, msgraph.ErrNotEntra) {
+			errs.add("entra_group_names", "Group names can only be looked up in Microsoft Entra ID, and the issuer is not one of Microsoft "+
+				"Entra ID. Other identity providers can put the group names into the groups claim instead.")
+		} else if err != nil {
+			errs.add("entra_group_names", "To look up group names, "+err.Error()+".")
+		}
+	}
+	if st.OIDCAppRoles {
+		adminAppRolesCheck(st, errs)
+	}
+}
+
+// adminAppRolesCheck checks the fields of roles from app roles.
+func adminAppRolesCheck(st *store.Settings, errs adminFormErrors) {
+	if tooLong(st.OIDCRolesClaim, 100) {
+		errs.add("oidc_roles_claim", "The claim name is too long (at most 100 characters).")
+	}
+	for _, f := range []struct{ field, value string }{{"oidc_admin_role", st.OIDCAdminRole}, {"oidc_editor_role", st.OIDCEditorRole}} {
+		if tooLong(f.value, adminAppRoleMax) {
+			errs.add(f.field, "The app role is too long (at most 256 characters).")
+		}
+	}
+	switch {
+	case st.OIDCAdminRole == "" && st.OIDCEditorRole == "":
+		errs.add("oidc_admin_role", "Enter the value of the app role for administrators, for editors, or both.")
+	case strings.EqualFold(st.OIDCAdminRole, st.OIDCEditorRole):
+		errs.add("oidc_editor_role", "Administrators and editors need different app roles.")
+	}
 }
 
 // adminLocalLoginSave reads the checkbox "Allow sign-in with the local
 // administrator account". It can only be turned off while nobody is locked
 // out by it: single sign-on (as entered in this form) is enabled and
-// configured, and a group has the Administrator role. "statuspage
-// local-login disable" applies the same check (store.CheckLocalLoginOff).
-func (s *Server) adminLocalLoginSave(r *http.Request, st *store.Settings, d *adminSettingsData) {
+// configured, and a group has the Administrator role or somebody signed in
+// recently with the administrator app role (with roles from app roles as
+// entered in this form). "statuspage local-login disable" applies the same
+// check (store.CheckLocalLoginOff). While the switch was already off (cur),
+// a refusal is caused by a change of the app roles in this form, and the
+// error is shown at that field.
+func (s *Server) adminLocalLoginSave(r *http.Request, cur, st *store.Settings, d *adminSettingsData) {
 	st.LocalLoginEnabled = formBool(r, "local_login_enabled")
 	if st.LocalLoginEnabled {
 		return
@@ -113,9 +160,23 @@ func (s *Server) adminLocalLoginSave(r *http.Request, st *store.Settings, d *adm
 	case errors.Is(err, store.ErrSSONotConfigured):
 		d.Errors.add("local_login_enabled", "The local administrator sign-in can only be turned off while single sign-on is enabled "+
 			"and configured (issuer URL, client ID and client secret).")
-	case errors.Is(err, store.ErrNoAdminGroup):
-		d.Errors.add("local_login_enabled", "The local administrator sign-in can only be turned off when at least one group has the "+
-			"Administrator role (Admin → Groups), so that somebody can still sign in as an administrator.")
+	case errors.Is(err, store.ErrNoAdmin) && !cur.LocalLoginEnabled:
+		field := "oidc_admin_role"
+		if cur.OIDCAppRoles && !st.OIDCAppRoles {
+			field = "oidc_app_roles"
+		}
+		d.Errors.add(field, "The local administrator sign-in is off and no group has the Administrator role, so the app role for "+
+			"administrators is the only way to administer the status page, and nobody has signed in with the app role entered here "+
+			"in the last 30 days. Give a group the Administrator role (Admin → Groups), or turn the local administrator sign-in on, first.")
+	case errors.Is(err, store.ErrNoAdmin):
+		msg := "The local administrator sign-in can only be turned off when at least one group has the Administrator role " +
+			"(Admin → Groups), so that somebody can still sign in as an administrator."
+		if st.AppRoleAdminSet() {
+			msg = "The local administrator sign-in can only be turned off when at least one group has the Administrator role " +
+				"(Admin → Groups) or somebody has signed in with the app role for administrators in the last 30 days, so that " +
+				"somebody can still sign in as an administrator."
+		}
+		d.Errors.add("local_login_enabled", msg)
 	case err != nil:
 		s.Log.Error("check whether the local sign-in can be turned off", "err", err)
 		d.Errors.add("local_login_enabled", "The groups could not be checked, so the local administrator sign-in stays on. Please try again.")

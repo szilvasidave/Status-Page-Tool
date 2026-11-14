@@ -123,6 +123,29 @@ func TestLocalLogin(t *testing.T) {
 	if code, out := local("disable"); code != 1 || !strings.Contains(out, "no group has the Administrator role") {
 		t.Fatalf("disable without an administrator group: %d %q", code, out)
 	}
+
+	// With roles from app roles, somebody who signed in with the app role
+	// for administrators in the last 30 days counts as well.
+	settings.OIDCAppRoles = true
+	if err := st.SaveSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := local("disable"); code != 1 || !strings.Contains(out, "nobody has signed in with the app role for administrators in the last 30 days") {
+		t.Fatalf("disable without an app role administrator: %d %q", code, out)
+	}
+	if _, err := st.UpsertOIDCUser(ctx, store.OIDCUser{Subject: "s-boss", Email: "boss@example.com", AppRoles: []string{"Admin"}}); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := local("disable"); code != 0 || !strings.Contains(out, "is now off") {
+		t.Fatalf("disable with an app role administrator: %d %q", code, out)
+	}
+	if code, out := local("enable"); code != 0 || !strings.Contains(out, "is now on") {
+		t.Fatalf("enable: %d %q", code, out)
+	}
+	settings.OIDCAppRoles = false
+	if err := st.SaveSettings(ctx, settings); err != nil {
+		t.Fatal(err)
+	}
 	g, err := st.CreateGroup(ctx, "it-admins", "IT admins")
 	if err != nil {
 		t.Fatal(err)

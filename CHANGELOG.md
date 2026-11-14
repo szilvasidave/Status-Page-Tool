@@ -4,6 +4,42 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org/); the release notes on GitHub start
 with the section of the released version.
 
+## Unreleased
+
+- **Group names from Microsoft Entra ID.** The groups claim of Entra ID holds
+  only the groups' object IDs, so groups were shown by their IDs. With the
+  new setting *Look up group names in Microsoft Entra ID* the status page
+  reads the names of the groups it uses with Microsoft Graph (application
+  permission GroupMember.Read.All on the single sign-on app registration).
+  Admin → Groups and the service form show them with the IDs; Admin → Users,
+  the services list and the account page show the names. A new group gets
+  its name a few seconds after the sign-in that recorded it (a group created
+  in Entra ID a moment ago is looked up again for a quarter of an hour); all
+  names are looked up again daily, or at once with *Look up names now*; a
+  group added by its object ID is checked in Entra ID right away. A display
+  name given in the status page takes precedence and stays when the group is
+  renamed in Entra ID. Groups with the same name, and groups Entra ID no
+  longer knows, are marked.
+- **Roles from app roles.** With *Assign roles with app roles*, users get the
+  Administrator or Editor role from the app roles assigned to them, or to
+  their groups, in Microsoft Entra ID (the `roles` claim; values `Admin` and
+  `Editor` by default, compared exactly), in addition to the roles of their
+  groups; with Keycloak, client roles work the same way. The local
+  administrator sign-in can also be turned off when somebody has signed in
+  with the app role for administrators in the last 30 days.
+- Groups recorded from sign-ins no longer get their ID as their name: a
+  group without a name of its own shows its name from Entra ID, else its ID.
+  The upgrade clears the names that only repeat the ID. The names of
+  provisioned groups come only from provisioning and can no longer be edited
+  in the status page; a group that stops being provisioned shows its last
+  provisioned name until the lookup finds its current one.
+- When provisioning takes over a user who signed in before, or activates a
+  user again, the user is signed out once and loses the app roles of the
+  previous sign-in: the next sign-in links them again (a user name can be
+  reused for somebody else).
+- Removing a user on Admin → Users now says that anybody who can still sign
+  in comes back, with the groups and app roles the identity provider sends.
+
 ## 1.0.0 – 2026-11-13
 
 First stable release: a small, self-hosted status page for internal IT

@@ -111,6 +111,11 @@ var settingFields = []settingField{
 	strField("oidc_scopes", func(s *Settings) *string { return &s.OIDCScopes }),
 	strField("oidc_groups_claim", func(s *Settings) *string { return &s.OIDCGroupsClaim }),
 	strField("oidc_button_label", func(s *Settings) *string { return &s.OIDCButtonLabel }),
+	boolField("entra_group_names", func(s *Settings) *bool { return &s.EntraGroupNames }),
+	boolField("oidc_app_roles", func(s *Settings) *bool { return &s.OIDCAppRoles }),
+	strField("oidc_roles_claim", func(s *Settings) *string { return &s.OIDCRolesClaim }),
+	strField("oidc_admin_role", func(s *Settings) *string { return &s.OIDCAdminRole }),
+	strField("oidc_editor_role", func(s *Settings) *string { return &s.OIDCEditorRole }),
 
 	boolField("local_login_enabled", func(s *Settings) *bool { return &s.LocalLoginEnabled }),
 

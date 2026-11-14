@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/szilvasidave/status-page-tool/internal/db"
 )
@@ -14,7 +16,7 @@ import (
 // userCols are the columns read by scanUser (table alias u).
 const userCols = `u.id, u.email, u.name, u.oidc_subject, u.directory_id, u.username,
 	u.password_hash, u.is_local_admin, u.last_login_at, u.created_at,
-	u.principal_name, u.scim_external_id, u.active, u.provisioned, u.email_from_user_name`
+	u.principal_name, u.scim_external_id, u.active, u.provisioned, u.email_from_user_name, u.app_roles`
 
 // userOrderSQL orders users by display name (table alias u).
 var userOrderSQL = "LOWER(" + displayNameSQL("u") + "), u.id"
@@ -25,12 +27,14 @@ func scanUser(sc scanner) (User, error) {
 		subject, dir, uname, hash sql.NullString
 		lastLogin                 sql.NullInt64
 		created                   int64
+		appRoles                  string
 	)
 	err := sc.Scan(&u.ID, &u.Email, &u.Name, &subject, &dir, &uname, &hash, &u.IsLocalAdmin, &lastLogin, &created,
-		&u.PrincipalName, &u.SCIMExternalID, &u.Active, &u.Provisioned, &u.EmailFromUserName)
+		&u.PrincipalName, &u.SCIMExternalID, &u.Active, &u.Provisioned, &u.EmailFromUserName, &appRoles)
 	if err != nil {
 		return u, err
 	}
+	u.AppRoles = decodeAppRoles(appRoles)
 	u.OIDCSubject = subject.String
 	u.DirectoryID = dir.String
 	u.Username = uname.String
@@ -139,12 +143,13 @@ var ErrUserDeactivated = errors.New("your account has been deactivated by your o
 // case-insensitive and, with a directory id, only rows without one, so that
 // the row of another directory object is never taken over. The matched user
 // gets oidc_subject (taken over if it changed), directory_id (if given) and
-// last_login_at=now updated, and email (lower case), name and principal_name
-// (if given) unless the user is provisioned: provisioning is authoritative
-// for these. When the subject of a row changes, the row's sessions are
-// deleted (they belong to the previous identity). A user deactivated by
-// provisioning is not changed: ErrUserDeactivated. Local admin accounts are
-// never matched or modified (they have no e-mail).
+// last_login_at=now updated, its app roles replaced by in.AppRoles (see
+// cleanAppRoles), and email (lower case), name and principal_name (if given)
+// unless the user is provisioned: provisioning is authoritative for these.
+// When the subject of a row changes, the row's sessions are deleted (they
+// belong to the previous identity). A user deactivated by provisioning is not
+// changed: ErrUserDeactivated. Local admin accounts are never matched or
+// modified (they have no e-mail).
 // Must not fail on unique constraints when another row already holds the
 // e-mail/directory id: the first match wins and conflicting values are
 // cleared from the other row, except that the e-mail address of a
@@ -163,6 +168,7 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 		name := strings.TrimSpace(in.Name)
 		dir := strings.TrimSpace(in.DirectoryID)
 		principal := strings.TrimSpace(in.PrincipalName)
+		appRoles := encodeAppRoles(cleanAppRoles(in.AppRoles))
 
 		const notAdmin = " AND u.is_local_admin = ?"
 		noOtherObject := "" // rows of another directory object are never taken over by name or e-mail
@@ -228,9 +234,9 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 		now := db.Now()
 		if u == nil {
 			err = tx.QueryRowContext(ctx,
-				`INSERT INTO users (email, name, oidc_subject, directory_id, principal_name, last_login_at, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-				email, name, subject, nullString(dir), principal, now, now).Scan(&id)
+				`INSERT INTO users (email, name, oidc_subject, directory_id, principal_name, app_roles, last_login_at, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+				email, name, subject, nullString(dir), principal, appRoles, now, now).Scan(&id)
 			if err != nil {
 				return err
 			}
@@ -248,8 +254,8 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, in OIDCUser) (*User, error) 
 				principal = u.PrincipalName
 			}
 			_, err = tx.ExecContext(ctx,
-				`UPDATE users SET oidc_subject = ?, email = ?, name = ?, directory_id = ?, principal_name = ?, last_login_at = ? WHERE id = ?`,
-				subject, email, name, nullString(dir), principal, now, id)
+				`UPDATE users SET oidc_subject = ?, email = ?, name = ?, directory_id = ?, principal_name = ?, app_roles = ?, last_login_at = ? WHERE id = ?`,
+				subject, email, name, nullString(dir), principal, appRoles, now, id)
 			if err != nil {
 				return err
 			}
@@ -278,9 +284,10 @@ const insertMembershipSQL = `INSERT INTO user_groups (user_id, group_id) VALUES 
 // SetUserGroups sets the group memberships of a user to the groups reported
 // by the identity provider at sign-in: memberships of other groups are
 // removed. Groups are created if they do not exist yet (keyed by ExternalID,
-// see NormExternalID; Name defaults to ExternalID). An existing group's name
-// is only overwritten when ref.Name is non-empty and differs from
-// ExternalID. Refs with an empty ExternalID are ignored.
+// see NormExternalID; without a name if ref.Name is empty or equal to
+// ExternalID, so that they show their directory name, else ExternalID). An
+// existing group's name is only overwritten when ref.Name is non-empty and
+// differs from ExternalID. Refs with an empty ExternalID are ignored.
 //
 // Provisioned groups are left alone: only provisioning (SCIM) adds and
 // removes their members and changes their names, whether or not they are in
@@ -336,13 +343,10 @@ func (s *Store) SetUserGroups(ctx context.Context, userID int64, groups []GroupR
 // if needed, and whether it is provisioned. The name of a group that is not
 // provisioned is updated when name is non-empty and differs from ext.
 func ensureGroup(ctx context.Context, tx *db.Tx, ext, name string) (int64, bool, error) {
-	initial := name
-	if initial == "" {
-		initial = ext
-	}
+	name = ownGroupName(name, ext)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO idp_groups (external_id, name, role, created_at) VALUES (?, ?, '', ?)
-		 ON CONFLICT (external_id) DO NOTHING`, ext, initial, db.Now()); err != nil {
+		 ON CONFLICT (external_id) DO NOTHING`, ext, name, db.Now()); err != nil {
 		return 0, false, err
 	}
 	var (
@@ -353,7 +357,7 @@ func ensureGroup(ctx context.Context, tx *db.Tx, ext, name string) (int64, bool,
 	if err := tx.QueryRowContext(ctx, `SELECT id, name, provisioned FROM idp_groups WHERE external_id = ?`, ext).Scan(&id, &current, &provisioned); err != nil {
 		return 0, false, err
 	}
-	if !provisioned && name != "" && name != ext && name != current {
+	if !provisioned && name != "" && name != current {
 		if _, err := tx.ExecContext(ctx, `UPDATE idp_groups SET name = ? WHERE id = ?`, name, id); err != nil {
 			return 0, false, err
 		}
@@ -361,27 +365,30 @@ func ensureGroup(ctx context.Context, tx *db.Tx, ext, name string) (int64, bool,
 	return id, provisioned, nil
 }
 
-// effectiveRole computes a user's role from the local admin flag and the
-// roles of the user's groups.
-func effectiveRole(localAdmin bool, groupRoles []Role) Role {
+// effectiveRole computes a user's role from the local admin flag, the roles
+// of the user's groups and appRole, the role of the user's app roles (see
+// Settings.AppRole).
+func effectiveRole(localAdmin bool, groupRoles []Role, appRole Role) Role {
 	if localAdmin {
 		return RoleAdmin
 	}
-	r := RoleViewer
+	r := max(RoleViewer, appRole)
 	for _, gr := range groupRoles {
-		if gr > r {
-			r = gr
-		}
+		r = max(r, gr)
 	}
 	return r
 }
 
 // UserRole returns the effective role of a user: RoleAdmin for local admins,
-// otherwise the highest role of the user's groups, but at least RoleViewer.
-// Returns ErrNotFound for an unknown user.
+// otherwise the highest role of the user's groups and of the user's app roles
+// (with the current settings, see Settings.AppRole), but at least
+// RoleViewer. Returns ErrNotFound for an unknown user.
 func (s *Store) UserRole(ctx context.Context, userID int64) (Role, error) {
-	var localAdmin bool
-	err := s.db.QueryRowContext(ctx, `SELECT is_local_admin FROM users WHERE id = ?`, userID).Scan(&localAdmin)
+	var (
+		localAdmin bool
+		appRoles   string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT is_local_admin, app_roles FROM users WHERE id = ?`, userID).Scan(&localAdmin, &appRoles)
 	if err != nil {
 		if err = notFound(err); errors.Is(err, ErrNotFound) {
 			return RoleNone, err
@@ -399,7 +406,15 @@ func (s *Store) UserRole(ctx context.Context, userID int64) (Role, error) {
 	if err != nil {
 		return RoleNone, fmt.Errorf("get role of user %d: %w", userID, err)
 	}
-	return effectiveRole(false, roles), nil
+	appRole := RoleNone
+	if appRoles != "" {
+		st, err := s.GetSettings(ctx)
+		if err != nil {
+			return RoleNone, fmt.Errorf("get role of user %d: %w", userID, err)
+		}
+		appRole = st.AppRole(decodeAppRoles(appRoles))
+	}
+	return effectiveRole(false, roles, appRole), nil
 }
 
 // UserGroups returns the groups a user is a member of, ordered by name
@@ -412,9 +427,13 @@ func (s *Store) UserGroups(ctx context.Context, userID int64) ([]Group, error) {
 	return groups, nil
 }
 
-// ListUsers returns all users with their groups and effective role, ordered
-// by name/email.
+// ListUsers returns all users with their groups (Name is the display name)
+// and effective role, ordered by name/email.
 func (s *Store) ListUsers(ctx context.Context) ([]UserWithGroups, error) {
+	st, err := s.GetSettings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
 	users, err := queryAll(ctx, s.db, scanUser, `SELECT `+userCols+` FROM users u ORDER BY `+userOrderSQL)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -428,14 +447,11 @@ func (s *Store) ListUsers(ctx context.Context) ([]UserWithGroups, error) {
 		var m membership
 		var role string
 		err := sc.Scan(&m.userID, &m.ref.ExternalID, &m.ref.Name, &role)
-		if m.ref.Name == "" {
-			m.ref.Name = m.ref.ExternalID
-		}
 		m.role = ParseRole(role)
 		return m, err
-	}, `SELECT ug.user_id, g.external_id, g.name, g.role
+	}, `SELECT ug.user_id, g.external_id, `+groupNameSQL+`, g.role
 	    FROM user_groups ug JOIN idp_groups g ON g.id = ug.group_id
-	    ORDER BY LOWER(COALESCE(NULLIF(g.name, ''), g.external_id)), g.id`)
+	    ORDER BY `+groupOrderSQL)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -447,7 +463,53 @@ func (s *Store) ListUsers(ctx context.Context) ([]UserWithGroups, error) {
 	}
 	out := make([]UserWithGroups, len(users))
 	for i, u := range users {
-		out[i] = UserWithGroups{User: u, Role: effectiveRole(u.IsLocalAdmin, roles[u.ID]), Groups: groups[u.ID]}
+		out[i] = UserWithGroups{User: u, Role: effectiveRole(u.IsLocalAdmin, roles[u.ID], st.AppRole(u.AppRoles)), Groups: groups[u.ID]}
 	}
 	return out, nil
+}
+
+// The app roles stored per user (users.app_roles) are bounded: values beyond
+// maxAppRoles, and values longer than maxAppRoleLen characters, are dropped.
+const (
+	maxAppRoles   = 100
+	maxAppRoleLen = 256
+)
+
+// cleanAppRoles trims the values of a roles claim and drops empty, too long
+// and repeated ones (keeping the first), at most maxAppRoles values.
+func cleanAppRoles(values []string) []string {
+	var out []string
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" || utf8.RuneCountInString(v) > maxAppRoleLen || slices.Contains(out, v) {
+			continue
+		}
+		if out = append(out, v); len(out) == maxAppRoles {
+			break
+		}
+	}
+	return out
+}
+
+// encodeAppRoles returns the users.app_roles value for values: a JSON array,
+// or "" for none.
+func encodeAppRoles(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(values)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodeAppRoles reads a users.app_roles value; nil for "" (none) or an
+// invalid value.
+func decodeAppRoles(v string) []string {
+	var out []string
+	if v == "" || json.Unmarshal([]byte(v), &out) != nil || len(out) == 0 {
+		return nil
+	}
+	return out
 }

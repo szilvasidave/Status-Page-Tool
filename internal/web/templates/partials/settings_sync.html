@@ -8,6 +8,8 @@
     <p class="help"><strong>Sign-in</strong> updates the signed-in user's groups from the groups claim. This works with any
       OpenID Connect provider, but only for people who have signed in. The members of provisioned groups are left to
       provisioning.</p>
+    <p class="help">Provisioned groups get their names from provisioning. The names of other groups from Microsoft Entra ID
+      and roles from app roles are set up under <a href="#sso">Single sign-on</a>.</p>
     <div class="field">
       <span class="label">Tenant URL</span>
       <code class="code-box">{{.Sync.TenantURL}}</code>

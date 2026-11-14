@@ -110,6 +110,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		s.renderStatus(w, r, http.StatusUnauthorized, "login", "Sign in", d)
 		return
 	}
+	s.GroupNames.Wake() // the sign-in may have recorded new groups
 	http.Redirect(w, r, auth.SafeReturnTo(returnTo), http.StatusSeeOther)
 }
 

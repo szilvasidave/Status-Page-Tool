@@ -41,6 +41,9 @@ func adminSettingsForm(st *store.Settings) url.Values {
 		"oidc_scopes":       {st.OIDCScopes},
 		"oidc_groups_claim": {st.OIDCGroupsClaim},
 		"oidc_button_label": {st.OIDCButtonLabel},
+		"oidc_roles_claim":  {st.OIDCRolesClaim},
+		"oidc_admin_role":   {st.OIDCAdminRole},
+		"oidc_editor_role":  {st.OIDCEditorRole},
 		"smtp_host":         {st.SMTPHost},
 		"smtp_port":         {strconv.Itoa(st.SMTPPort)},
 		"smtp_security":     {st.SMTPSecurity},
@@ -55,6 +58,12 @@ func adminSettingsForm(st *store.Settings) url.Values {
 	}
 	if st.OIDCEnabled {
 		f.Set("oidc_enabled", "on")
+	}
+	if st.EntraGroupNames {
+		f.Set("entra_group_names", "on")
+	}
+	if st.OIDCAppRoles {
+		f.Set("oidc_app_roles", "on")
 	}
 	return f
 }
@@ -72,7 +81,7 @@ func TestAdminAccessControl(t *testing.T) {
 	e := newTestEnv(t)
 	pages := []string{"/admin", "/admin/settings", "/admin/services", "/admin/services/new", "/admin/groups",
 		"/admin/users", "/admin/notifications"}
-	posts := []string{"/admin/settings", "/admin/settings/test-email", "/admin/services", "/admin/groups"}
+	posts := []string{"/admin/settings", "/admin/settings/test-email", "/admin/services", "/admin/groups", "/admin/groups/names"}
 
 	for _, p := range pages {
 		if r := e.get(p); r.Status != http.StatusSeeOther || !strings.HasPrefix(r.Location, "/login") {
@@ -150,6 +159,7 @@ func TestAdminSettingsSave(t *testing.T) {
 		OIDCEnabled: true, OIDCIssuer: "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0",
 		OIDCClientID: "client-1", OIDCClientSecret: "very-secret-1", OIDCScopes: "openid profile email",
 		OIDCGroupsClaim: "groups", OIDCButtonLabel: "Sign in with Microsoft",
+		OIDCRolesClaim: "roles", OIDCAdminRole: "Admin", OIDCEditorRole: "Editor",
 		SMTPHost: "smtp.example.com", SMTPPort: 465, SMTPSecurity: "tls", SMTPUsername: "mailer",
 		SMTPPassword: "mail-pass-1", SMTPFrom: "IT Status <status@example.com>",
 		LocalLoginEnabled: true, MailMethod: store.MailSMTP,
@@ -359,7 +369,7 @@ func TestAdminServices(t *testing.T) {
 		"groups": {strconv.FormatInt(g1.ID, 10), strconv.FormatInt(g2.ID, 10)},
 	})
 	r = adminFollow(t, e, r)
-	mustContain(t, r.Body, "Service “VPN” created.", "VPN", "Remote access", "Infrastructure", "All Staff, Operations", "status-operational")
+	mustContain(t, r.Body, "Service “VPN” created.", "VPN", "Remote access", "Infrastructure", "<bdi>All Staff</bdi>, <bdi>Operations</bdi>", "status-operational")
 	svcs, _ := e.Store.ListServices(ctx)
 	if len(svcs) != 1 || svcs[0].Name != "VPN" || svcs[0].SortOrder != 5 || len(svcs[0].GroupIDs) != 2 {
 		t.Fatalf("stored services: %+v", svcs)
@@ -552,7 +562,7 @@ func TestAdminUsers(t *testing.T) {
 	// (one removed here would come back at the next sign-in without the
 	// provisioned groups), and the local administrator cannot be removed.
 	doraRemove := `action="/admin/users/` + strconv.FormatInt(dora.ID, 10) + `/delete"`
-	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "they come back at their next sign-in.",
+	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "they come back at their next sign-in, with the groups and roles it sends then.",
 		"Provisioned users are managed in Microsoft Entra ID", `<span class="small muted">Managed in Entra ID</span>`)
 	if n := strings.Count(r.Body, `/delete"`); n != 1 || strings.Contains(r.Body, doraRemove) {
 		t.Errorf("%d remove buttons, want 1 (not for the provisioned user or the local administrator)", n)
