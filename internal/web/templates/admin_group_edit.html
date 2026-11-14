@@ -1,7 +1,11 @@
 {{define "content"}}
 {{with .Data}}
 <a class="back-link" href="/admin/groups">← Groups</a>
-<h1>{{.Group.DisplayName}}</h1>
+<h1><bdi>{{.Group.DisplayName}}</bdi></h1>
+{{- if .SameName}}
+<p class="flash flash-warning">Another group has the same name. Names from Microsoft Entra ID are not unique: tell the groups apart
+  by their group ID.</p>
+{{- end}}
 {{- if .Group.Provisioned}}
 <p class="lead"><span class="badge">Provisioned</span> The members of this group come from Microsoft Entra ID (SCIM
   provisioning); sign-ins do not change them.</p>
@@ -10,10 +14,15 @@
 <div class="card card-body">
   <dl class="facts">
     <div><dt>Group ID</dt><dd><code>{{.Group.ExternalID}}</code></dd></div>
-    {{- if .Group.DirectoryName}}
-    <div><dt>Name in Microsoft Entra ID</dt><dd>{{.Group.DirectoryName}}</dd></div>
-    {{- else if .Group.DirectoryCheckedAt}}
+    {{- if not .Group.Provisioned}}
+    {{- if and .Group.DirectoryName .Group.DirectoryMissing}}
+    <div><dt>Name in Microsoft Entra ID</dt><dd><bdi>{{.Group.DirectoryName}}</bdi> <span class="small muted">– not found at the latest
+      lookup (deleted in Entra ID?)</span></dd></div>
+    {{- else if .Group.DirectoryName}}
+    <div><dt>Name in Microsoft Entra ID</dt><dd><bdi>{{.Group.DirectoryName}}</bdi></dd></div>
+    {{- else if .Group.DirectoryMissing}}
     <div><dt>Name in Microsoft Entra ID</dt><dd class="muted">Not found (deleted, or not a group's ID)</dd></div>
+    {{- end}}
     {{- end}}
     <div><dt>Members</dt><dd>{{.Group.MemberCount}}</dd></div>
     {{- with and .Group.Provisioned .Group.LastSyncedAt}}
@@ -26,15 +35,32 @@
 <form method="post" action="/admin/groups/{{.Group.ID}}" class="form">
   {{template "error-summary" .Errors}}
   {{template "csrf" $}}
+  {{- if .Group.Provisioned}}
+  <div class="field">
+    <span class="label">Display name</span>
+    <p><bdi>{{.Group.DisplayName}}</bdi></p>
+    <span class="help">The name comes from Microsoft Entra ID with provisioning and changes when the group is renamed there.</span>
+  </div>
+  {{- else}}
   <div class="field">
     <label for="name">Display name</label>
     <input id="name" name="name" type="text" value="{{.Group.Name}}" maxlength="256" placeholder="{{or .Group.DirectoryName .Group.ExternalID}}"{{if .Errors.name}} aria-invalid="true"{{end}} aria-describedby="name-help">
-    <span class="help" id="name-help">Shown in the admin pages. Empty shows {{if .Group.DirectoryName}}the name in Microsoft Entra ID, which follows renames there{{else}}the group ID{{end}}.{{if .Group.Provisioned}} Provisioning replaces it with the name from Microsoft Entra ID.{{end}}</span>
+    <span class="help" id="name-help">Shown in the admin pages. Empty shows
+      {{- if and .Group.DirectoryName .NamesActive}} the name in Microsoft Entra ID, which follows renames there.
+      {{- else if .Group.DirectoryName}} the name last looked up in Microsoft Entra ID.
+      {{- else}} the group ID.{{end}}
+      {{- if and .Group.Name (eq .Group.Name .Group.DirectoryName)}} This name is the same as in Microsoft Entra ID: clear the field to follow
+      renames there; a name you type here stays.{{end}}</span>
     {{template "field-error" .Errors.name}}
   </div>
+  {{- end}}
 
-  <fieldset>
+  <fieldset{{if and (not .Group.Name) .Group.DirectoryName (not .Group.Provisioned)}} aria-describedby="role-help"{{end}}>
     <legend>Role</legend>
+    {{- if and (not .Group.Name) .Group.DirectoryName (not .Group.Provisioned)}}
+    <p class="help" id="role-help">The name of this group comes from Microsoft Entra ID,
+      where the group's owners choose it, and is not unique: check the group ID above before you give it a role.</p>
+    {{- end}}
     <label class="checkbox"><input type="radio" name="role" value="viewer"{{if eq .Role "viewer"}} checked{{end}}>
       <span><strong>Viewer</strong> <span class="muted">– no special role: members can see the status pages.</span></span></label>
     <label class="checkbox"><input type="radio" name="role" value="editor"{{if eq .Role "editor"}} checked{{end}}>

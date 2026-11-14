@@ -130,6 +130,9 @@ type Server struct {
 	groupRequests int               // groups requests with a valid access token
 	groupIDs      int               // IDs asked for by them
 	groupFailures []Failure         // answers for the next groups requests
+	noGroupsPerm  bool              // tokens issued now lack the permission to read groups …
+	groupsDenied  map[string]bool   // … like these tokens (HTTP 403 for groups requests)
+	groupsHook    func(n int)       // called with the number of each valid groups request
 }
 
 // Start starts the server on a random local port and points the Microsoft
@@ -147,6 +150,7 @@ func Start(t testing.TB) *Server {
 		recipients:   map[string]Failure{},
 		received:     make(chan struct{}, 1),
 		groups:       map[string]string{},
+		groupsDenied: map[string]bool{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /{tenant}/oauth2/v2.0/token", s.token)
@@ -317,6 +321,9 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.tokens[tok] = true
 	s.tokenCalls++
+	if s.noGroupsPerm {
+		s.groupsDenied[tok] = true
+	}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"token_type": "Bearer", "expires_in": 3599, "ext_expires_in": 3599, "access_token": tok})
 }
@@ -522,6 +529,26 @@ func (s *Server) FailGroupsNext(f ...Failure) {
 	s.groupFailures = append(s.groupFailures, f...)
 }
 
+// SetGroupsPermission grants (true, the default) or removes the application
+// permission to read groups (GroupMember.Read.All) for the access tokens
+// issued from now on. Like in Microsoft Entra ID, a token keeps the
+// permissions it was issued with: groups requests with a token issued
+// without it fail with HTTP 403 (GroupsDenied).
+func (s *Server) SetGroupsPermission(granted bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.noGroupsPerm = !granted
+}
+
+// OnGroupsRequest makes the server call f with the number of each valid
+// groups request (1 for the first), before it answers; e.g. to end the
+// client's context during a request, or to delay the answer.
+func (s *Server) OnGroupsRequest(f func(n int)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.groupsHook = f
+}
+
 // GroupRequests returns the number of groups requests with a valid access
 // token (answered or failed) and the number of group IDs they asked for.
 func (s *Server) GroupRequests() (requests, ids int) {
@@ -576,6 +603,12 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.groupRequests++
 	s.groupIDs += len(ids)
+	n, hook := s.groupRequests, s.groupsHook
+	s.mu.Unlock()
+	if hook != nil {
+		hook(n)
+	}
+	s.mu.Lock()
 	var f *Failure
 	if len(s.groupFailures) > 0 {
 		next := s.groupFailures[0]
@@ -583,6 +616,10 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		if next.Status != 0 {
 			f = &next
 		}
+	}
+	if f == nil && s.groupsDenied[auth] {
+		denied := GroupsDenied()
+		f = &denied
 	}
 	if f == nil {
 		for _, id := range ids {

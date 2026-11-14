@@ -43,14 +43,15 @@ func TestServiceFormProvisionedGroups(t *testing.T) {
 	if i := strings.Index(r.Body, "from-sign-in"); i < other {
 		t.Error("the group recorded from a sign-in is not under Other groups")
 	}
-	mustContain(t, r.Body, `SAP Key Users <span class="badge">Provisioned</span>`,
+	mustContain(t, r.Body, `SAP Key Users</bdi> <span class="badge">Provisioned</span>`,
 		"after their members sign in or when Microsoft Entra ID provisions them")
 }
 
 // TestProvisionedGroupTexts: an empty provisioned group does not suggest
-// that sign-ins add members (they never change provisioned groups), and a
-// provisioned name as long as Microsoft Entra ID allows (256 characters) can
-// be saved with the group's role.
+// that sign-ins add members (they never change provisioned groups), and the
+// name of a provisioned group comes from provisioning: it cannot be changed
+// on the group's page (a name sent along is ignored), and saving the role
+// keeps a name as long as Microsoft Entra ID allows (256 characters).
 func TestProvisionedGroupTexts(t *testing.T) {
 	e := newTestEnv(t)
 	e.loginAdmin()
@@ -63,23 +64,29 @@ func TestProvisionedGroupTexts(t *testing.T) {
 	page := "/admin/groups/" + strconv.FormatInt(g.ID, 10)
 	r := e.get(page)
 	mustContain(t, r.Body, "No members yet. Microsoft Entra ID provisions the direct members of this group",
-		`maxlength="256"`)
+		"The name comes from Microsoft Entra ID with provisioning", "<bdi>"+long+"</bdi>")
 	if strings.Contains(r.Body, "Members are recorded when they sign in") {
 		t.Error("the empty provisioned group says that sign-ins record its members")
 	}
+	if strings.Contains(r.Body, `id="name"`) {
+		t.Error("the name of a provisioned group can be edited")
+	}
 
-	r = e.post(page, url.Values{"name": {long}, "role": {"editor"}})
+	r = e.post(page, url.Values{"role": {"editor"}})
 	if r.Status != http.StatusSeeOther {
 		t.Fatalf("saving the role of a group with a 256-character name: %d", r.Status)
 	}
 	if got, _ := e.Store.GetGroup(ctx, g.ID); got == nil || got.Role != store.RoleEditor || got.Name != long {
 		t.Errorf("group after saving: %+v", got)
 	}
-	r = e.post(page, url.Values{"name": {long + "x"}, "role": {"editor"}})
-	if r.Status != http.StatusUnprocessableEntity {
-		t.Fatalf("257 characters: %d", r.Status)
+	for _, name := range []string{"Other name", long + "x", ""} {
+		if r := e.post(page, url.Values{"name": {name}, "role": {"viewer"}}); r.Status != http.StatusSeeOther {
+			t.Fatalf("saving with the name %.10q: %d", name, r.Status)
+		}
+		if got, _ := e.Store.GetGroup(ctx, g.ID); got == nil || got.Role == store.RoleEditor || got.Name != long {
+			t.Errorf("group after saving with the name %.10q: %+v", name, got)
+		}
 	}
-	mustContain(t, r.Body, "The display name is too long (at most 256 characters).")
 	mustContain(t, e.get("/admin/groups").Body, `id="name" name="name" type="text" value="" maxlength="256"`)
 
 	// A group that is not provisioned keeps the sign-in hint.

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/szilvasidave/status-page-tool/internal/groupnames"
 	"github.com/szilvasidave/status-page-tool/internal/msgraph"
@@ -15,8 +17,9 @@ import (
 
 // adminGroupsData is the data of the groups list.
 type adminGroupsData struct {
-	InUse      []store.Group // groups with a role or services, and provisioned groups
-	Other      []store.Group // all other groups (shown collapsed)
+	InUse      []store.Group  // groups with a role or services, and provisioned groups
+	Other      []store.Group  // all other groups (shown collapsed)
+	SameName   map[int64]bool // groups whose name another group has too (adminSameNames)
 	Names      adminGroupNames
 	ExternalID string // "add group" form values
 	Name       string
@@ -33,13 +36,51 @@ type adminGroupNames struct {
 	Hint bool
 }
 
-const (
-	// adminLookUpAllTime is how long "Look up names now" may take; the
-	// worker looks up the rest.
+// How long an administrator's lookup of group names may take; longer than
+// one request of the lookup may take (groupnames.requestTimeout), so that a
+// hang is reported as a failure. Variables for the tests.
+var (
+	// adminLookUpAllTime: "Look up names now"; the worker looks up the
+	// rest.
 	adminLookUpAllTime = 25 * time.Second
-	// adminLookUpGroupTime is how long adding a group waits for its name.
-	adminLookUpGroupTime = 10 * time.Second
+	// adminLookUpGroupTime: adding a group waits for its name; the worker
+	// looks it up otherwise.
+	adminLookUpGroupTime = 15 * time.Second
 )
+
+// adminNameKey returns the form of a group name that adminSameNames
+// compares: without format characters (bidi controls, zero-width
+// characters), with spaces collapsed, in lower case.
+func adminNameKey(name string) string {
+	name = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, name)
+	return strings.ToLower(strings.Join(strings.Fields(name), " "))
+}
+
+// adminSameNames returns the ids of the groups whose display name another
+// group has too. Names from Microsoft Entra ID are not unique and the
+// groups' owners choose them, so the pages mark such groups: a role must
+// not go to the wrong one of two "Service Desk" groups.
+func adminSameNames(groups []store.Group) map[int64]bool {
+	byKey := make(map[string][]int64, len(groups))
+	for i := range groups {
+		k := adminNameKey(groups[i].DisplayName())
+		byKey[k] = append(byKey[k], groups[i].ID)
+	}
+	same := map[int64]bool{}
+	for _, ids := range byKey {
+		if len(ids) > 1 {
+			for _, id := range ids {
+				same[id] = true
+			}
+		}
+	}
+	return same
+}
 
 // adminGroupNamesView returns what the groups page shows about the names of
 // groups.
@@ -96,6 +137,7 @@ func (s *Server) adminRenderGroups(w http.ResponseWriter, r *http.Request, statu
 	// Provisioned groups were assigned to the provisioning app on purpose:
 	// they are listed even before they get a role or services.
 	d.InUse, d.Other = adminSplitGroups(groups, func(g *store.Group) bool { return g.Provisioned })
+	d.SameName = adminSameNames(groups)
 	d.Names = s.adminGroupNamesView(r, groups)
 	if d.Errors == nil {
 		d.Errors = adminFormErrors{}
@@ -157,7 +199,8 @@ func (s *Server) adminLookUpNewGroup(ctx context.Context, g *store.Group) (_ *st
 	case err != nil:
 		return g, "warning", " Its name could not be looked up in Microsoft Entra ID: " + err.Error() + "."
 	case !found:
-		return updated, "warning", " Microsoft Entra ID has no group with this object ID – check the ID."
+		return updated, "warning", " Microsoft Entra ID does not know a group with this object ID (yet): a group created a moment " +
+			"ago can take a few minutes to appear, and its name is looked up again shortly. If the ID keeps showing, check it."
 	}
 	return updated, "success", ""
 }
@@ -184,10 +227,11 @@ func (s *Server) handleGroupNamesLookup(w http.ResponseWriter, r *http.Request) 
 			"Entra ID object ID, except provisioned groups, which get their names from provisioning.")
 	default:
 		msg := fmt.Sprintf("The names of %s were looked up in Microsoft Entra ID.", plural(res.Groups, "group"))
+		const why = " (deleted, not a group's ID, or created a moment ago – a new group is looked up again shortly)."
 		if missing := res.Groups - res.Found; missing == 1 {
-			msg += " 1 group was not found there (deleted, or the ID is not one of a group)."
+			msg += " 1 group was not found there" + why
 		} else if missing > 1 {
-			msg += fmt.Sprintf(" %d groups were not found there (deleted, or the ID is not one of a group).", missing)
+			msg += fmt.Sprintf(" %d groups were not found there", missing) + why
 		}
 		s.redirectWithFlash(w, r, back, "success", msg)
 	}
@@ -209,11 +253,13 @@ func (s *Server) adminGroupByExternalID(ctx context.Context, externalID string) 
 
 // adminGroupForm is the data of the group edit page.
 type adminGroupForm struct {
-	Group    store.Group
-	Role     string // viewer, editor or admin
-	Members  []store.User
-	Services []store.Service
-	Errors   adminFormErrors
+	Group       store.Group
+	Role        string // viewer, editor or admin
+	Members     []store.User
+	Services    []store.Service
+	SameName    bool // another group has the same display name (adminSameNames)
+	NamesActive bool // group names are looked up (store.Settings.GroupNamesActive)
+	Errors      adminFormErrors
 }
 
 func (s *Server) adminRenderGroupForm(w http.ResponseWriter, r *http.Request, status int, f *adminGroupForm) {
@@ -227,6 +273,13 @@ func (s *Server) adminRenderGroupForm(w http.ResponseWriter, r *http.Request, st
 		s.serverError(w, r, err)
 		return
 	}
+	groups, err := s.Store.ListGroups(ctx)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	f.SameName = adminSameNames(groups)[f.Group.ID] // as stored
+	f.NamesActive = s.settings(r).GroupNamesActive()
 	if f.Errors == nil {
 		f.Errors = adminFormErrors{}
 	}
@@ -270,7 +323,11 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	f := &adminGroupForm{Group: *g, Role: r.FormValue("role"), Errors: adminFormErrors{}}
-	f.Group.Name = formTrim(r, "name")
+	if !g.Provisioned {
+		// Provisioning owns the names of provisioned groups (and SCIM needs
+		// them unique), so their form has no name field.
+		f.Group.Name = formTrim(r, "name")
+	}
 	f.Group.ServiceIDs = formInt64s(r, "services")
 	role := store.ParseRole(f.Role)
 	if role == store.RoleNone {
@@ -282,7 +339,7 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if last {
-			f.Errors.add("role", adminLastAdminGroupMsg(s.settings(r).OIDCAppRoles))
+			f.Errors.add("role", adminLastAdminGroupMsg(s.settings(r).AppRoleAdminSet()))
 		}
 	}
 	if tooLong(f.Group.Name, adminGroupNameMax) {
@@ -291,11 +348,6 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	if len(f.Errors) > 0 {
 		s.adminRenderGroupForm(w, r, http.StatusUnprocessableEntity, f)
 		return
-	}
-	if !g.Provisioned && (f.Group.Name == g.ExternalID || f.Group.Name == g.DirectoryName) {
-		// No name of its own: the group shows its directory name, which
-		// follows renames in Microsoft Entra ID, else its ID.
-		f.Group.Name = ""
 	}
 	err := s.Store.UpdateGroup(ctx, g.ID, f.Group.Name, role)
 	if err == nil {
@@ -309,6 +361,9 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Log.Info("group updated", "group", g.ExternalID, "role", role.String(), "services", len(f.Group.ServiceIDs), "user", adminActor(r))
+	if saved, err := s.Store.GetGroup(ctx, g.ID); err == nil {
+		f.Group = *saved // with the name as stored
+	}
 	s.redirectWithFlash(w, r, "/admin/groups", "success", "Group “"+f.Group.DisplayName()+"” saved.")
 }
 
@@ -323,7 +378,7 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if last {
-		s.redirectWithFlash(w, r, "/admin/groups/"+strconv.FormatInt(g.ID, 10), "error", adminLastAdminGroupMsg(s.settings(r).OIDCAppRoles))
+		s.redirectWithFlash(w, r, "/admin/groups/"+strconv.FormatInt(g.ID, 10), "error", adminLastAdminGroupMsg(s.settings(r).AppRoleAdminSet()))
 		return
 	}
 	err = s.Store.DeleteGroup(r.Context(), g.ID)
@@ -339,13 +394,14 @@ func (s *Server) handleGroupDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminLastAdminGroupMsg explains why a group keeps the Administrator role
-// (appRoles: roles from app roles are on).
-func adminLastAdminGroupMsg(appRoles bool) string {
-	if appRoles {
-		return "This is the only group with the Administrator role, nobody has signed in with the app role for administrators, " +
-			"and the local administrator sign-in is turned off, so nobody could administer the status page any more. Give another " +
-			"group the Administrator role or sign in with the app role for administrators first, or turn the local administrator " +
-			"sign-in on again in Admin → Settings."
+// (appRoleAdmin: an app role can give the Administrator role, see
+// store.Settings.AppRoleAdminSet).
+func adminLastAdminGroupMsg(appRoleAdmin bool) string {
+	if appRoleAdmin {
+		return "This is the only group with the Administrator role, nobody has signed in with the app role for administrators " +
+			"in the last 30 days, and the local administrator sign-in is turned off, so nobody could administer the status page " +
+			"any more. Give another group the Administrator role or sign in with the app role for administrators first, or turn " +
+			"the local administrator sign-in on again in Admin → Settings."
 	}
 	return "This is the only group with the Administrator role and the local administrator sign-in is turned off, so nobody " +
 		"could administer the status page any more. Give another group the Administrator role first, or turn the local " +

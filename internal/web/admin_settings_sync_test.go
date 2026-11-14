@@ -253,7 +253,7 @@ func TestProvisioningBadges(t *testing.T) {
 	// Groups: the provisioned group is listed (not collapsed) with a badge;
 	// no directory search or sync any more.
 	r := e.get("/admin/groups")
-	mustContain(t, r.Body, "Provisioned Team</a> <span class=\"badge\">Provisioned</span>", "Other groups (1)")
+	mustContain(t, r.Body, "Provisioned Team</bdi></a> <span class=\"badge\">Provisioned</span>", "Other groups (1)")
 	if i, j := strings.Index(r.Body, "Provisioned Team"), strings.Index(r.Body, "Other groups"); i < 0 || i > j {
 		t.Error("the provisioned group is not listed before the other groups")
 	}
@@ -273,7 +273,11 @@ func TestProvisioningBadges(t *testing.T) {
 
 	r = e.get("/admin/groups/" + strconv.FormatInt(g.ID, 10))
 	mustContain(t, r.Body, "come from Microsoft Entra ID", "Last provisioning change", "Pia Provisioned",
-		"Dan Deactivated <span class=\"badge badge-muted\">Deactivated</span>", "Provisioning replaces it with the name")
+		"Dan Deactivated <span class=\"badge badge-muted\">Deactivated</span>",
+		"The name comes from Microsoft Entra ID with provisioning")
+	if strings.Contains(r.Body, `id="name"`) {
+		t.Error("the name of a provisioned group can be edited")
+	}
 
 	// Users: badges and "Never signed in".
 	r = e.get("/admin/users")

@@ -80,7 +80,7 @@
   {{- if .Groups}}
   <ul class="card-list">
     {{- range .Groups}}
-    <li class="row"><span>{{.DisplayName}}</span><span class="spacer"></span>{{if gt .Role 1}}<span class="badge">{{.Role.Label}}</span>{{end}}</li>
+    <li class="row"><bdi>{{.DisplayName}}</bdi><span class="spacer"></span>{{if gt .Role 1}}<span class="badge">{{.Role.Label}}</span>{{end}}</li>
     {{- end}}
   </ul>
   {{- else}}

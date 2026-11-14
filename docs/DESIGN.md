@@ -32,6 +32,32 @@ Later feedback:
     IDs, so that admins can assign roles and services; roles can also be
     assigned in Entra ID with app roles.
 
+Decision after 14 – keep SCIM provisioning. Group names and app roles do not
+make provisioning redundant: everything on the sign-in side (groups claim,
+app roles, and the name lookup, which only names groups the status page
+already knows) learns about a person only when that person signs in. Only
+provisioning knows the members who never sign in – the people requirement 3
+notifies, while most readers use the public page – deactivates people who
+left (no e-mails, sessions ended, not counted as app role admins), changes
+memberships between sign-ins and is not limited to 200 groups per token. The
+alternative to SCIM would be a Microsoft Graph pull of members, which
+feedback 8 ruled out; reversing that is a product decision, and removing SCIM
+after 1.0.0 would break installations that use it. Each source decides one
+thing:
+
+| | decided by |
+|---|---|
+| who is known and notified | SCIM (members of provisioned groups); sign-ins (everybody who signed in, with the groups of their last sign-in) |
+| members of a group | SCIM for provisioned groups, the groups claim at sign-in for all others |
+| who is deactivated | SCIM only |
+| who can sign in, with which role | sign-in: group roles (Admin → Groups) and app roles of the last sign-in |
+| group names | SCIM for provisioned groups; for others the admin's name, else the Graph lookup, else the ID |
+
+The name lookup needs GroupMember.Read.All on the sign-in app registration,
+which would technically allow a member pull too; it reads only `id` and
+`displayName` of the groups the status page uses, so feedback 8 still holds:
+members come only from SCIM and sign-ins.
+
 ## Architecture
 
 ```
@@ -58,7 +84,8 @@ internal/theme         branding (leaf package, pure functions): colour tokens of
 internal/web           HTTP handlers + html/template templates + static assets (embedded)
 internal/e2e           end-to-end tests: the real app driven like a browser, plus the CLI
 internal/testutil      test helpers: mock OpenID provider (mockidp), fake SMTP server (fakesmtp),
-                       fake Microsoft Graph token and sendMail endpoints with injectable failures (fakegraph)
+                       fake Microsoft Graph token, sendMail and groups endpoints with injectable failures,
+                       per-token permissions and a request hook (fakegraph)
 tools/devseed          development only: data directory with sample data, sessions for test users
 installer/             Inno Setup script → StatusPageSetup.exe
 ```
@@ -69,9 +96,10 @@ The former `internal/directory` (a Microsoft Graph pull of group members) was
 removed; migration 2 deletes its setting and adds the provisioning columns,
 migration 3 adds `users.email_from_user_name`, migration 4 the table
 `brand_images` (logos and favicon; `{{BLOB}}` is `BLOB` or `BYTEA`),
-migration 5 `idp_groups.directory_name` and `directory_checked_at` (group
-names from Microsoft Entra ID; it clears the names that only repeat the
-external id, except those of provisioned groups) and `users.app_roles`.
+migration 5 `idp_groups.directory_name`, `directory_checked_at` and
+`directory_found_at` (group names from Microsoft Entra ID; it clears the
+names that only repeat the external id, except those of provisioned groups)
+and `users.app_roles`.
 
 ## Key decisions
 
@@ -124,7 +152,9 @@ external id, except those of provisioned groups) and `users.app_roles`.
   array; trimmed, without duplicates, at most 100 values of at most 256
   characters), and while `Settings.OIDCAppRoles` is on, `Settings.AppRole`
   maps them to a role (`OIDCAdminRole`, default `Admin`, then
-  `OIDCEditorRole`, default `Editor`; case-insensitive; "" = none). A user's
+  `OIDCEditorRole`, default `Editor`; exact comparison, as the IdP defines
+  the values, so that e.g. a role `admin` of another application in a
+  merged Keycloak claim does not count; "" = none). A user's
   role is the highest role of their groups and app roles, computed on every
   request, so turning app roles off or changing the values applies at once;
   an assignment in the IdP applies at the next sign-in. The local admin
@@ -139,10 +169,15 @@ external id, except those of provisioned groups) and `users.app_roles`.
   `local_login_enabled`, default true). It can only be turned off while OIDC
   is enabled and configured (issuer, client ID, client secret) and somebody
   can sign in as admin with it (`store.HasSSOAdmin`: a group has the admin
-  role, or, with app roles on, an active user's stored app roles give admin;
+  role, or, with app roles on and an admin value set
+  (`Settings.AppRoleAdminSet`), an active user who signed in within the last
+  30 days (`store.AppRoleAdminWindow`) has stored app roles that give admin;
   `store.CheckLocalLoginOff`, used by the settings page and `statuspage
   local-login disable`); the same check stops OIDC, or app roles, from being
-  turned off while the switch is off. While off: `auth.LoginLocal` returns
+  turned off, or the admin value from being changed, while the switch is
+  off – the settings page then shows the error at the field that was
+  changed (`oidc_app_roles`, `oidc_admin_role`), not at the switch. The
+  messages mention the app role only when an admin value is set. While off: `auth.LoginLocal` returns
   `ErrLocalLoginOff` (POST /login → 403) before the limiter and the password
   check; `loadIdentity` ignores sessions of local admins; the sign-in page
   shows only SSO (`?local=1` shows a note with the general form of the
@@ -182,12 +217,14 @@ external id, except those of provisioned groups) and `users.app_roles`.
     sessions are deleted; `loadIdentity` also refuses and deletes any later
     session of a deactivated user (e.g. of a sign-in that finished right
     after the deactivation). Activating a user again also clears
-    `oidc_subject` and `directory_id` and deletes the sessions: the next
-    sign-in links the user again by user name or e-mail (the user name may
-    belong to another person by now). DELETE removes the user (memberships
-    and sessions cascade). POST /Users takes over a user who is not
-    provisioned yet (e.g. created by a sign-in), matched by user name
-    (case-insensitive), then by e-mail, instead of creating a duplicate.
+    `oidc_subject`, `directory_id` and `app_roles` and deletes the
+    sessions: the next sign-in links the user again by user name or e-mail
+    (the user name may belong to another person by now). DELETE removes the
+    user (memberships and sessions cascade). POST /Users takes over a user
+    who is not provisioned yet (e.g. created by a sign-in), matched by user
+    name (case-insensitive), then by e-mail, instead of creating a
+    duplicate; a takeover clears the same three columns and deletes the
+    sessions, for the same reason (`writeSCIMUser`).
     Groups: SCIM `id` = `idp_groups.id`, `displayName` ↔ name, `externalId`
     ↔ `external_id` (the Entra object ID, the same value as in the groups
     claim; GUIDs lower-cased; a group without one gets a generated `scim:…`
@@ -220,13 +257,18 @@ external id, except those of provisioned groups) and `users.app_roles`.
     groups are created (`ON CONFLICT DO NOTHING`). An absent claim means *no
     groups* (the IdP must be configured to send it). Memberships stay
     unchanged only on Entra group overage (`_claim_names`/`hasgroups`) or
-    when the userinfo request failed. A claim of an unexpected type is
-    logged and treated as no groups. The roles claim is read the same way
-    and replaces the user's app roles at every sign-in, also while app roles
-    are off (so that turning them on uses those of the last sign-in, not
-    older ones); userinfo is asked for it only while they are on. When the
-    userinfo request fails, the user has no app roles until the next
-    sign-in (fail closed), while the group memberships stay.
+    when the groups had to come from userinfo and that request failed. A
+    claim of an unexpected type is logged and treated as no groups. The
+    roles claim is read the same way and replaces the user's app roles at
+    every sign-in, also while app roles are off (so that turning them on
+    uses those of the last sign-in, not older ones); userinfo is asked for
+    it only while they are on, and never with Microsoft Entra ID
+    (`rolesFromUserinfo`: an Entra issuer or a userinfo endpoint on
+    graph.microsoft.com, which never returns roles – the ID token holds
+    them all). When the userinfo request fails, a claim that had to come
+    from it counts as unknown: without a roles claim in the ID token the
+    user has no app roles until the next sign-in (fail closed); without a
+    groups claim in the ID token the memberships stay unchanged.
   * Without provisioning only users who signed in at least once are known
     (and notified), with the groups of their last sign-in. Admins can remove
     a user who is not provisioned on Admin → Users (not the local admin); it
@@ -241,30 +283,64 @@ external id, except those of provisioned groups) and `users.app_roles`.
     form list provisioned groups even without a role or services; group
     display names have at most 256 characters, like in Entra ID and SCIM.
   * **Group names** (`internal/groupnames`): the Entra groups claim holds
-    object IDs only (names only for groups assigned to the app, and then no
-    IDs), so groups keep the object ID as `external_id` and get their name
-    from Microsoft Graph as `directory_name` while `Settings.EntraGroupNames`
-    is on and OIDC is configured with a client secret
-    (`Settings.GroupNamesActive`). `GET /v1.0/groups?$filter=id in
+    object IDs by default, so groups keep the object ID as `external_id`
+    and get their name from Microsoft Graph as `directory_name` while
+    `Settings.EntraGroupNames` is on and OIDC is configured with a client
+    secret (`Settings.GroupNamesActive`). `GET /v1.0/groups?$filter=id in
     (…)&$select=id,displayName` with up to 15 IDs per request (the limit of
-    `in`; only GUIDs go into the filter; spaces as `%20`), application
-    permission GroupMember.Read.All. `idp_groups.name` holds only a name
-    given by an admin or by provisioning: `Group.DisplayName` = name, else
-    directory name, else external id (also the SQL order); the edit page
-    stores a name equal to the directory name or the id as "", so that the
-    group follows renames. The worker (`Resolver.Run`) looks up the groups
-    that are not provisioned, have a GUID as external id and were not looked
-    up for 24 hours (`store.GroupsForNameLookup`): at its start, hourly and
-    2 s after `Wake` (after every OIDC sign-in and settings save), and
-    stores the names after each request (`SetGroupDirectoryNames`; a group
-    that is not found keeps its last name). After a failure it pauses for an
-    hour (Retry-After, at most an hour, when throttled) while issuer, client
-    ID and client secret stay the same; the last outcome is shown on Admin →
-    Groups, whose *Look up names now* (`LookUpAll`, 25 s, then the worker
-    goes on) ignores the pause and the 24 hours. Adding a group by object ID
-    looks it up at once (`LookUpGroup`, 10 s) and warns if Entra ID does not
-    know it. A lookup whose context ends (shutdown, request time) records
-    neither a success nor a failure. One lookup runs at a time.
+    `in`; only GUIDs go into the filter; spaces as `%20`; a next page link
+    must stay on the Graph host, so that the token goes nowhere else),
+    application permission GroupMember.Read.All (the narrowest documented
+    one). Names are stored without control characters and cut to 256
+    characters.
+    - *Naming model.* `idp_groups.name` holds only a name given by an admin
+      or by provisioning: `Group.DisplayName` = name, else directory name,
+      else external id (also the SQL order). A name equal to the external
+      id counts as none (`ownGroupName`); a typed name equal to the
+      directory name is kept, so that it stays fixed (the page says so).
+      Provisioned groups get their names only from SCIM (read-only on the
+      group page, never looked up); adopting a group clears its directory
+      name, and a group that stops being provisioned (SCIM DELETE, or
+      provisioning turned off) moves its SCIM name to `directory_name`, so
+      that the next lookup replaces it. `directory_found_at` <
+      `directory_checked_at` means the last lookup did not find the group
+      (`Group.DirectoryMissing`: badge *Not found in Entra ID*, last name
+      kept). Directory names are chosen by group owners and not unique: the
+      lists mark names that another group has too (*Same name as another
+      group*, compared without format characters and case), the role
+      fieldset of a group named from Entra ID asks to check the ID, and
+      names are wrapped in `<bdi>` against right-to-left tricks.
+    - *Which groups.* `store.GroupsForNameLookup`: not provisioned, GUID as
+      external id, and with members, a role or services, or recorded in the
+      last 30 minutes (two `newGroupWindow`s; e.g. just added by an admin);
+      never looked up first, then the longest ago. Groups nobody uses keep
+      their last name.
+    - *Worker* (`Resolver.Run`): at its start, hourly and 2 s after `Wake`
+      (after every OIDC sign-in and settings save) it looks up the groups
+      not looked up for 24 hours, at most 300 per run (`maxRun`; it wakes
+      itself for the rest, so the groups of new sign-ins do not wait for a
+      daily refresh). Each request of 15 groups takes the one-at-a-time
+      lock separately, so an admin's lookup waits for at most one request;
+      between requests the settings are read again and the run stops if
+      the lookup was turned off or the app registration changed. Each
+      request has its own 10 s timeout (`requestTimeout`), shorter than the
+      admins' 25 s and 15 s, so that a hang is a failure, not an
+      interruption. A group Graph does not know that was never looked up
+      and was recorded less than 15 minutes ago is not marked missing but
+      looked up again after 2 minutes (replication delay of new groups).
+      After a failure the worker pauses for an hour (Retry-After, at most an
+      hour, when throttled) while issuer, client ID and client secret stay
+      the same, and – unless it was throttling – drops its client, so that
+      the next lookup gets a new access token (a token keeps the permissions
+      it was issued with).
+    - *Admins.* Admin → Groups shows the last outcome. *Look up names now*
+      (`LookUpAll`, 25 s) uses a new client, ignores the pause and the 24
+      hours; when its time is up, the names stored so far end an earlier
+      failure's pause and error, and the worker looks up the groups not
+      looked up since the button was pressed (`refreshBefore`, also during
+      a pause). Adding a group by object ID looks it up at once
+      (`LookUpGroup`, 15 s, else in the background). A lookup whose context
+      ends (shutdown, request time) records no failure.
 * **SCIM endpoint** (`/scim/v2`, Tenant URL `<Base URL>/scim/v2`): bearer
   token only – 32 random bytes base64url, generated in Admin → Settings,
   stored as SHA-256 hex (`Settings.SCIMTokenHash`) and compared in constant

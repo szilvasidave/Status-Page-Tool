@@ -193,12 +193,16 @@ CREATE TABLE brand_images (
 	//                                   external id is shown), so the names that
 	//                                   just repeat the external id are cleared
 	//   idp_groups.directory_checked_at when the directory name was last looked up
+	//   idp_groups.directory_found_at   when the lookup last found the group (a
+	//                                   group not found at the last lookup keeps
+	//                                   its last name)
 	//   users.app_roles                 the values of the roles claim at the
 	//                                   user's last sign-in (a JSON array of
 	//                                   strings; '' = none)
 	`
 ALTER TABLE idp_groups ADD COLUMN directory_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE idp_groups ADD COLUMN directory_checked_at BIGINT;
+ALTER TABLE idp_groups ADD COLUMN directory_found_at BIGINT;
 UPDATE idp_groups SET name = '' WHERE name = external_id AND provisioned = {{FALSE}};
 ALTER TABLE users ADD COLUMN app_roles TEXT NOT NULL DEFAULT '';
 `,

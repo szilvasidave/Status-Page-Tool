@@ -69,8 +69,9 @@ type adminServiceForm struct {
 	Service   store.Service
 	SortOrder string // as entered
 	IsNew     bool
-	Groups    []store.Group // groups with a role or services, and the groups of this service
-	Other     []store.Group // all other groups (shown collapsed)
+	Groups    []store.Group  // groups with a role or services, and the groups of this service
+	Other     []store.Group  // all other groups (shown collapsed)
+	SameName  map[int64]bool // groups whose name another group has too (adminSameNames)
 
 	// The category is chosen in a select: "No category" (""), one of
 	// Categories, or "New category…" (adminNewCategory) with its name
@@ -125,6 +126,7 @@ func (s *Server) adminRenderServiceForm(w http.ResponseWriter, r *http.Request, 
 	f.Groups, f.Other = adminSplitGroups(groups, func(g *store.Group) bool {
 		return g.Provisioned || slices.Contains(f.Service.GroupIDs, g.ID)
 	})
+	f.SameName = adminSameNames(groups)
 	if f.Errors == nil {
 		f.Errors = adminFormErrors{}
 	}

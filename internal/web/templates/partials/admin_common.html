@@ -49,3 +49,9 @@
 </fieldset>
 {{end}}
 {{end}}
+
+{{/* Badges after a group's name in the lists. Dot: (dict "G" <store.Group> "D" <data with SameName>). */}}
+{{define "group-name-badges"}}
+  {{- if index .D.SameName .G.ID}} <span class="badge badge-muted">Same name as another group</span>{{end}}
+  {{- if and .G.DirectoryMissing (not .G.Provisioned)}} <span class="badge badge-muted">Not found in Entra ID</span>{{end}}
+{{- end}}

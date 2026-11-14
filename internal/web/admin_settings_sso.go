@@ -86,7 +86,7 @@ func (s *Server) adminSSOSave(r *http.Request, cur, st *store.Settings, d *admin
 	st.OIDCAdminRole = formTrim(r, "oidc_admin_role")
 	st.OIDCEditorRole = formTrim(r, "oidc_editor_role")
 	// After the app roles: they may be the way to sign in as administrator.
-	s.adminLocalLoginSave(r, st, d)
+	s.adminLocalLoginSave(r, cur, st, d)
 	// The fields are only checked while sign-in is enabled. The issuer,
 	// client ID and client secret are always shown, because e-mail with
 	// Microsoft Graph uses them, too (adminGraphAppProblem checks them for
@@ -146,10 +146,12 @@ func adminAppRolesCheck(st *store.Settings, errs adminFormErrors) {
 // administrator account". It can only be turned off while nobody is locked
 // out by it: single sign-on (as entered in this form) is enabled and
 // configured, and a group has the Administrator role or somebody signed in
-// with the administrator app role (with roles from app roles as entered in
-// this form). "statuspage local-login disable" applies the same check
-// (store.CheckLocalLoginOff).
-func (s *Server) adminLocalLoginSave(r *http.Request, st *store.Settings, d *adminSettingsData) {
+// recently with the administrator app role (with roles from app roles as
+// entered in this form). "statuspage local-login disable" applies the same
+// check (store.CheckLocalLoginOff). While the switch was already off (cur),
+// a refusal is caused by a change of the app roles in this form, and the
+// error is shown at that field.
+func (s *Server) adminLocalLoginSave(r *http.Request, cur, st *store.Settings, d *adminSettingsData) {
 	st.LocalLoginEnabled = formBool(r, "local_login_enabled")
 	if st.LocalLoginEnabled {
 		return
@@ -158,10 +160,23 @@ func (s *Server) adminLocalLoginSave(r *http.Request, st *store.Settings, d *adm
 	case errors.Is(err, store.ErrSSONotConfigured):
 		d.Errors.add("local_login_enabled", "The local administrator sign-in can only be turned off while single sign-on is enabled "+
 			"and configured (issuer URL, client ID and client secret).")
+	case errors.Is(err, store.ErrNoAdmin) && !cur.LocalLoginEnabled:
+		field := "oidc_admin_role"
+		if cur.OIDCAppRoles && !st.OIDCAppRoles {
+			field = "oidc_app_roles"
+		}
+		d.Errors.add(field, "The local administrator sign-in is off and no group has the Administrator role, so the app role for "+
+			"administrators is the only way to administer the status page, and nobody has signed in with the app role entered here "+
+			"in the last 30 days. Give a group the Administrator role (Admin → Groups), or turn the local administrator sign-in on, first.")
 	case errors.Is(err, store.ErrNoAdmin):
-		d.Errors.add("local_login_enabled", "The local administrator sign-in can only be turned off when at least one group has the "+
-			"Administrator role (Admin → Groups), or with roles from app roles when somebody has signed in with the app role for "+
-			"administrators, so that somebody can still sign in as an administrator.")
+		msg := "The local administrator sign-in can only be turned off when at least one group has the Administrator role " +
+			"(Admin → Groups), so that somebody can still sign in as an administrator."
+		if st.AppRoleAdminSet() {
+			msg = "The local administrator sign-in can only be turned off when at least one group has the Administrator role " +
+				"(Admin → Groups) or somebody has signed in with the app role for administrators in the last 30 days, so that " +
+				"somebody can still sign in as an administrator."
+		}
+		d.Errors.add("local_login_enabled", msg)
 	case err != nil:
 		s.Log.Error("check whether the local sign-in can be turned off", "err", err)
 		d.Errors.add("local_login_enabled", "The groups could not be checked, so the local administrator sign-in stays on. Please try again.")

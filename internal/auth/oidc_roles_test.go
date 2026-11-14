@@ -63,9 +63,13 @@ func TestOIDCAppRoles(t *testing.T) {
 		t.Errorf("sign-in log without app roles:\n%s", log)
 	}
 
-	// Upper and lower case do not matter; a single string works.
-	if r := e.roleOf(e.signIn(map[string]any{"sub": "user-1", "groups": []string{}, "roles": "editor"})); r != store.RoleEditor {
-		t.Errorf("role with editor = %v", r)
+	// Exact values only ("editor" may be another application's role); a
+	// single string works.
+	if r := e.roleOf(e.signIn(map[string]any{"sub": "user-1", "groups": []string{}, "roles": "editor"})); r != store.RoleViewer {
+		t.Errorf("role with editor = %v, want viewer", r)
+	}
+	if r := e.roleOf(e.signIn(map[string]any{"sub": "user-1", "groups": []string{}, "roles": "Editor"})); r != store.RoleEditor {
+		t.Errorf("role with Editor = %v", r)
 	}
 	// The roles of groups count as well: the higher role wins.
 	g, err := e.store.CreateGroup(context.Background(), "admins", "")
@@ -79,7 +83,9 @@ func TestOIDCAppRoles(t *testing.T) {
 		t.Errorf("role with an admin group and the editor app role = %v", r)
 	}
 
-	// Without the claim the app roles are gone (the assignment was removed).
+	// Without the claim the app roles are gone (the assignment was removed;
+	// userinfo has no roles either).
+	e.idp.setUserinfo(map[string]any{"name": "User One"})
 	res = e.signIn(map[string]any{"sub": "user-1", "groups": []string{"staff"}})
 	if u := e.sessionUser(res); u.AppRoles != nil {
 		t.Errorf("app roles without the claim = %q", u.AppRoles)
@@ -107,7 +113,7 @@ func TestOIDCAppRoles(t *testing.T) {
 		s.OIDCAdminRole = "StatusPage.Admin"
 		s.OIDCEditorRole = ""
 	})
-	if r := e.roleOf(e.signIn(map[string]any{"sub": "user-1", "groups": []string{}, "roles": []string{"Admin"}, "app_roles": []string{"statuspage.admin"}})); r != store.RoleAdmin {
+	if r := e.roleOf(e.signIn(map[string]any{"sub": "user-1", "groups": []string{}, "roles": []string{"Admin"}, "app_roles": []string{"StatusPage.Admin"}})); r != store.RoleAdmin {
 		t.Errorf("role with a custom claim = %v", r)
 	}
 	if r := e.roleOf(e.signIn(map[string]any{"sub": "user-1", "groups": []string{}, "app_roles": []string{"Editor"}})); r != store.RoleViewer {
@@ -154,7 +160,7 @@ func TestOIDCAppRolesFromUserinfo(t *testing.T) {
 	if got := e.groupsOf(e.sessionUser(res).ID); !slices.Equal(got, []string{"ops"}) {
 		t.Errorf("groups = %v, want [ops]", got)
 	}
-	if log := e.logBuf.String(); !strings.Contains(log, "could not read the userinfo endpoint; the user has no app roles until the next sign-in") {
+	if log := e.logBuf.String(); !strings.Contains(log, "could not read the userinfo endpoint for the roles claim; this sign-in gives no app roles") {
 		t.Errorf("userinfo failure not logged:\n%s", log)
 	}
 
@@ -164,7 +170,56 @@ func TestOIDCAppRolesFromUserinfo(t *testing.T) {
 	if got := e.groupsOf(e.sessionUser(res).ID); !slices.Equal(got, []string{"ops"}) {
 		t.Errorf("groups = %v, want them unchanged", got)
 	}
-	if log := e.logBuf.String(); !strings.Contains(log, "group memberships are left unchanged and the user has no app roles until the next sign-in") {
+	if log := e.logBuf.String(); !strings.Contains(log, "group memberships are left unchanged and this sign-in gives no app roles") {
 		t.Errorf("userinfo failure not logged:\n%s", log)
+	}
+}
+
+// Microsoft Entra ID leaves the groups claim out for a user in no groups,
+// and its userinfo has no roles claim: the app roles of the ID token are
+// kept, the groups come from userinfo.
+func TestOIDCAppRolesIDTokenFirst(t *testing.T) {
+	e := newOIDCEnv(t)
+	e.saveSettings(func(s *store.Settings) { s.OIDCAppRoles = true })
+	e.idp.setUserinfo(map[string]any{"name": "Boss"})
+	res := e.signIn(map[string]any{"sub": "boss", "roles": []string{"Admin"}})
+	if _, hits := e.idp.hits(); hits != 1 {
+		t.Errorf("userinfo hits = %d, want 1 (for the groups)", hits)
+	}
+	u := e.sessionUser(res)
+	if !slices.Equal(u.AppRoles, []string{"Admin"}) || e.roleOf(res) != store.RoleAdmin || len(e.groupsOf(u.ID)) != 0 {
+		t.Errorf("app roles %q, role %v, groups %v; want [Admin], admin, none", u.AppRoles, e.roleOf(res), e.groupsOf(u.ID))
+	}
+
+	// Userinfo with groups and other roles: the roles of the ID token win.
+	e.idp.setUserinfo(map[string]any{"groups": []string{"staff"}, "roles": []string{"Reader"}})
+	res = e.signIn(map[string]any{"sub": "boss", "roles": []string{"Admin"}})
+	u = e.sessionUser(res)
+	if !slices.Equal(u.AppRoles, []string{"Admin"}) || e.roleOf(res) != store.RoleAdmin || !slices.Equal(e.groupsOf(u.ID), []string{"staff"}) {
+		t.Errorf("app roles %q, role %v, groups %v; want [Admin], admin, [staff]", u.AppRoles, e.roleOf(res), e.groupsOf(u.ID))
+	}
+}
+
+// rolesFromUserinfo: the userinfo endpoint of Microsoft Entra ID (on
+// Microsoft Graph) never has a roles claim, so it is not asked for one.
+func TestRolesFromUserinfo(t *testing.T) {
+	const entra = "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0"
+	cases := []struct {
+		issuer, endpoint string
+		want             bool
+	}{
+		{entra, "https://graph.microsoft.com/oidc/userinfo", false},
+		{entra, "https://userinfo.example.com/userinfo", false},
+		{"https://sts.windows.net/11111111-2222-3333-4444-555555555555/", "https://graph.microsoft.com/oidc/userinfo", false},
+		{"https://login.microsoftonline.com/common/v2.0", "https://graph.microsoft.com/oidc/userinfo", false},
+		{"https://keycloak.example.com/realms/it", "https://GRAPH.microsoft.com/oidc/userinfo", false},
+		{"https://keycloak.example.com/realms/it", "https://keycloak.example.com/realms/it/protocol/openid-connect/userinfo", true},
+		{"https://keycloak.example.com/realms/it", "https://graph.microsoft.com.example.com/userinfo", true},
+		{"https://keycloak.example.com/realms/it", "", true},
+	}
+	for _, c := range cases {
+		if got := rolesFromUserinfo(c.issuer, c.endpoint); got != c.want {
+			t.Errorf("rolesFromUserinfo(%q, %q) = %v, want %v", c.issuer, c.endpoint, got, c.want)
+		}
 	}
 }

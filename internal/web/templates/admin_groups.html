@@ -33,7 +33,7 @@
     <tbody>
       {{- range .InUse}}
       <tr>
-        <td><a href="/admin/groups/{{.ID}}">{{.DisplayName}}</a>{{if .Provisioned}} <span class="badge">Provisioned</span>{{end}}</td>
+        <td><a href="/admin/groups/{{.ID}}"><bdi>{{.DisplayName}}</bdi></a>{{if .Provisioned}} <span class="badge">Provisioned</span>{{end}}{{template "group-name-badges" (dict "G" . "D" $.Data)}}</td>
         <td class="cell-wrap"><code>{{.ExternalID}}</code></td>
         <td>{{if eq .Role.String ""}}<span class="muted">Viewer</span>{{else}}<span class="badge">{{.Role.Label}}</span>{{end}}</td>
         <td>{{.MemberCount}}</td>
@@ -63,7 +63,7 @@
       <tbody>
         {{- range .}}
         <tr>
-          <td><a href="/admin/groups/{{.ID}}">{{.DisplayName}}</a></td>
+          <td><a href="/admin/groups/{{.ID}}"><bdi>{{.DisplayName}}</bdi></a>{{template "group-name-badges" (dict "G" . "D" $.Data)}}</td>
           <td class="cell-wrap"><code>{{.ExternalID}}</code></td>
           <td>{{.MemberCount}}</td>
         </tr>

@@ -369,7 +369,7 @@ func TestAdminServices(t *testing.T) {
 		"groups": {strconv.FormatInt(g1.ID, 10), strconv.FormatInt(g2.ID, 10)},
 	})
 	r = adminFollow(t, e, r)
-	mustContain(t, r.Body, "Service “VPN” created.", "VPN", "Remote access", "Infrastructure", "All Staff, Operations", "status-operational")
+	mustContain(t, r.Body, "Service “VPN” created.", "VPN", "Remote access", "Infrastructure", "<bdi>All Staff</bdi>, <bdi>Operations</bdi>", "status-operational")
 	svcs, _ := e.Store.ListServices(ctx)
 	if len(svcs) != 1 || svcs[0].Name != "VPN" || svcs[0].SortOrder != 5 || len(svcs[0].GroupIDs) != 2 {
 		t.Fatalf("stored services: %+v", svcs)
@@ -562,7 +562,7 @@ func TestAdminUsers(t *testing.T) {
 	// (one removed here would come back at the next sign-in without the
 	// provisioned groups), and the local administrator cannot be removed.
 	doraRemove := `action="/admin/users/` + strconv.FormatInt(dora.ID, 10) + `/delete"`
-	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "they come back at their next sign-in.",
+	mustContain(t, r.Body, `action="/admin/users/`+strconv.FormatInt(u.ID, 10)+`/delete"`, "they come back at their next sign-in, with the groups and roles it sends then.",
 		"Provisioned users are managed in Microsoft Entra ID", `<span class="small muted">Managed in Entra ID</span>`)
 	if n := strings.Count(r.Body, `/delete"`); n != 1 || strings.Contains(r.Body, doraRemove) {
 		t.Errorf("%d remove buttons, want 1 (not for the provisioned user or the local administrator)", n)

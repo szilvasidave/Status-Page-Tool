@@ -407,12 +407,20 @@ func retryAfter(header string, now time.Time) time.Duration {
 	return 0
 }
 
+// deadlineError is the error of a request that the deadline of its context
+// ended. It unwraps to context.DeadlineExceeded; its message does not repeat
+// "context deadline exceeded".
+type deadlineError string
+
+func (e deadlineError) Error() string { return string(e) }
+func (e deadlineError) Unwrap() error { return context.DeadlineExceeded }
+
 // requestError makes a transport error of a Microsoft Graph request
 // readable. A cancelled ctx is returned as is.
 func requestError(ctx context.Context, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			return fmt.Errorf("Microsoft Graph did not respond in time: %w", ctxErr)
+			return deadlineError("Microsoft Graph did not respond in time")
 		}
 		return ctxErr
 	}
@@ -432,7 +440,7 @@ func requestError(ctx context.Context, err error) error {
 func tokenError(ctx context.Context, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			return fmt.Errorf("Microsoft Entra ID did not respond in time to the access token request: %w", ctxErr)
+			return deadlineError("Microsoft Entra ID did not respond in time to the access token request")
 		}
 		return ctxErr
 	}

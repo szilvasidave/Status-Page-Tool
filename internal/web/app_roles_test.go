@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -93,7 +94,7 @@ func TestLocalLoginOffWithAppRoleAdmin(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := context.Background()
 	e.loginAdmin()
-	if _, err := e.Store.UpsertOIDCUser(ctx, store.OIDCUser{Subject: "s-boss", Email: "boss@example.com", AppRoles: []string{"admin"}}); err != nil {
+	if _, err := e.Store.UpsertOIDCUser(ctx, store.OIDCUser{Subject: "s-boss", Email: "boss@example.com", AppRoles: []string{"Admin"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -103,7 +104,7 @@ func TestLocalLoginOffWithAppRoleAdmin(t *testing.T) {
 	if r.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("local sign-in off without any administrator: %d", r.Status)
 	}
-	mustContain(t, r.Body, "or with roles from app roles when somebody has signed in with the app role for administrators")
+	mustContain(t, r.Body, "The local administrator sign-in can only be turned off when at least one group has the Administrator role")
 
 	f.Set("oidc_app_roles", "on")
 	if r := e.post("/admin/settings", f); r.Status != http.StatusSeeOther {
@@ -116,16 +117,36 @@ func TestLocalLoginOffWithAppRoleAdmin(t *testing.T) {
 	// From now on the local administrator is signed out: change the
 	// settings as the app role administrator.
 	e.logout()
-	boss, err := e.Store.UpsertOIDCUser(ctx, store.OIDCUser{Subject: "s-boss", AppRoles: []string{"admin"}})
+	boss, err := e.Store.UpsertOIDCUser(ctx, store.OIDCUser{Subject: "s-boss", AppRoles: []string{"Admin"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.loginUserID(boss.ID)
 	f.Del("oidc_app_roles")
 	f.Del(auth.CSRFField) // set by the posts above, for the previous session
-	if r := e.post("/admin/settings", f); r.Status != http.StatusUnprocessableEntity {
+	r = e.post("/admin/settings", f)
+	if r.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("turning app roles off would lock everybody out, but: %d %s", r.Status, r.Body)
 	}
+	// The error is at the field this save changed, not at the local
+	// sign-in, which was off already.
+	mustContain(t, r.Body, `aria-describedby="oidc_app_roles_help" aria-invalid="true"`,
+		"nobody has signed in with the app role entered here in the last 30 days")
+	if strings.Contains(r.Body, `aria-describedby="local_login_help" aria-invalid="true"`) {
+		t.Error("the error is at the local sign-in, which this save did not change")
+	}
+	// Another value for administrators: refused as well, at that field.
+	f.Set("oidc_app_roles", "on")
+	f.Set("oidc_admin_role", "StatusPage.Admin")
+	r = e.post("/admin/settings", f)
+	if r.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("another value for administrators would lock everybody out, but: %d", r.Status)
+	}
+	mustContain(t, r.Body, `value="StatusPage.Admin" maxlength="256" spellcheck="false" autocomplete="off" aria-invalid="true"`)
+	if strings.Contains(r.Body, `id="app-role-fields" hidden`) {
+		t.Error("the app role fields are hidden with an error in them")
+	}
+	f.Set("oidc_admin_role", "Admin")
 
 	// The only group with the Administrator role can lose it while somebody
 	// has the app role for administrators …
@@ -182,6 +203,12 @@ func TestUsersAndAccountShowAppRoles(t *testing.T) {
 	if strings.Contains(r.Body, "App roles:") {
 		t.Error("app roles shown while roles from app roles are off")
 	}
+	annRow := func(body string) string {
+		return regexp.MustCompile(`(?s)<tr>\s*<td>[^<]*Ann Approle.*?</tr>`).FindString(body)
+	}
+	if row := annRow(r.Body); !strings.Contains(row, `<span class="muted">Viewer</span>`) {
+		t.Errorf("Ann's row while app roles are off: %q", row)
+	}
 	e.logout()
 	e.loginUserID(u.ID)
 	if r := e.get("/admin/settings"); r.Status != http.StatusForbidden {
@@ -201,5 +228,43 @@ func TestUsersAndAccountShowAppRoles(t *testing.T) {
 	mustContain(t, r.Body, "Administrator", "App roles", "Admin, Reader", "Your role is the highest role of your groups and app roles.")
 	r = e.get("/admin/users")
 	mustContain(t, r.Body, "App roles: Admin, Reader", "and with app roles")
+	if row := annRow(r.Body); !strings.Contains(row, `<span class="badge">Administrator</span>`) {
+		t.Errorf("Ann's row with app roles on: %q", row)
+	}
 	mustContain(t, e.get("/admin/groups").Body, "highest role of their groups\n  and app roles")
+}
+
+// Without a value for the app role for administrators, the messages do not
+// suggest signing in with it.
+func TestLastAdminGroupWithoutAdminAppRole(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	g, err := e.Store.CreateGroup(ctx, "admins", "Admins")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.UpdateGroup(ctx, g.ID, "Admins", store.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	carl, err := e.Store.UpsertOIDCUser(ctx, store.OIDCUser{Subject: "s-carl", Email: "carl@example.com", AppRoles: []string{"Admin"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.SetUserGroups(ctx, carl.ID, []store.GroupRef{{ExternalID: "admins"}}); err != nil {
+		t.Fatal(err)
+	}
+	saveSettings(t, e, func(s *store.Settings) {
+		s.OIDCEnabled, s.OIDCIssuer, s.OIDCClientID, s.OIDCClientSecret = true, "https://idp.example.com", "c", "s"
+		s.OIDCAppRoles, s.OIDCAdminRole, s.OIDCEditorRole = true, "", "Editor"
+		s.LocalLoginEnabled = false
+	})
+	e.loginUserID(carl.ID)
+	r := e.post("/admin/groups/"+strconv.FormatInt(g.ID, 10), url.Values{"name": {"Admins"}, "role": {"editor"}})
+	if r.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("demote the only admin group: %d, want 422", r.Status)
+	}
+	mustContain(t, r.Body, "Give another group the Administrator role first")
+	if strings.Contains(r.Body, "sign in with the app role") {
+		t.Error("the message suggests the app role for administrators, which has no value")
+	}
 }

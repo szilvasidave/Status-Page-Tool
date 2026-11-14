@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSettingsAppRole(t *testing.T) {
@@ -16,8 +17,10 @@ func TestSettingsAppRole(t *testing.T) {
 		{nil, RoleNone},
 		{[]string{"Reader"}, RoleNone},
 		{[]string{"Editor"}, RoleEditor},
-		{[]string{"editor", "Reader"}, RoleEditor},
-		{[]string{"Editor", "ADMIN"}, RoleAdmin},
+		{[]string{"Reader", "Editor"}, RoleEditor},
+		{[]string{"Editor", "Admin"}, RoleAdmin},
+		// Exact values only: "admin" may be a role of another application.
+		{[]string{"admin", "editor", "ADMIN"}, RoleNone},
 		{[]string{"Admin "}, RoleNone}, // values are compared as stored (trimmed at sign-in)
 		{[]string{"Administrator"}, RoleNone},
 	}
@@ -36,8 +39,11 @@ func TestSettingsAppRole(t *testing.T) {
 		t.Errorf("AppRole without values set = %v", got)
 	}
 	var nilSettings *Settings
-	if nilSettings.AppRole([]string{"Admin"}) != RoleNone || nilSettings.GroupNamesActive() {
+	if nilSettings.AppRole([]string{"Admin"}) != RoleNone || nilSettings.GroupNamesActive() || nilSettings.AppRoleAdminSet() {
 		t.Error("nil settings")
+	}
+	if !on.AppRoleAdminSet() || none.AppRoleAdminSet() || off.AppRoleAdminSet() {
+		t.Error("AppRoleAdminSet")
 	}
 
 	active := DefaultSettings()
@@ -88,8 +94,11 @@ func TestUserAppRoles(t *testing.T) {
 			t.Fatalf("app roles = %d values %q…", len(u.AppRoles), u.AppRoles[:3])
 		}
 
-		// Off: no effect.
+		// Off: no effect, also in the list of users.
 		equal(t, "role while off", role(u.ID), RoleViewer)
+		offUsers, err := s.ListUsers(ctx)
+		check(t, err)
+		equal(t, "listed role while off", [2]any{len(offUsers), offUsers[0].Role}, [2]any{1, RoleViewer})
 		st, err := s.GetSettings(ctx)
 		check(t, err)
 		st.OIDCAppRoles = true
@@ -100,6 +109,9 @@ func TestUserAppRoles(t *testing.T) {
 		u, err = s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s1", AppRoles: []string{"editor"}})
 		check(t, err)
 		equal(t, "replaced", u.AppRoles, []string{"editor"})
+		equal(t, "a value in another case", role(u.ID), RoleViewer)
+		u, err = s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s1", AppRoles: []string{"Editor"}})
+		check(t, err)
 		equal(t, "editor", role(u.ID), RoleEditor)
 		g := mustGroup(t, s, "admins", "")
 		check(t, s.UpdateGroup(ctx, g.ID, "", RoleAdmin))
@@ -145,7 +157,7 @@ func TestHasSSOAdminWithAppRoles(t *testing.T) {
 			check(t, err)
 			return ok
 		}
-		boss, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-boss", AppRoles: []string{"ADMIN"}})
+		boss, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-boss", AppRoles: []string{"Admin"}})
 		check(t, err)
 		_, err = s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-ed", AppRoles: []string{"Editor"}})
 		check(t, err)
@@ -175,10 +187,17 @@ func TestHasSSOAdminWithAppRoles(t *testing.T) {
 		wantNoAdmin("no value")
 		st.OIDCAdminRole = "Admin"
 
-		// Deactivated users do not count.
+		// Deactivated users do not count, nor those who last signed in
+		// with it longer ago than AppRoleAdminWindow.
 		mustExec(t, s, `UPDATE users SET active = ? WHERE id = ?`, false, boss.ID)
 		wantNoAdmin("deactivated")
 		mustExec(t, s, `UPDATE users SET active = ? WHERE id = ?`, true, boss.ID)
+		mustExec(t, s, `UPDATE users SET last_login_at = ? WHERE id = ?`, time.Now().Add(-AppRoleAdminWindow-time.Hour).Unix(), boss.ID)
+		wantNoAdmin("signed in too long ago")
+		mustExec(t, s, `UPDATE users SET last_login_at = ? WHERE id = ?`, time.Now().Add(-AppRoleAdminWindow+time.Hour).Unix(), boss.ID)
+		if !has(0) {
+			t.Error("a sign-in within the window does not count")
+		}
 
 		// A group with the Administrator role counts, except the given one.
 		check(t, s.SetUserGroups(ctx, boss.ID, nil))
@@ -188,5 +207,49 @@ func TestHasSSOAdminWithAppRoles(t *testing.T) {
 		check(t, s.UpdateGroup(ctx, g.ID, "", RoleAdmin))
 		equal(t, "with the group", has(0), true)
 		equal(t, "without the group", has(g.ID), false)
+	})
+}
+
+// Provisioning activates a user again: the app roles of the identity that
+// signed in before go with it (the user name may belong to somebody else
+// by now), so the row no longer counts as an administrator.
+func TestSCIMReactivationClearsAppRoles(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		st := DefaultSettings()
+		st.OIDCEnabled, st.OIDCIssuer, st.OIDCClientID, st.OIDCClientSecret, st.OIDCAppRoles = true, "https://issuer", "c", "s", true
+		check(t, s.SaveSettings(ctx, &st))
+		p := mustSCIMUser(t, s, SCIMUserData{UserName: "jane@example.com", Name: "Jane", Active: true})
+		signedIn, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "s-jane", PrincipalName: "jane@example.com", AppRoles: []string{"Admin"}})
+		check(t, err)
+		equal(t, "signed in as the provisioned user", signedIn.ID, p.ID)
+		n, err := s.AppRoleAdminCount(ctx, &st)
+		check(t, err)
+		equal(t, "app role administrators", n, 1)
+
+		setActive := func(active bool) {
+			t.Helper()
+			_, err := s.UpdateSCIMUser(ctx, p.ID, func(cur *User) (SCIMUserData, error) {
+				return SCIMUserData{UserName: cur.PrincipalName, Name: cur.Name, Email: cur.Email, Active: active}, nil
+			})
+			check(t, err)
+		}
+		setActive(false)
+		setActive(true)
+		got, err := s.GetUser(ctx, p.ID)
+		check(t, err)
+		equal(t, "after reactivation", [2]any{got.AppRoles, got.OIDCSubject}, [2]any{[]string(nil), ""})
+		n, err = s.AppRoleAdminCount(ctx, &st)
+		check(t, err)
+		equal(t, "app role administrators after reactivation", n, 0)
+		if err := s.CheckLocalLoginOff(ctx, &st); err != ErrNoAdmin {
+			t.Errorf("CheckLocalLoginOff = %v, want ErrNoAdmin", err)
+		}
+		users, err := s.ListUsers(ctx)
+		check(t, err)
+		for _, u := range users {
+			if u.ID == p.ID && u.Role != RoleViewer {
+				t.Errorf("listed role after reactivation = %v", u.Role)
+			}
+		}
 	})
 }

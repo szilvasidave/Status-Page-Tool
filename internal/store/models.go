@@ -241,8 +241,10 @@ func (s *Settings) GroupNamesActive() bool {
 
 // AppRole returns the role that the app role values of a user give:
 // RoleAdmin if one of them is OIDCAdminRole, else RoleEditor if one is
-// OIDCEditorRole, else RoleNone; upper and lower case do not matter. It is
-// always RoleNone while roles from app roles (OIDCAppRoles) are off.
+// OIDCEditorRole, else RoleNone. Values are compared exactly, upper and
+// lower case included, as identity providers send them: "admin", a role of
+// another application, does not match "Admin". It is always RoleNone while
+// roles from app roles (OIDCAppRoles) are off.
 func (s *Settings) AppRole(values []string) Role {
 	if s == nil || !s.OIDCAppRoles {
 		return RoleNone
@@ -251,13 +253,20 @@ func (s *Settings) AppRole(values []string) Role {
 	r := RoleNone
 	for _, v := range values {
 		switch {
-		case admin != "" && strings.EqualFold(v, admin):
+		case admin != "" && v == admin:
 			return RoleAdmin
-		case editor != "" && strings.EqualFold(v, editor):
+		case editor != "" && v == editor:
 			r = RoleEditor
 		}
 	}
 	return r
+}
+
+// AppRoleAdminSet reports whether an app role can give the Administrator
+// role: roles from app roles are on and an app role for administrators is
+// set.
+func (s *Settings) AppRoleAdminSet() bool {
+	return s != nil && s.OIDCAppRoles && strings.TrimSpace(s.OIDCAdminRole) != ""
 }
 
 // ---------------------------------------------------------------- users & groups
@@ -334,14 +343,23 @@ type Group struct {
 	// DirectoryName is the group's display name in Microsoft Entra ID, as
 	// last looked up with Microsoft Graph (package groupnames); "" if it was
 	// never found. DirectoryCheckedAt is when it was last looked up (nil:
-	// never).
+	// never), DirectoryFoundAt when a lookup last found it. Provisioned
+	// groups are not looked up: provisioning sends their names.
 	DirectoryName      string
 	DirectoryCheckedAt *time.Time
+	DirectoryFoundAt   *time.Time
+}
+
+// DirectoryMissing reports whether the latest lookup did not find the group
+// in Microsoft Entra ID (deleted there, or not a group's ID); DirectoryName
+// then holds the last name found, if any.
+func (g Group) DirectoryMissing() bool {
+	return g.DirectoryCheckedAt != nil && (g.DirectoryFoundAt == nil || g.DirectoryFoundAt.Before(*g.DirectoryCheckedAt))
 }
 
 // DisplayName returns the name to show: Name, else DirectoryName, else
 // ExternalID.
-func (g *Group) DisplayName() string {
+func (g Group) DisplayName() string {
 	switch {
 	case g.Name != "":
 		return g.Name

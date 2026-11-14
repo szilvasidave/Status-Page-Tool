@@ -72,7 +72,7 @@ func checkMigration5(t *testing.T, d *DB) {
 	}
 	checkSchemaVersion(t, d)
 	want := map[string]string{guid: "", "ops": "Ops Team", "kc-group": "", "prov": "prov"}
-	rows, err := d.QueryContext(ctx, `SELECT external_id, name, directory_name, directory_checked_at FROM idp_groups`)
+	rows, err := d.QueryContext(ctx, `SELECT external_id, name, directory_name, COALESCE(directory_checked_at, directory_found_at) FROM idp_groups`)
 	if err != nil {
 		t.Fatal(err)
 	}

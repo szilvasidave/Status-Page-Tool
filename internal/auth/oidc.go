@@ -17,6 +17,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
+	"github.com/szilvasidave/status-page-tool/internal/msgraph"
 	"github.com/szilvasidave/status-page-tool/internal/secret"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
@@ -200,10 +201,10 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 	// unknown because userinfo failed, as they grant roles (fail closed).
 	// They are recorded even while roles from app roles are off, so that
 	// turning it on uses those of the last sign-in, not older ones; only then
-	// is userinfo read for them, though (Entra ID has them in the ID token).
+	// is userinfo read for them, and not with Entra ID (rolesFromUserinfo).
 	roles, rolesFound := m.claimStrings(claims, rolesClaim, claimRoles)
 	needGroups := !found && !overage
-	needRoles := !rolesFound && st.OIDCAppRoles
+	needRoles := !rolesFound && st.OIDCAppRoles && rolesFromUserinfo(st.OIDCIssuer, c.provider.UserInfoEndpoint())
 	infoFailed := false
 	if (needGroups || needRoles) && c.provider.UserInfoEndpoint() != "" {
 		info, err := m.userInfo(hctx, c, tok, idt.Subject)
@@ -212,9 +213,9 @@ func (m *Manager) FinishOIDC(w http.ResponseWriter, r *http.Request) (string, er
 			msg := "OIDC: could not read the userinfo endpoint; group memberships are left unchanged"
 			switch {
 			case needGroups && needRoles:
-				msg += " and the user has no app roles until the next sign-in"
+				msg += " and this sign-in gives no app roles"
 			case needRoles:
-				msg = "OIDC: could not read the userinfo endpoint; the user has no app roles until the next sign-in"
+				msg = "OIDC: could not read the userinfo endpoint for the roles claim; this sign-in gives no app roles"
 			}
 			m.log.Warn(msg, "subject", idt.Subject, "err", err)
 		} else {
@@ -505,6 +506,19 @@ func isFalse(v any) bool {
 		return strings.EqualFold(strings.TrimSpace(b), "false")
 	}
 	return false
+}
+
+// rolesFromUserinfo reports whether the roles claim is read from the
+// userinfo endpoint when the ID token has none. Not with Microsoft Entra ID:
+// its ID token holds all app roles of the user (a missing claim means none),
+// and its userinfo endpoint, on Microsoft Graph, never returns them; asking
+// it would only delay every sign-in of a user without app roles.
+func rolesFromUserinfo(issuer, userinfoEndpoint string) bool {
+	if _, err := msgraph.Tenant(issuer); err == nil {
+		return false
+	}
+	u, err := url.Parse(userinfoEndpoint)
+	return err != nil || !strings.EqualFold(u.Hostname(), "graph.microsoft.com")
 }
 
 // claimName returns the configured claim name, or def if none is set.

@@ -138,13 +138,37 @@ func TestGroupNamesRequest(t *testing.T) {
 	requests = nil
 	mu.Unlock()
 
-	// A next page link to another server is not followed.
-	answer = func(w http.ResponseWriter, r *http.Request, n int) {
-		fmt.Fprintf(w, `{"value":[],"@odata.nextLink":"https://evil.example/v1.0/groups?page=2"}`)
+	// A next page link to another server is not followed: the access token
+	// must not go there. The second link looks like one to the Graph server
+	// (user info before the host).
+	var foreignHits int
+	var foreignMu sync.Mutex
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignMu.Lock()
+		foreignHits++
+		foreignMu.Unlock()
+		t.Errorf("request to the foreign server: %s, Authorization %q", r.URL, r.Header.Get("Authorization"))
+		fmt.Fprint(w, `{"value":[]}`)
+	}))
+	defer foreign.Close()
+	for _, link := range []string{
+		foreign.URL + "/v1.0/groups?page=2",
+		srv.URL + "@" + strings.TrimPrefix(foreign.URL, "http://") + "/v1.0/groups?page=2",
+		"https://evil.example/v1.0/groups?page=2",
+	} {
+		answer = func(w http.ResponseWriter, r *http.Request, n int) {
+			fmt.Fprintf(w, `{"value":[],"@odata.nextLink":%q}`, link)
+		}
+		names, err := c.GroupNames(context.Background(), []string{a})
+		if err == nil || names != nil || !strings.Contains(err.Error(), "next page link to another server") {
+			t.Errorf("GroupNames with the next link %s = %v, %v; want the guard's error", link, names, err)
+		}
 	}
-	if names, err := c.GroupNames(context.Background(), []string{a}); err == nil || names != nil {
-		t.Errorf("GroupNames with a foreign next link = %v, %v; want an error", names, err)
+	foreignMu.Lock()
+	if foreignHits != 0 {
+		t.Errorf("%d requests to the foreign server", foreignHits)
 	}
+	foreignMu.Unlock()
 
 	// The second of two requests fails: no names.
 	mu.Lock()

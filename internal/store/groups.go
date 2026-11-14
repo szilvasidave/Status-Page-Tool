@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/szilvasidave/status-page-tool/internal/db"
 )
@@ -15,7 +16,7 @@ import (
 // groupCols are the columns read by scanGroup (table alias g).
 const groupCols = `g.id, g.external_id, g.name, g.role, g.last_synced_at, g.created_at,
 	(SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id), g.provisioned,
-	g.directory_name, g.directory_checked_at`
+	g.directory_name, g.directory_checked_at, g.directory_found_at`
 
 // groupNameSQL is the SQL expression for the display name of a group row
 // with alias g, like Group.DisplayName.
@@ -30,14 +31,29 @@ func scanGroup(sc scanner) (Group, error) {
 		synced  sql.NullInt64
 		created int64
 		checked sql.NullInt64
+		found   sql.NullInt64
 	)
 	err := sc.Scan(&g.ID, &g.ExternalID, &g.Name, &role, &synced, &created, &g.MemberCount, &g.Provisioned,
-		&g.DirectoryName, &checked)
+		&g.DirectoryName, &checked, &found)
 	g.Role = ParseRole(role)
 	g.LastSyncedAt = fromNullUnix(synced)
 	g.CreatedAt = fromUnix(created)
 	g.DirectoryCheckedAt = fromNullUnix(checked)
+	g.DirectoryFoundAt = fromNullUnix(found)
 	return g, err
+}
+
+// ownGroupName returns the name to store as a group's own name: trimmed, and
+// "" if it is just the external id (see NormExternalID), so that the group
+// shows its directory name, else its external id. Any other name, also one
+// equal to the directory name, is kept: an administrator may pin a name
+// against renames in the directory.
+func ownGroupName(name, externalID string) string {
+	name = strings.TrimSpace(name)
+	if NormExternalID(name) == externalID {
+		return ""
+	}
+	return name
 }
 
 // roleValue is the value stored in idp_groups.role: "" for groups without
@@ -147,20 +163,16 @@ func NormExternalID(s string) string {
 }
 
 // CreateGroup adds a group manually (before anyone of it signed in). The
-// name is optional ("": the group shows its directory name, else its
-// external id; a name equal to the external id is stored as ""). If a group
-// with the same external id (see NormExternalID) exists it is returned
-// unchanged (its name is set if it was empty/equal to the external id and
-// name is given).
+// name is optional and stored as its own name (see ownGroupName). If a
+// group with the same external id (see NormExternalID) exists it is
+// returned unchanged (its name is set if it was empty/equal to the external
+// id and name is given).
 func (s *Store) CreateGroup(ctx context.Context, externalID, name string) (*Group, error) {
 	externalID = NormExternalID(externalID)
-	name = strings.TrimSpace(name)
 	if externalID == "" {
 		return nil, errors.New("add group: the group id must not be empty")
 	}
-	if name == externalID {
-		name = ""
-	}
+	name = ownGroupName(name, externalID)
 	var id int64
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		if _, err := tx.ExecContext(ctx,
@@ -184,12 +196,26 @@ func (s *Store) CreateGroup(ctx context.Context, externalID, name string) (*Grou
 	return s.GetGroup(ctx, id)
 }
 
-// UpdateGroup sets the display name and role of a group. RoleNone and
-// RoleViewer both mean "no special role". Returns ErrNotFound for an unknown
-// group.
+// UpdateGroup sets the own name and the role of a group. RoleNone and
+// RoleViewer both mean "no special role". The name of a group that is not
+// provisioned is stored as its own name (see ownGroupName); the name of a
+// provisioned group is stored as given (provisioning owns it, and SCIM
+// needs it). Returns ErrNotFound for an unknown group.
 func (s *Store) UpdateGroup(ctx context.Context, id int64, name string, role Role) error {
-	err := affected(s.db.ExecContext(ctx, `UPDATE idp_groups SET name = ?, role = ? WHERE id = ?`,
-		strings.TrimSpace(name), roleValue(role), id))
+	err := s.db.InTx(ctx, func(tx *db.Tx) error {
+		var (
+			ext         string
+			provisioned bool
+		)
+		if err := tx.QueryRowContext(ctx, `SELECT external_id, provisioned FROM idp_groups WHERE id = ?`, id).Scan(&ext, &provisioned); err != nil {
+			return notFound(err)
+		}
+		name = strings.TrimSpace(name)
+		if !provisioned {
+			name = ownGroupName(name, ext)
+		}
+		return affected(tx.ExecContext(ctx, `UPDATE idp_groups SET name = ?, role = ? WHERE id = ?`, name, roleValue(role), id))
+	})
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("update group %d: %w", id, err)
 	}
@@ -238,18 +264,30 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 // limit of Microsoft Entra ID.
 const maxDirectoryName = 256
 
-// GroupsForNameLookup returns the groups whose names Microsoft Entra ID may
-// know and that were not looked up since checkedBefore (the zero time: all of
-// them), ordered by id: the groups that are not provisioned (provisioning
-// sends the names of its groups) and whose external id is an object id
-// (GUID).
-func (s *Store) GroupsForNameLookup(ctx context.Context, checkedBefore time.Time) ([]Group, error) {
-	where, args := `WHERE g.provisioned = ?`, []any{false}
+// GroupsForNameLookup returns the groups whose names are looked up in
+// Microsoft Entra ID and that were not looked up since checkedBefore (the
+// zero time: all of them): the groups that are not provisioned
+// (provisioning sends the names of its groups), whose external id is an
+// object id (GUID) and that have members, a role or services, or were
+// recorded after recordedAfter (e.g. added by an administrator a moment
+// ago; the zero time: none). A group nobody uses any more keeps its last
+// name. Groups never looked up come first, then those looked up longest
+// ago.
+func (s *Store) GroupsForNameLookup(ctx context.Context, checkedBefore, recordedAfter time.Time) ([]Group, error) {
+	used := `g.role <> '' OR EXISTS (SELECT 1 FROM user_groups ug WHERE ug.group_id = g.id)
+		OR EXISTS (SELECT 1 FROM service_groups sg WHERE sg.group_id = g.id)`
+	args := []any{false}
+	if !recordedAfter.IsZero() {
+		used += ` OR g.created_at > ?`
+		args = append(args, recordedAfter.Unix())
+	}
+	where := `WHERE g.provisioned = ? AND (` + used + `)`
 	if !checkedBefore.IsZero() {
 		where += ` AND (g.directory_checked_at IS NULL OR g.directory_checked_at < ?)`
 		args = append(args, checkedBefore.Unix())
 	}
-	groups, err := queryAll(ctx, s.db, scanGroup, `SELECT `+groupCols+` FROM idp_groups g `+where+` ORDER BY g.id`, args...)
+	groups, err := queryAll(ctx, s.db, scanGroup, `SELECT `+groupCols+` FROM idp_groups g `+where+`
+		ORDER BY CASE WHEN g.directory_checked_at IS NULL THEN 0 ELSE 1 END, g.directory_checked_at, g.id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list the groups to look up: %w", err)
 	}
@@ -259,21 +297,31 @@ func (s *Store) GroupsForNameLookup(ctx context.Context, checkedBefore time.Time
 // SetGroupDirectoryNames stores the outcome of a name lookup made at time
 // at: the groups in checked were looked up, and names has the display names
 // (by group id) of those that were found. The others keep their directory
-// name (e.g. of a group that was deleted in the directory since). Unknown
-// group ids are ignored.
+// name (e.g. of a group that was deleted in the directory since) and count
+// as missing (Group.DirectoryMissing). Control characters are removed from
+// the names (tabs and line breaks become spaces). Unknown and provisioned
+// groups are left alone: provisioning names those.
 func (s *Store) SetGroupDirectoryNames(ctx context.Context, checked []int64, names map[int64]string, at time.Time) error {
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		for _, id := range uniqueIDs(checked) {
 			var err error
 			if name, found := names[id]; found {
-				name = strings.TrimSpace(name)
+				name = strings.TrimSpace(strings.Map(func(r rune) rune {
+					switch {
+					case r == '\t' || r == '\n' || r == '\r':
+						return ' '
+					case unicode.IsControl(r):
+						return -1
+					}
+					return r
+				}, name))
 				if r := []rune(name); len(r) > maxDirectoryName {
 					name = string(r[:maxDirectoryName])
 				}
-				_, err = tx.ExecContext(ctx, `UPDATE idp_groups SET directory_name = ?, directory_checked_at = ? WHERE id = ?`,
-					name, at.Unix(), id)
+				_, err = tx.ExecContext(ctx, `UPDATE idp_groups SET directory_name = ?, directory_checked_at = ?, directory_found_at = ?
+					WHERE id = ? AND provisioned = ?`, name, at.Unix(), at.Unix(), id, false)
 			} else {
-				_, err = tx.ExecContext(ctx, `UPDATE idp_groups SET directory_checked_at = ? WHERE id = ?`, at.Unix(), id)
+				_, err = tx.ExecContext(ctx, `UPDATE idp_groups SET directory_checked_at = ? WHERE id = ? AND provisioned = ?`, at.Unix(), id, false)
 			}
 			if err != nil {
 				return err

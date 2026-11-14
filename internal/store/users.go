@@ -343,9 +343,7 @@ func (s *Store) SetUserGroups(ctx context.Context, userID int64, groups []GroupR
 // if needed, and whether it is provisioned. The name of a group that is not
 // provisioned is updated when name is non-empty and differs from ext.
 func ensureGroup(ctx context.Context, tx *db.Tx, ext, name string) (int64, bool, error) {
-	if name == ext {
-		name = ""
-	}
+	name = ownGroupName(name, ext)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO idp_groups (external_id, name, role, created_at) VALUES (?, ?, '', ?)
 		 ON CONFLICT (external_id) DO NOTHING`, ext, name, db.Now()); err != nil {

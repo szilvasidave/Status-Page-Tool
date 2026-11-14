@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/szilvasidave/status-page-tool/internal/db"
 )
@@ -85,10 +86,10 @@ func (s *Store) CheckLocalLoginOff(ctx context.Context, st *Settings) error {
 // HasSSOAdmin reports whether somebody can sign in as an administrator with
 // single sign-on with the settings st, not counting the group except (0 =
 // none): a group has the Administrator role, or, with roles from app roles
-// (st.OIDCAppRoles), an active user had the administrator app role at their
-// last sign-in. While the sign-in with the local administrator account is
-// off, the groups page uses it to keep the last group with the
-// Administrator role (see CheckLocalLoginOff).
+// (st.OIDCAppRoles), an active user had the administrator app role at a
+// sign-in within AppRoleAdminWindow. While the sign-in with the local
+// administrator account is off, the groups page uses it to keep the last
+// group with the Administrator role (see CheckLocalLoginOff).
 func (s *Store) HasSSOAdmin(ctx context.Context, st *Settings, except int64) (bool, error) {
 	n, err := s.AdminGroupCount(ctx, except)
 	if err != nil || n > 0 {
@@ -98,19 +99,27 @@ func (s *Store) HasSSOAdmin(ctx context.Context, st *Settings, except int64) (bo
 	return n > 0, err
 }
 
+// AppRoleAdminWindow is how recent the sign-in with the administrator app
+// role must be for AppRoleAdminCount: the app roles of a user are as of
+// their last sign-in, and someone who left long ago (without provisioning,
+// nothing deactivates them) proves nothing.
+const AppRoleAdminWindow = 30 * 24 * time.Hour
+
 // AppRoleAdminCount returns the number of active users (not local
-// administrators) whose app roles at their last sign-in give them the
-// Administrator role with the settings st (see Settings.AppRole); 0 while
-// roles from app roles are off or no app role is set for administrators.
+// administrators) whose app roles at their last sign-in, within
+// AppRoleAdminWindow, give them the Administrator role with the settings st
+// (see Settings.AppRole); 0 while no app role can give that role
+// (Settings.AppRoleAdminSet).
 func (s *Store) AppRoleAdminCount(ctx context.Context, st *Settings) (int, error) {
-	if st.AppRole([]string{st.OIDCAdminRole}) != RoleAdmin {
+	if !st.AppRoleAdminSet() {
 		return 0, nil
 	}
 	values, err := queryAll(ctx, s.db, func(sc scanner) (string, error) {
 		var v string
 		err := sc.Scan(&v)
 		return v, err
-	}, `SELECT app_roles FROM users WHERE app_roles <> '' AND active = ? AND is_local_admin = ?`, true, false)
+	}, `SELECT app_roles FROM users WHERE app_roles <> '' AND active = ? AND is_local_admin = ? AND last_login_at >= ?`,
+		true, false, time.Now().Add(-AppRoleAdminWindow).Unix())
 	if err != nil {
 		return 0, fmt.Errorf("check for users with the administrator app role: %w", err)
 	}
