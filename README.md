@@ -760,8 +760,9 @@ e-mail address), and groups recorded from sign-ins or added under **Admin →
 Groups** with the same object ID. Such a group keeps its role and services;
 its members are replaced by the provisioned ones. So you can prepare the
 roles and services of groups before you start provisioning. A user who is
-taken over is signed out once and loses the app roles of their last sign-in:
-their next sign-in links them again (the user name may belong to somebody
+taken over is signed out once and loses the app roles and the groups of their
+last sign-in (not those of provisioned groups): their next sign-in links them
+again and records their groups again (the user name may belong to somebody
 else by now). The same happens when provisioning activates a user again.
 
 ### Connectivity

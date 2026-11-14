@@ -4,7 +4,11 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org/); the release notes on GitHub start
 with the section of the released version.
 
-## Unreleased
+## 1.1.0 – 2026-11-14
+
+Group names and roles from Microsoft Entra ID. See the
+[README](https://github.com/szilvasidave/Status-Page-Tool#group-names-from-microsoft-entra-id)
+for the setup.
 
 - **Group names from Microsoft Entra ID.** The groups claim of Entra ID holds
   only the groups' object IDs, so groups were shown by their IDs. With the
@@ -34,9 +38,12 @@ with the section of the released version.
   in the status page; a group that stops being provisioned shows its last
   provisioned name until the lookup finds its current one.
 - When provisioning takes over a user who signed in before, or activates a
-  user again, the user is signed out once and loses the app roles of the
-  previous sign-in: the next sign-in links them again (a user name can be
-  reused for somebody else).
+  user again, the user is signed out once and loses the app roles and the
+  group memberships of the previous sign-in (provisioned groups excepted):
+  the next sign-in links them again (a user name can be reused for somebody
+  else).
+- Databases that ran a development build of this version are repaired at
+  the start (a missing column of the group names).
 - Removing a user on Admin → Users now says that anybody who can still sign
   in comes back, with the groups and app roles the identity provider sends.
 
