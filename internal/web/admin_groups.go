@@ -36,16 +36,17 @@ type adminGroupNames struct {
 	Hint bool
 }
 
-// How long an administrator's lookup of group names may take; longer than
-// one request of the lookup may take (groupnames.requestTimeout), so that a
-// hang is reported as a failure. Variables for the tests.
+// How long an administrator's lookup of group names may take: longer than
+// waiting for one request of another lookup plus its own request (twice
+// groupnames.requestTimeout), so that a hang is reported as a failure, not
+// as an interruption. Variables for the tests.
 var (
 	// adminLookUpAllTime: "Look up names now"; the worker looks up the
 	// rest.
 	adminLookUpAllTime = 25 * time.Second
 	// adminLookUpGroupTime: adding a group waits for its name; the worker
 	// looks it up otherwise.
-	adminLookUpGroupTime = 15 * time.Second
+	adminLookUpGroupTime = 25 * time.Second
 )
 
 // adminNameKey returns the form of a group name that adminSameNames
@@ -323,10 +324,12 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	f := &adminGroupForm{Group: *g, Role: r.FormValue("role"), Errors: adminFormErrors{}}
+	name := "" // a provisioned group keeps its name (and "" is right if provisioning releases it meanwhile)
 	if !g.Provisioned {
 		// Provisioning owns the names of provisioned groups (and SCIM needs
 		// them unique), so their form has no name field.
 		f.Group.Name = formTrim(r, "name")
+		name = f.Group.Name
 	}
 	f.Group.ServiceIDs = formInt64s(r, "services")
 	role := store.ParseRole(f.Role)
@@ -349,7 +352,7 @@ func (s *Server) handleGroupUpdate(w http.ResponseWriter, r *http.Request) {
 		s.adminRenderGroupForm(w, r, http.StatusUnprocessableEntity, f)
 		return
 	}
-	err := s.Store.UpdateGroup(ctx, g.ID, f.Group.Name, role)
+	err := s.Store.UpdateGroup(ctx, g.ID, name, role)
 	if err == nil {
 		err = s.Store.SetGroupServices(ctx, g.ID, f.Group.ServiceIDs)
 	}

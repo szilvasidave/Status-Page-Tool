@@ -177,7 +177,7 @@ func TestSCIMGroupDuplicateNameKeepsMembersWorking(t *testing.T) {
 	forEachDB(t, func(t *testing.T, s *Store) {
 		a := mustSCIMGroup(t, s, SCIMGroupData{DisplayName: "Admins", ExternalID: "a"})
 		b := mustSCIMGroup(t, s, SCIMGroupData{DisplayName: "Other", ExternalID: "b"})
-		check(t, s.UpdateGroup(ctx, b.ID, "admins", RoleViewer)) // e.g. renamed before 1.1
+		mustExec(t, s, `UPDATE idp_groups SET name = ? WHERE id = ?`, "admins", b.ID) // e.g. renamed by an administrator before 1.1
 		u := mustUser(t, s, "s-u", "u@example.com", "U")
 		_, err := s.UpdateSCIMGroup(ctx, a.ID, func(d *SCIMGroupData) error { d.Members = []int64{u.ID}; return nil })
 		check(t, err)
@@ -186,5 +186,35 @@ func TestSCIMGroupDuplicateNameKeepsMembersWorking(t *testing.T) {
 		// A real rename to a taken name is still refused.
 		_, err = s.UpdateSCIMGroup(ctx, b.ID, func(d *SCIMGroupData) error { d.DisplayName = "ADMINS "; return nil })
 		wantConflict(t, "rename to a taken name", err)
+	})
+}
+
+// The name of a provisioned group comes only from provisioning: saving its
+// role keeps the name, whatever name the caller passes – also one equal to
+// the external id, which SCIM filters and conflict checks use.
+func TestUpdateGroupKeepsProvisionedName(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		for _, ext := range []string{"dddddddd-0000-4000-8000-0000000000aa", "Staff"} {
+			g := mustSCIMGroup(t, s, SCIMGroupData{DisplayName: ext, ExternalID: ext})
+			for _, name := range []string{"", "Other name", ext} {
+				check(t, s.UpdateGroup(ctx, g.ID, name, RoleEditor))
+				got, err := s.GetGroup(ctx, g.ID)
+				check(t, err)
+				equal(t, "provisioned group "+ext+" saved with the name "+name, [2]any{got.Name, got.Role}, [2]any{ext, RoleEditor})
+			}
+			found, _, err := s.SCIMGroups(ctx, SCIMGroupQuery{DisplayName: ext}, 0, 10)
+			check(t, err)
+			equal(t, "found by its name", len(found), 1)
+		}
+
+		// Released by provisioning after the group page was loaded: the
+		// page passes "", which leaves it without a name of its own; its
+		// last provisioned name shows as the directory name.
+		g := mustSCIMGroup(t, s, SCIMGroupData{DisplayName: "Sales", ExternalID: "eeeeeeee-0000-4000-8000-0000000000bb"})
+		check(t, s.DeleteSCIMGroup(ctx, g.ID))
+		check(t, s.UpdateGroup(ctx, g.ID, "", RoleEditor))
+		got, err := s.GetGroup(ctx, g.ID)
+		check(t, err)
+		equal(t, "released group", [3]any{got.Name, got.DirectoryName, got.DisplayName()}, [3]any{"", "Sales", "Sales"})
 	})
 }

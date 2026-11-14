@@ -198,11 +198,17 @@ func (s *Store) CreateGroup(ctx context.Context, externalID, name string) (*Grou
 
 // UpdateGroup sets the own name and the role of a group. RoleNone and
 // RoleViewer both mean "no special role". The name of a group that is not
-// provisioned is stored as its own name (see ownGroupName); the name of a
-// provisioned group is stored as given (provisioning owns it, and SCIM
-// needs it). Returns ErrNotFound for an unknown group.
+// provisioned is stored as its own name (see ownGroupName); a provisioned
+// group keeps its name, which only provisioning changes (name is ignored).
+// It takes the provisioning lock and decides by the group as stored then, so
+// that it never writes the name of a group that provisioning took over or
+// released after the caller read it. Returns ErrNotFound for an unknown
+// group.
 func (s *Store) UpdateGroup(ctx context.Context, id int64, name string, role Role) error {
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
+		if err := s.lockProvisioning(ctx, tx); err != nil {
+			return err
+		}
 		var (
 			ext         string
 			provisioned bool
@@ -210,11 +216,10 @@ func (s *Store) UpdateGroup(ctx context.Context, id int64, name string, role Rol
 		if err := tx.QueryRowContext(ctx, `SELECT external_id, provisioned FROM idp_groups WHERE id = ?`, id).Scan(&ext, &provisioned); err != nil {
 			return notFound(err)
 		}
-		name = strings.TrimSpace(name)
-		if !provisioned {
-			name = ownGroupName(name, ext)
+		if provisioned {
+			return affected(tx.ExecContext(ctx, `UPDATE idp_groups SET role = ? WHERE id = ?`, roleValue(role), id))
 		}
-		return affected(tx.ExecContext(ctx, `UPDATE idp_groups SET name = ?, role = ? WHERE id = ?`, name, roleValue(role), id))
+		return affected(tx.ExecContext(ctx, `UPDATE idp_groups SET name = ?, role = ? WHERE id = ?`, ownGroupName(name, ext), roleValue(role), id))
 	})
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("update group %d: %w", id, err)

@@ -177,6 +177,10 @@ func TestSCIMTakeoverReusedUserName(t *testing.T) {
 			Email: "j.smith@contoso.com", AppRoles: []string{"Admin"}})
 		check(t, err)
 		check(t, s.CreateSession(ctx, &Session{ID: "sess-a", UserID: a.ID, CreatedAt: nowTime(), ExpiresAt: nowTime().Add(time.Hour)}))
+		// A's sign-in recorded a group with the Administrator role.
+		admins := mustGroup(t, s, "it-admins", "")
+		check(t, s.UpdateGroup(ctx, admins.ID, "", RoleAdmin))
+		check(t, s.SetUserGroups(ctx, a.ID, []GroupRef{{ExternalID: "it-admins"}}))
 
 		// The user name now belongs to B, whom Entra ID provisions.
 		b, adopted, err := s.CreateSCIMUser(ctx, SCIMUserData{UserName: "j.smith@contoso.com", Email: "j.smith@contoso.com", Name: "B Smith", Active: true})
@@ -185,8 +189,28 @@ func TestSCIMTakeoverReusedUserName(t *testing.T) {
 		equal(t, "unlinked", [3]any{b.OIDCSubject, b.DirectoryID, b.AppRoles}, [3]any{"", "", []string(nil)})
 		_, err = s.GetSession(ctx, "sess-a", time.Now())
 		wantNotFound(t, "A's session", err)
+		// … and A's memberships: B gets neither A's groups nor their role
+		// (also not at a sign-in that leaves the memberships unchanged,
+		// e.g. with Entra group overage).
+		groups, err := s.UserGroups(ctx, b.ID)
+		check(t, err)
+		equal(t, "A's groups after the takeover", len(groups), 0)
+		role, err := s.UserRole(ctx, b.ID)
+		check(t, err)
+		equal(t, "role after the takeover", role, RoleViewer)
 		staff := mustSCIMGroup(t, s, SCIMGroupData{DisplayName: "Staff", ExternalID: "staff", Members: []int64{b.ID}})
 		check(t, s.UpdateGroup(ctx, staff.ID, "Staff", RoleEditor))
+		// Memberships of provisioned groups stay with provisioning, also
+		// when the user is deactivated and activated again.
+		for _, active := range []bool{false, true} {
+			_, err := s.UpdateSCIMUser(ctx, b.ID, func(cur *User) (SCIMUserData, error) {
+				return SCIMUserData{UserName: cur.PrincipalName, Email: cur.Email, Name: cur.Name, Active: active}, nil
+			})
+			check(t, err)
+		}
+		groups, err = s.UserGroups(ctx, b.ID)
+		check(t, err)
+		equal(t, "provisioned memberships after reactivation", len(groups), 1)
 
 		// A signs in under the new user name: a row of its own, no roles of B.
 		a2, err := s.UpsertOIDCUser(ctx, OIDCUser{Subject: "sub-a", DirectoryID: "oid-a", PrincipalName: "john.smith@contoso.com", Email: "john.smith@contoso.com"})
@@ -194,7 +218,7 @@ func TestSCIMTakeoverReusedUserName(t *testing.T) {
 		if a2.ID == b.ID {
 			t.Fatal("the earlier identity got the provisioned row")
 		}
-		role, err := s.UserRole(ctx, a2.ID)
+		role, err = s.UserRole(ctx, a2.ID)
 		check(t, err)
 		equal(t, "A's role", role, RoleViewer)
 

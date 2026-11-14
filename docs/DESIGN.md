@@ -324,7 +324,7 @@ and `users.app_roles`.
       between requests the settings are read again and the run stops if
       the lookup was turned off or the app registration changed. Each
       request has its own 10 s timeout (`requestTimeout`), shorter than the
-      admins' 25 s and 15 s, so that a hang is a failure, not an
+      admins' 25 s (twice a request, for waiting plus its own), so that a hang is a failure, not an
       interruption. A group Graph does not know that was never looked up
       and was recorded less than 15 minutes ago is not marked missing but
       looked up again after 2 minutes (replication delay of new groups).
@@ -339,7 +339,7 @@ and `users.app_roles`.
       failure's pause and error, and the worker looks up the groups not
       looked up since the button was pressed (`refreshBefore`, also during
       a pause). Adding a group by object ID looks it up at once
-      (`LookUpGroup`, 15 s, else in the background). A lookup whose context
+      (`LookUpGroup`, 25 s, else in the background). A lookup whose context
       ends (shutdown, request time) records no failure.
 * **SCIM endpoint** (`/scim/v2`, Tenant URL `<Base URL>/scim/v2`): bearer
   token only – 32 random bytes base64url, generated in Admin → Settings,

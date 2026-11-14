@@ -308,11 +308,13 @@ func (s *Store) UpdateSCIMUser(ctx context.Context, id int64, change func(cur *U
 // e-mail address is taken from any other user that still has it
 // (provisioning is authoritative for it). Deactivating a user ends their
 // sessions. Taking a row over and activating a user again also unlink the
-// sign-in identity: the subject, the directory id and the app roles of its
-// last sign-in are cleared and its sessions end. Microsoft Entra ID finds
+// sign-in identity: the subject, the directory id, the app roles of its last
+// sign-in and the memberships its sign-ins recorded (of groups that are not
+// provisioned) are cleared and its sessions end. Microsoft Entra ID finds
 // users by their user name (or e-mail address), which may belong to another
 // person by now, so the next sign-in links the user again by user name or
-// e-mail address; the same person is signed out once.
+// e-mail address and records the groups again; the same person is signed out
+// once. Memberships of provisioned groups are left to provisioning.
 func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, wasActive, takeover bool, in SCIMUserData) error {
 	if in.Email != "" {
 		// The repeated "email <> ''" lets SQLite use users_email_idx.
@@ -329,6 +331,10 @@ func writeSCIMUser(ctx context.Context, tx *db.Tx, id int64, wasActive, takeover
 	unlink := takeover || (in.Active && !wasActive)
 	if unlink {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET oidc_subject = NULL, directory_id = NULL, app_roles = '' WHERE id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM user_groups WHERE user_id = ?
+			AND group_id IN (SELECT id FROM idp_groups WHERE provisioned = ?)`, id, false); err != nil {
 			return err
 		}
 	}

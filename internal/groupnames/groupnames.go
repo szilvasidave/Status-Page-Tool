@@ -115,11 +115,13 @@ type Resolver struct {
 	status      Status
 	pausedUntil time.Time // the worker pauses after a failure …
 	pausedFor   [3]string // … while the app registration stays the same
-	// An interrupted LookUpAll leaves the rest to the worker: its next run
-	// looks up the groups not looked up since refreshBefore with the app
-	// registration refreshFor, also during a pause.
+	pausedAt    time.Time // when the failure that started the pause ended
+	// An interrupted LookUpAll leaves the rest to the worker: its runs look
+	// up the groups not looked up since refreshBefore until one finishes
+	// them, with whatever app registration is current. A refresh requested
+	// after the pause began runs during the pause; one that fails waits for
+	// the end of the new pause, like any other lookup.
 	refreshBefore time.Time
-	refreshFor    [3]string
 	retrying      bool // a Wake after retryDelay is scheduled
 }
 
@@ -209,14 +211,12 @@ func (r *Resolver) lookUpDue(ctx context.Context) {
 	checkedBefore := now.Add(-r.refreshAfter)
 	r.mu.Lock()
 	refresh := r.refreshBefore
-	if refresh.IsZero() || r.refreshFor != appKey(st) {
-		refresh = time.Time{}
-	} else if refresh.After(checkedBefore) {
+	if refresh.After(checkedBefore) {
 		checkedBefore = refresh
 	}
-	paused := now.Before(r.pausedUntil) && r.pausedFor == appKey(st)
+	paused := now.Before(r.pausedUntil) && r.pausedFor == appKey(st) && !refresh.After(r.pausedAt)
 	r.mu.Unlock()
-	if paused && refresh.IsZero() {
+	if paused {
 		return
 	}
 	groups, err := r.store.GroupsForNameLookup(ctx, checkedBefore, now.Add(-2*r.newGroupWindow))
@@ -248,7 +248,14 @@ func (r *Resolver) lookUpDue(ctx context.Context) {
 	case err != nil:
 		r.log.Warn("could not look up the names of groups in Microsoft Entra ID; the status page tries again later",
 			"groups", len(groups), "looked_up", res.Groups, "err", err)
-		r.refreshDone(refresh) // the pause applies again
+		if !refresh.IsZero() {
+			// The refresh goes on when the pause ends (the hourly check may
+			// come much later).
+			r.mu.Lock()
+			wait := r.pausedUntil.Sub(r.now())
+			r.mu.Unlock()
+			time.AfterFunc(max(wait, 0)+time.Second, r.Wake)
+		}
 	default:
 		r.log.Info("looked up the names of groups in Microsoft Entra ID", "groups", res.Groups, "found", res.Found)
 		if more {
@@ -257,6 +264,17 @@ func (r *Resolver) lookUpDue(ctx context.Context) {
 			r.refreshDone(refresh)
 		}
 	}
+}
+
+// requestRefresh leaves the groups not looked up since t to the worker
+// (refreshBefore) and wakes it.
+func (r *Resolver) requestRefresh(t time.Time) {
+	r.mu.Lock()
+	if t.After(r.refreshBefore) {
+		r.refreshBefore = t
+	}
+	r.mu.Unlock()
+	r.Wake()
 }
 
 // refreshDone ends the refresh that an interrupted LookUpAll requested at
@@ -301,15 +319,9 @@ func (r *Resolver) LookUpAll(ctx context.Context) (Status, error) {
 	case err != nil && ctx.Err() != nil:
 		r.log.Info("looking up the names of groups in Microsoft Entra ID was interrupted; the rest follows in the background",
 			"groups", len(groups), "looked_up", res.Groups)
-		r.mu.Lock()
-		if start.After(r.refreshBefore) {
-			r.refreshBefore = start
-		}
-		r.refreshFor = appKey(st)
-		r.mu.Unlock()
-		r.Wake()
+		r.requestRefresh(start)
 	case errors.Is(err, errChanged):
-		r.Wake()
+		r.requestRefresh(start)
 	case errors.Is(err, ErrOff):
 	case err != nil:
 		r.log.Warn("could not look up the names of groups in Microsoft Entra ID", "groups", len(groups), "looked_up", res.Groups, "err", err)
@@ -529,7 +541,7 @@ func (r *Resolver) record(st *store.Settings, res Status, err error) {
 	if !throttled && r.graphFor == appKey(st) {
 		r.graph = nil
 	}
-	r.pausedUntil, r.pausedFor = res.At.Add(pause), appKey(st)
+	r.pausedUntil, r.pausedFor, r.pausedAt = res.At.Add(pause), appKey(st), res.At
 }
 
 // explain adds a hint for administrators to an error response of Microsoft
