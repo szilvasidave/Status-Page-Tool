@@ -217,14 +217,15 @@ and `users.app_roles`.
     sessions are deleted; `loadIdentity` also refuses and deletes any later
     session of a deactivated user (e.g. of a sign-in that finished right
     after the deactivation). Activating a user again also clears
-    `oidc_subject`, `directory_id` and `app_roles` and deletes the
-    sessions: the next sign-in links the user again by user name or e-mail
+    `oidc_subject`, `directory_id` and `app_roles`, deletes the memberships
+    of groups that are not provisioned (recorded from sign-ins) and deletes
+    the sessions: the next sign-in links the user again by user name or e-mail
     (the user name may belong to another person by now). DELETE removes the
     user (memberships and sessions cascade). POST /Users takes over a user
     who is not provisioned yet (e.g. created by a sign-in), matched by user
     name (case-insensitive), then by e-mail, instead of creating a
-    duplicate; a takeover clears the same three columns and deletes the
-    sessions, for the same reason (`writeSCIMUser`).
+    duplicate; a takeover does the same, for the same reason
+    (`writeSCIMUser`).
     Groups: SCIM `id` = `idp_groups.id`, `displayName` ↔ name, `externalId`
     ↔ `external_id` (the Entra object ID, the same value as in the groups
     claim; GUIDs lower-cased; a group without one gets a generated `scim:…`
