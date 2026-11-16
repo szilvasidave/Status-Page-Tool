@@ -958,10 +958,10 @@ curl or PowerShell (e.g. a System Center Operations Manager command channel).
    add one of them to a service), *Test*, *Paused*, *Not understood* (with
    the reason) or *Not applied* (the status page was too busy, or failed:
    the tool was answered with an error, so that it may send the request
-   again). Entries without a body were written by the status page itself:
-   an alert released after maintenance, or cleared by an administrator; they
-   do not count as requests of the tool (*last request*). The page also lists
-   the integration's firing alerts with their incidents.
+   again). The status page's own entries – an alert released after
+   maintenance, or cleared by an administrator – show no request and do not
+   count as requests of the tool (*last request*). The page also lists the
+   integration's firing alerts with their incidents.
 
 ### What alerts do
 

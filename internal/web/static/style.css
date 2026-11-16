@@ -455,7 +455,7 @@ fieldset.box > fieldset:last-child { margin-bottom: 0; }
 .event-changed { --badge: var(--st-operational-text); }
 .event-test { --badge: var(--st-maintenance-text); }
 .event-unmatched { --badge: var(--st-degraded-text); }
-.event-invalid { --badge: var(--danger); }
+.event-invalid, .event-failed { --badge: var(--danger); }
 .event-unchanged, .event-paused { --badge: var(--text-muted); }
 
 /* ================================================================ feedback */
