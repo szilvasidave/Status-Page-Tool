@@ -330,6 +330,18 @@ func TestParseGeneric(t *testing.T) {
 	}
 }
 
+func TestCapitalize(t *testing.T) {
+	for in, want := range map[string]string{
+		"status “x”":                         "Status “x”",
+		"“alerts” must be a list of objects": "“alerts” must be a list of objects",
+		"élan":                               "Élan",
+		"":                                   "",
+		"\xff":                               "\xff",
+	} {
+		equal(t, in, capitalize(in), want)
+	}
+}
+
 // ------------------------------------------------------------------ Alertmanager and Grafana
 
 const alertmanagerPayload = `{

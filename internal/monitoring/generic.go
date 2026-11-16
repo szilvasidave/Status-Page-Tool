@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // genericNames are the fields of the generic format with the names they
@@ -277,9 +279,12 @@ func unescape(s string) string {
 	return strings.ReplaceAll(s, "+", " ")
 }
 
+// capitalize returns s with its first character in upper case (a quote
+// such as “ stays as it is).
 func capitalize(s string) string {
-	if s == "" {
+	r, size := utf8.DecodeRuneInString(s)
+	if size == 0 || r == utf8.RuneError {
 		return s
 	}
-	return strings.ToUpper(s[:1]) + s[1:]
+	return string(unicode.ToUpper(r)) + s[size:]
 }
