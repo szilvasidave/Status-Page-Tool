@@ -42,6 +42,7 @@ type manageIncidentRow struct {
 	StartedAt  time.Time
 	LastUpdate time.Time
 	ResolvedAt *time.Time
+	Automatic  bool // opened by monitoring
 }
 
 func newManageIncidentRow(inc *store.Incident) manageIncidentRow {
@@ -52,7 +53,7 @@ func newManageIncidentRow(inc *store.Incident) manageIncidentRow {
 	row := manageIncidentRow{
 		ID: inc.ID, Title: inc.Title, Status: inc.Status, Impact: inc.Impact(),
 		Services: strings.Join(names, ", "), StartedAt: inc.StartedAt,
-		LastUpdate: inc.UpdatedAt, ResolvedAt: inc.ResolvedAt,
+		LastUpdate: inc.UpdatedAt, ResolvedAt: inc.ResolvedAt, Automatic: inc.Automatic,
 	}
 	if len(inc.Updates) > 0 {
 		row.LastUpdate = inc.Updates[0].CreatedAt

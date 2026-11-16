@@ -18,6 +18,26 @@
   </span>
 </div>
 
+{{- if $inc.Automatic}}
+<div class="flash">
+  {{- if $inc.Resolved}}
+  This incident was opened by monitoring.
+  {{- else}}
+  This incident was opened by monitoring and is resolved automatically when its alerts have cleared; while they fire, monitoring
+  sets the impact on their services. You can post updates and rename it as usual. If you resolve it yourself, alerts that still
+  fire do not reopen it; when they fire again later, they open a new incident.
+  {{- end}}
+  {{- with .Data.Alerts}}
+  <ul>
+    {{- range .}}
+    <li>{{with .Title}}{{.}}{{else}}<span class="mono">{{.Key}}</span>{{end}} – {{.ServiceName}}, {{statusLabel .Impact}}, firing since
+      <time datetime="{{isoTime .StartedAt}}">{{fmtTime .StartedAt}}</time> ({{.IntegrationName}})</li>
+    {{- end}}
+  </ul>
+  {{- end}}
+</div>
+{{- end}}
+
 <details class="disclosure"{{if .Data.RenameError}} open{{end}}>
   <summary>Rename incident</summary>
   <form method="post" action="/manage/incidents/{{$inc.ID}}/title" class="form">

@@ -416,6 +416,11 @@ type Service struct {
 	SortOrder   int
 	GroupIDs    []int64 // groups notified about this service
 	CreatedAt   time.Time
+	// MonitorNames are other names of the service in monitoring tools
+	// (e.g. an Uptime Kuma monitor, a Zabbix host, a Prometheus label
+	// value): an alert that names the service by its name or one of these
+	// affects it (see MatchServices). Normalised by NormalizeMonitorNames.
+	MonitorNames []string
 }
 
 // ServiceRef is a service id with its name.
@@ -523,6 +528,9 @@ type Incident struct {
 	CreatedBy  int64 // 0 if unknown/deleted user
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+	// Automatic reports that monitoring opened the incident (see
+	// ApplyAlerts): it is resolved when its alerts clear.
+	Automatic bool
 
 	// Services affected by the incident (ordered like the status page).
 	Services []ServiceImpact
@@ -544,8 +552,13 @@ type IncidentUpdate struct {
 	Status     IncidentStatus
 	Message    string
 	CreatedBy  int64
-	AuthorName string // display name of CreatedBy, filled when read
-	CreatedAt  time.Time
+	// AuthorName is filled when read: the display name of CreatedBy, else,
+	// for an update posted by monitoring, "<Source> (monitoring)".
+	AuthorName string
+	// Source is the name of the monitoring integration that posted the
+	// update ("" for updates of people).
+	Source    string
+	CreatedAt time.Time
 }
 
 // Resolved reports whether the incident is resolved.
@@ -674,4 +687,139 @@ type Notification struct {
 	NextAttemptAt time.Time
 	CreatedAt     time.Time
 	SentAt        *time.Time
+}
+
+// ---------------------------------------------------------------- monitoring integrations
+
+// Integration is a monitoring tool that sends its alerts to the status
+// page: to a webhook URL that holds a random token (only its hash is
+// stored). Package monitoring reads the requests; ApplyAlerts turns the
+// alerts into incidents.
+type Integration struct {
+	ID       int64
+	Name     string
+	Provider string // monitoring.Provider ID: how the tool's requests are read
+	// Impact is the impact of every alert of the integration; "" means the
+	// impact follows each alert's severity.
+	Impact Status
+	// Notify sends e-mails about the incidents the integration opens and
+	// resolves (to the groups of the affected services).
+	Notify bool
+	// Paused integrations record their requests but change nothing.
+	Paused         bool
+	TokenCreatedAt time.Time
+	LastEventAt    *time.Time // last request, nil if none
+	CreatedAt      time.Time
+	// Firing is the number of firing alerts (filled by GetIntegration and
+	// ListIntegrations).
+	Firing int
+}
+
+// AlertInput is an alert of a monitoring tool, read and normalised by
+// package monitoring, for ApplyAlerts.
+type AlertInput struct {
+	// Key identifies the alert within its integration (e.g. the
+	// Alertmanager fingerprint or the Uptime Kuma monitor): a resolved alert
+	// clears the firing alert with the same key.
+	Key    string
+	Firing bool // false: resolved
+	// Targets are the values that may name the affected service, most
+	// specific first (see MatchServices). A resolved alert needs none: it
+	// clears the services its firing alert affected.
+	Targets []string
+	Title   string // short description, e.g. "VPN gateway unreachable"
+	Message string // longer description, may be empty
+	// Impact is the impact on the service while the alert fires
+	// (degraded, partial_outage or major_outage).
+	Impact Status
+	// StartedAt is when the problem began according to the tool; zero:
+	// unknown (now).
+	StartedAt time.Time
+}
+
+// AlertAction says what ApplyAlerts did for one alert and service.
+type AlertAction string
+
+const (
+	AlertOpened     AlertAction = "opened"     // firing: opened an incident
+	AlertJoined     AlertAction = "joined"     // firing: added to the open incident of the service
+	AlertRepeated   AlertAction = "repeated"   // still firing (nothing new, or a new impact)
+	AlertSuppressed AlertAction = "suppressed" // firing while the service is in maintenance
+	AlertDismissed  AlertAction = "dismissed"  // still firing, but its incident was resolved or deleted by an editor
+	AlertCleared    AlertAction = "cleared"    // resolved; other alerts of its incident still fire
+	AlertResolved   AlertAction = "resolved"   // resolved, and with it the incident
+	AlertEnded      AlertAction = "ended"      // resolved, without an open incident (suppressed or dismissed before)
+)
+
+// AlertResult is what ApplyAlerts did with one alert.
+type AlertResult struct {
+	IntegrationID int64
+	Alert         *AlertInput
+	// Matched is the target that named the services of a firing alert ("":
+	// none did, the alert changed nothing).
+	Matched string
+	// Services are the services the alert affects (firing: those named by
+	// Matched; resolved: those of its firing alert; empty for a resolved
+	// alert that was not firing).
+	Services []AlertServiceResult
+}
+
+// AlertServiceResult is what ApplyAlerts did for one service of an alert.
+type AlertServiceResult struct {
+	ServiceID   int64
+	ServiceName string
+	Action      AlertAction
+	IncidentID  int64 // the incident it opened, joined, cleared or resolved (0: none)
+}
+
+// IncidentNotice asks for the e-mails about an incident that monitoring
+// opened (Created) or resolved; ApplyAlerts and ReleaseSuppressedAlerts
+// return them for integrations with Notify.
+type IncidentNotice struct {
+	IncidentID int64
+	Created    bool
+}
+
+// ApplyResult is the result of ApplyAlerts and ReleaseSuppressedAlerts.
+type ApplyResult struct {
+	Alerts  []AlertResult
+	Notices []IncidentNotice
+}
+
+// IntegrationAlert is a firing alert of an integration, as listed for
+// administrators (ListIntegrationAlerts) and on the incident page
+// (ListIncidentAlerts).
+type IntegrationAlert struct {
+	IntegrationID   int64
+	IntegrationName string
+	Key             string
+	ServiceID       int64
+	ServiceName     string
+	IncidentID      int64 // 0: none (Suppressed, or the incident was deleted)
+	IncidentOpen    bool
+	Suppressed      bool // waits for the maintenance of the service to end
+	Impact          Status
+	Title           string
+	StartedAt       time.Time
+	UpdatedAt       time.Time // last request that reported it
+}
+
+// Outcomes of integration events (IntegrationEvent.Outcome).
+const (
+	EventChanged   = "changed"   // incidents were opened, updated or resolved
+	EventUnchanged = "unchanged" // valid, but nothing changed (e.g. a repeated alert)
+	EventUnmatched = "unmatched" // a firing alert named no service
+	EventTest      = "test"      // a test message of the tool
+	EventPaused    = "paused"    // received while the integration is paused
+	EventInvalid   = "invalid"   // the request could not be read
+)
+
+// IntegrationEvent is a request an integration received, with what it did.
+type IntegrationEvent struct {
+	ID            int64
+	IntegrationID int64
+	ReceivedAt    time.Time
+	Outcome       string // Event*
+	Summary       string // one line per alert
+	Payload       string // the start of the request body
 }

@@ -29,6 +29,22 @@ type manageIncidentData struct {
 	Update      manageIncidentForm
 	RenameTitle string
 	RenameError string
+	// Alerts are the firing alerts of an incident that monitoring opened.
+	Alerts []store.IntegrationAlert
+}
+
+// manageRenderIncident renders the incident management page; for an
+// incident that monitoring opened, with its firing alerts.
+func (s *Server) manageRenderIncident(w http.ResponseWriter, r *http.Request, status int, d *manageIncidentData) {
+	if d.Incident.Automatic {
+		alerts, err := s.Store.ListIncidentAlerts(r.Context(), d.Incident.ID)
+		if err != nil {
+			s.serverError(w, r, err)
+			return
+		}
+		d.Alerts = alerts
+	}
+	s.renderStatus(w, r, status, "manage_incident", d.Incident.Title, d)
 }
 
 // newManageIncidentData returns the page data with the update form prefilled
@@ -195,7 +211,7 @@ func (s *Server) handleIncidentManage(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.render(w, r, "manage_incident", inc.Title, newManageIncidentData(inc, services))
+	s.manageRenderIncident(w, r, http.StatusOK, newManageIncidentData(inc, services))
 }
 
 func (s *Server) handleIncidentAddUpdate(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +241,7 @@ func (s *Server) handleIncidentAddUpdate(w http.ResponseWriter, r *http.Request)
 		f.Groups = manageImpactGroups(services, selected)
 		d := newManageIncidentData(inc, services)
 		d.Update = f
-		s.renderStatus(w, r, http.StatusUnprocessableEntity, "manage_incident", inc.Title, d)
+		s.manageRenderIncident(w, r, http.StatusUnprocessableEntity, d)
 		return
 	}
 
@@ -273,7 +289,7 @@ func (s *Server) handleIncidentTitle(w http.ResponseWriter, r *http.Request) {
 		}
 		d := newManageIncidentData(inc, services)
 		d.RenameTitle, d.RenameError = title, msg
-		s.renderStatus(w, r, http.StatusUnprocessableEntity, "manage_incident", inc.Title, d)
+		s.manageRenderIncident(w, r, http.StatusUnprocessableEntity, d)
 		return
 	}
 	err := s.Store.UpdateIncidentTitle(ctx, inc.ID, title)

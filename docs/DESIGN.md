@@ -31,6 +31,9 @@ Later feedback:
 14. Groups from Microsoft Entra ID show their names, not just their object
     IDs, so that admins can assign roles and services; roles can also be
     assigned in Entra ID with app roles.
+15. External monitoring tools (any major or standard one) update the status
+    of services, so that admins need not do it by hand. Simple to set up;
+    further tools easy to add later.
 
 Decision after 14 – keep SCIM provisioning. Group names and app roles do not
 make provisioning redundant: everything on the sign-in side (groups claim,
@@ -58,6 +61,20 @@ which would technically allow a member pull too; it reads only `id` and
 `displayName` of the groups the status page uses, so feedback 8 still holds:
 members come only from SCIM and sign-ins.
 
+Decision after 15 – monitoring tools *push* their alerts to a webhook URL,
+and the alerts *open and resolve incidents*. Nearly every monitoring tool can
+send a webhook when an alert fires and clears (with a fixed body, or with a
+body of the admin's choice); pulling from each tool's API instead would need
+credentials, network access to every tool and code per tool and API version.
+Setting a service status directly would have broken "the status is derived
+from incidents and maintenance" and left the history bars, incident pages,
+e-mails and the JSON API without the outage; an automatic incident has all of
+them, and editors can add context to it. Matching alerts to services by name
+(the service's name or its *names in monitoring tools*) needs no mapping
+tables, and the generic format makes any tool that can send a configurable
+webhook, and any script, work without code (see
+[Monitoring integrations](#monitoring-integrations)).
+
 ## Architecture
 
 ```
@@ -70,7 +87,8 @@ internal/setup         database setup shared by the CLI/installer and the web wi
 internal/db            database open (SQLite via modernc.org/sqlite, PostgreSQL via pgx), schema migrations
 internal/store         all application SQL; models; pure status computation (status.go);
                        SCIM data access (scim.go); local administrator details and sign-in switch (local_admin.go);
-                       logos and favicon (brand.go)
+                       logos and favicon (brand.go); monitoring integrations and their request log (integrations.go),
+                       what alerts change: matching, automatic incidents (alerts.go)
 internal/secret        AES-GCM encryption of stored secrets and cookies, random tokens
 internal/auth          sessions, CSRF, local admin login (and its switch), OIDC login + group memberships at login
 internal/scim          SCIM 2.0 endpoint /scim/v2 for user and group provisioning from Microsoft Entra ID
@@ -79,6 +97,9 @@ internal/msgraph       Microsoft Graph client: client-credentials token of the S
 internal/groupnames    worker that looks up the names of groups (Entra ID object IDs) with Microsoft Graph
 internal/notify        e-mail outbox, rendering, delivery with Microsoft Graph (default) or SMTP (go-mail),
                        maintenance start/end mails
+internal/monitoring    webhooks of monitoring tools (/hooks): providers (parser + setup instructions per tool),
+                       the generic format, status/severity/impact mapping, the handler, and the worker that opens
+                       the incidents of alerts held back by maintenance
 internal/theme         branding (leaf package, pure functions): colour tokens of light and dark mode derived
                        from the chosen colours, their CSS, e-mail button colour, default favicon, image checks
 internal/web           HTTP handlers + html/template templates + static assets (embedded)
@@ -99,7 +120,10 @@ migration 3 adds `users.email_from_user_name`, migration 4 the table
 migration 5 `idp_groups.directory_name`, `directory_checked_at` and
 `directory_found_at` (group names from Microsoft Entra ID; it clears the
 names that only repeat the external id, except those of provisioned groups)
-and `users.app_roles`.
+and `users.app_roles`, migration 6 the tables `integrations`,
+`integration_alerts` and `integration_events` (monitoring integrations),
+`services.monitor_names`, `incidents.automatic` and
+`incident_updates.source`.
 
 ## Key decisions
 
@@ -392,7 +416,8 @@ and `users.app_roles`.
 * **Service status** is derived, never set by hand: worst impact of all open
   incidents on the service, or "maintenance" while a maintenance window is in
   progress. Severity: operational < maintenance < degraded < partial outage <
-  major outage.
+  major outage. Monitoring tools open and resolve incidents, they never set a
+  status (see [Monitoring integrations](#monitoring-integrations)).
 * **Services** have an optional free-text category; the form offers the
   existing categories (compared case-insensitively) and "New category…"
   (field `category_new`, option value `(new)`). The status page groups
@@ -595,6 +620,121 @@ and `users.app_roles`.
   `config.json` (the SCIM token is only hashed); strict CSP (no inline
   scripts); data directory restricted to SYSTEM/Administrators on Windows.
 
+## Monitoring integrations
+
+Requirement 15; package `internal/monitoring`, store `integrations.go` and
+`alerts.go`, Admin → Monitoring (`internal/web/admin_monitoring.go`).
+
+* **Integrations.** One per monitoring tool (or installation of one): name,
+  provider (the tool: how its requests are read), impact (`''` = from each
+  alert's severity, else one impact for all), notify, paused, and the SHA-256
+  hex of a random token (32 bytes base64url, `monitoring.NewToken`), looked up
+  by its hash. The webhook URL is `<Base URL>/hooks/<token>`; `POST /hooks`
+  with `Authorization: Bearer <token>` works too, for tools that can send a
+  header (keeps the token out of URLs and proxy logs). The URL is shown once,
+  like the provisioning token: create and *Generate new URL* keep the token in
+  `newTokens` (5 minutes, only for the administrator who generated it and only
+  on the page of that integration – `tokenSlot.subject`) and redirect to the
+  integration page with the slot id (`?new-url=`). A new token replaces the
+  old one at once; deleting an integration deletes its alerts and request log
+  (the incidents stay).
+* **Endpoint** (`monitoring.Handler`, mounted at `/hooks` and `/hooks/`):
+  like `/scim/`, the auth middleware passes it untouched (no session, cookie
+  or CSRF check) and the setup redirect lets it through; the request log of
+  the web server and the panic log show `/hooks/…` instead of the token
+  (`monitoring.RedactPath`). POST only (405 with `Allow: POST`); unknown
+  token 401 (logged with the client address, never the token); body ≤ 1 MiB
+  (413); a request that cannot be read 400 with the reason; everything that
+  was read 200 – also when an alert names no service or the integration is
+  paused, so that tools do not retry it – with a JSON summary. Each request of
+  a known integration is recorded (`integration_events`: outcome changed,
+  unchanged, unmatched, test, paused or invalid, one summary line per alert,
+  the first 8 KB of the body); the latest 50 per integration are kept and
+  shown on its page.
+* **Providers** (`providers.go`): ID (stored, never changed), name, `Parse`,
+  which values name the service, setup steps and an example (`{url}` is
+  replaced by the webhook URL on the page, or by a placeholder once it has
+  been shown). Native parsers for tools with a fixed format: Prometheus
+  Alertmanager and Grafana (`alertmanager.go`: each alert of the group with
+  its own status; key = fingerprint, else a hash of the labels; Grafana's
+  test alert TestAlert/Grafana is a test), Uptime Kuma (`uptimekuma.go`:
+  heartbeat 0 = down, 1 = up, 2/3 = nothing; key = monitor id; without a
+  heartbeat a test or reminder) and Azure Monitor (`azure.go`: common alert
+  schema only; key = alertId; Fired/Resolved). Zabbix (a webhook media type
+  script), PRTG (an HTTP action payload), Datadog (a webhook payload),
+  UptimeRobot (a POST value), Nagios/Icinga/Checkmk (curl) and "Other tool or
+  script" use the **generic format** (`generic.go`): JSON object, list or
+  `{"alerts": […]}` with `service` (text or list, tried in order), `status`,
+  `key` (default `service:<first service>`), `title`, `message`, `severity`,
+  `impact` (keys in any case; synonyms summary, description, priority, id,
+  state), or the same as form fields (parsed leniently: an unescaped `%`
+  stays) and query parameters. JSON is recognised by the body (`{`, `[`), not
+  the content type, because PRTG sends it as a form. Status words are read by
+  their first word (`statusWords`; PRTG's "X ended (now: Y)" by Y; "partial"
+  anywhere means a partial outage): problems, recoveries, `test`, and
+  everything else (unknown, pending, no data, paused) is ignored with a note.
+* **Normalisation** (`Alert.input`): title one line, ≤ 200 characters;
+  message without control characters, ≤ 2000; key > 200 characters replaced
+  by its SHA-256; at most 10 targets, each ≤ 200 characters; at most 1000
+  alerts per request. Impact precedence: the alert's own
+  (`statuspage_impact`, `impact`), else the integration's, else the severity
+  (`severityImpacts`: critical/Disaster/High/Sev0/P1 → major outage,
+  error/Average/Sev1/P2 → partial outage, warning and lower → degraded; a
+  status word can imply one, e.g. WARNING), else major outage.
+* **Matching** (`store.MatchServices`): the first target that equals a
+  service's name or one of its `monitor_names` (one per line; compared in
+  lower case with white space collapsed, `matchKey`) wins; all services with
+  that name are affected (shared names let one alert affect several).
+  `NormalizeMonitorNames` stores them trimmed, collapsed and without
+  duplicates; the service form allows 50 of ≤ 200 characters.
+* **What alerts change** (`store.ApplyAlerts`, one transaction per request;
+  on PostgreSQL after the advisory lock `monitoringLockID`, so that two
+  requests cannot both open an incident for a service; SQLite serialises
+  writers). State: `integration_alerts`, one row per integration, alert key
+  and service, with `firing`, `incident_id` and `suppressed`. A firing alert
+  that was not firing (new occurrence) is attached to the newest open
+  automatic incident that affects the service (`incidents.automatic`), else
+  it opens one (status investigating, title `AutomaticIncidentTitle`: the
+  alert's title, prefixed with the service unless it names it; start = the
+  alert's start, not in the future and not before the integration existed).
+  While a maintenance of the service is in progress it is suppressed instead.
+  A firing alert that was firing (repeat) updates title and impact; if its
+  incident was resolved by an editor or deleted, it stays detached until it
+  clears (a suppressed one is attached once the maintenance has ended). A
+  resolved alert clears all rows of its key (whatever the names are now).
+  At the end (`finish`) each changed incident is brought in line: the impact
+  on each service with firing alerts = their worst impact (a service without
+  firing alerts keeps its impact, one an editor removed is not added again),
+  one update per incident and request (source = the integration's name;
+  readers see "<name> (monitoring)"), resolution when no attached alert
+  fires. An open incident is locked first (`UPDATE … WHERE status <>
+  resolved`), so that an editor's resolution at the same moment is not
+  undone. People's incidents are never touched.
+* **E-mails**: with notify on, `IncidentCreated` when monitoring opens an
+  incident and `IncidentUpdated` when it resolves one; not for the updates
+  in between.
+* **Worker** (`Handler.Run`, every minute): `ReleaseSuppressedAlerts` opens
+  the incidents of suppressed alerts that still fire once no maintenance of
+  their service is in progress (not for paused integrations; it first counts
+  them without a writing transaction), sends the e-mails and records them in
+  the request logs.
+
+### Adding a monitoring tool
+
+1. If the tool can send a request body of the admin's choice, it needs no
+   code: add a `Provider` to `providers` in
+   `internal/monitoring/providers.go` with `Parse: ParseGeneric`, the setup
+   steps and the body as `Example`, and add the body, with the tool's
+   variables filled in, to `TestProviderExamples`.
+2. Otherwise write `ParseXxx(*Request) (*Batch, error)` in a file of its own:
+   one `Alert` per alert with a stable `Key`, `Firing`, the `Targets` that
+   may name the service (most specific first), `Title`, `Message`,
+   `Severity` (as the tool sends it; extend `severityImpacts` for new words)
+   and `StartsAt`; set `Batch.Test` for the tool's test message, add notes
+   for what was ignored, and return a `ParseError` with a hint for requests
+   that cannot be read. Test it with a request the tool really sends.
+3. Never change or remove a provider ID: integrations store it.
+
 ## URL map
 
 Public (login required if "public access" is off): `/`, `/history`,
@@ -612,7 +752,12 @@ and `POST /admin/settings/scim-token/delete` – turn provisioning off),
 the defaults), `/admin/services`, `/admin/groups` (`POST /admin/groups/names`
 looks up the names of all groups in Entra ID), `/admin/users` (`POST
 /admin/users/{id}/delete` removes a user who is not provisioned),
-`/admin/notifications`.
+`/admin/notifications`, `/admin/monitoring` (`/new`; `/{id}`, `POST
+/admin/monitoring/{id}/url` – a new webhook URL, shown once – and `POST
+/admin/monitoring/{id}/delete`).
+Monitoring tools: `POST /hooks/{token}`, or `POST /hooks` with
+`Authorization: Bearer <token>`, outside the session, CSRF and setup
+redirect.
 Provisioning: `/scim/v2/…` (`Users`, `Groups`, `ServiceProviderConfig`,
 `ResourceTypes`, `Schemas`) with the bearer token, outside the session, CSRF
 and setup redirect.

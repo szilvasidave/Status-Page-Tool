@@ -10,13 +10,15 @@
  *   buttons:    .btn .btn-primary .btn-danger .btn-small .btn-link .btn-block
  *   forms:      .form > .field (label + input + .help + .field-error) .field-row (two columns)
  *               .checkbox (label around an input) .checkbox-list (.checkbox-list-title) .form-actions
- *               fieldset (plain group) fieldset.box (boxed section) .code-box .disclosure (details)
+ *               fieldset (plain group) fieldset.box (boxed section) .code-box (a value to copy)
+ *               .code-block (pre: configuration or a request, scrolls sideways) .disclosure (details)
  *               .inline (inline form); inputs with errors get aria-invalid="true"
  *   tables:     .card.table-wrap > table.table (.cell-wrap: may wrap anywhere)
  *   facts:      dl.facts > div > dt + dd (.facts-wide spans all columns)
  *   status:     .pill.status-<status> (with .dot), .banner.status-<status>, .history-bar > .day.status-<status>
  *               where <status> is operational|maintenance|degraded|partial_outage|major_outage
  *   badges:     .badge .badge-muted .incident-<status> .maintenance-<state> .notif-<status>
+ *               .event-<outcome> (requests of monitoring integrations)
  *   feedback:   .flash.flash-success|info|warning|error (flash messages and alerts in forms)
  *               .notice (empty states and hints) .danger-zone (destructive actions below a form)
  *               .error-page
@@ -381,9 +383,11 @@ fieldset.box > legend { font-weight: 650; padding: 0 6px; margin: 0 0 0 -6px; }
 fieldset.box > fieldset:last-child { margin-bottom: 0; }
 @media (max-width: 560px) { fieldset.box { padding: 12px 14px 2px; } }
 .code-box { display: block; padding: 8px 10px; font-family: var(--mono); font-size: .9rem; word-break: break-all; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-small); user-select: all; }
+.code-block { margin: 0 0 14px; padding: 10px 12px; font-family: var(--mono); font-size: .82rem; line-height: 1.5; white-space: pre; overflow: auto; max-height: 28rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-small); }
 .disclosure { margin-bottom: 24px; }
 .disclosure > summary { cursor: pointer; color: var(--link); font-size: .92rem; width: max-content; max-width: 100%; }
 .disclosure[open] > summary { margin-bottom: 12px; }
+.entry > .disclosure { margin: 6px 0 0; }
 /* The SQLite fields of the setup wizard are shown exactly when the PostgreSQL
    fields (toggled by data-show-when on the driver select) are hidden. */
 #pg-fields:not([hidden]) ~ #sqlite-fields { display: none; }
@@ -448,6 +452,11 @@ fieldset.box > fieldset:last-child { margin-bottom: 0; }
 .maintenance-scheduled, .maintenance-in_progress, .notif-pending { --badge: var(--st-maintenance-text); }
 .maintenance-cancelled { --badge: var(--text-muted); text-decoration: line-through; }
 .notif-failed { --badge: var(--danger); }
+.event-changed { --badge: var(--st-operational-text); }
+.event-test { --badge: var(--st-maintenance-text); }
+.event-unmatched { --badge: var(--st-degraded-text); }
+.event-invalid { --badge: var(--danger); }
+.event-unchanged, .event-paused { --badge: var(--text-muted); }
 
 /* ================================================================ feedback */
 

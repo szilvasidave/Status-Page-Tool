@@ -79,7 +79,10 @@ type adminServiceForm struct {
 	Categories  []string // existing categories, sorted
 	Category    string   // the selected option
 	NewCategory string   // name of a new category as entered
-	Errors      adminFormErrors
+	// MonitorNames are the names in monitoring tools as entered, one per
+	// line (Service.MonitorNames).
+	MonitorNames string
+	Errors       adminFormErrors
 }
 
 // adminNewCategory is the value of the option "New category…" of the
@@ -154,7 +157,8 @@ func (s *Server) handleServiceEdit(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.adminRenderServiceForm(w, r, http.StatusOK, &adminServiceForm{Service: *svc, SortOrder: strconv.Itoa(svc.SortOrder)})
+	s.adminRenderServiceForm(w, r, http.StatusOK, &adminServiceForm{Service: *svc, SortOrder: strconv.Itoa(svc.SortOrder),
+		MonitorNames: strings.Join(svc.MonitorNames, "\n")})
 }
 
 // adminParseServiceForm reads the service form into f and validates it.
@@ -173,6 +177,14 @@ func adminParseServiceForm(r *http.Request, f *adminServiceForm) {
 		}
 	}
 	f.Service.GroupIDs = formInt64s(r, "groups")
+	f.MonitorNames = formTrim(r, "monitor_names")
+	f.Service.MonitorNames = store.NormalizeMonitorNames(strings.Split(f.MonitorNames, "\n"))
+	switch {
+	case len(f.Service.MonitorNames) > store.MaxMonitorNames:
+		f.Errors.add("monitor_names", fmt.Sprintf("Enter at most %d names.", store.MaxMonitorNames))
+	case slices.ContainsFunc(f.Service.MonitorNames, func(n string) bool { return tooLong(n, store.MaxMonitorNameLength) }):
+		f.Errors.add("monitor_names", fmt.Sprintf("A name is too long (at most %d characters each).", store.MaxMonitorNameLength))
+	}
 	f.SortOrder = formTrim(r, "sort_order")
 	switch {
 	case f.Service.Name == "":

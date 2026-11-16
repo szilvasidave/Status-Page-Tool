@@ -9,16 +9,57 @@ import (
 	"github.com/szilvasidave/status-page-tool/internal/db"
 )
 
-const serviceCols = `sv.id, sv.name, sv.description, sv.category, sv.sort_order, sv.created_at`
+const serviceCols = `sv.id, sv.name, sv.description, sv.category, sv.sort_order, sv.created_at, sv.monitor_names`
 
 func scanService(sc scanner) (Service, error) {
 	var (
-		svc     Service
-		created int64
+		svc          Service
+		created      int64
+		monitorNames string
 	)
-	err := sc.Scan(&svc.ID, &svc.Name, &svc.Description, &svc.Category, &svc.SortOrder, &created)
+	err := sc.Scan(&svc.ID, &svc.Name, &svc.Description, &svc.Category, &svc.SortOrder, &created, &monitorNames)
 	svc.CreatedAt = fromUnix(created)
+	svc.MonitorNames = decodeMonitorNames(monitorNames)
 	return svc, err
+}
+
+// Limits of the names of a service in monitoring tools.
+const (
+	MaxMonitorNames      = 50  // names per service
+	MaxMonitorNameLength = 200 // characters per name
+)
+
+// NormalizeMonitorNames returns the names of a service in monitoring tools
+// as they are stored: every run of white space (line breaks included) as
+// one space, without surrounding spaces, without empty entries and without
+// duplicates (compared like MatchServices compares them), in their order.
+// It does not enforce MaxMonitorNames and MaxMonitorNameLength (the service
+// form checks them).
+func NormalizeMonitorNames(names []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range names {
+		n = strings.Join(strings.Fields(n), " ")
+		k := matchKey(n)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// encodeMonitorNames stores the names one per line.
+func encodeMonitorNames(names []string) string {
+	return strings.Join(NormalizeMonitorNames(names), "\n")
+}
+
+func decodeMonitorNames(v string) []string {
+	if v == "" {
+		return nil
+	}
+	return NormalizeMonitorNames(strings.Split(v, "\n"))
 }
 
 // listServices returns the services matching where (SQL with alias sv, may
@@ -89,17 +130,19 @@ func setServiceGroups(ctx context.Context, tx *db.Tx, serviceID int64, groupIDs 
 }
 
 // CreateService inserts svc (ID and CreatedAt are set on svc) together with
-// its GroupIDs (unknown group ids are ignored).
+// its GroupIDs (unknown group ids are ignored) and MonitorNames (stored
+// normalised, see NormalizeMonitorNames).
 func (s *Store) CreateService(ctx context.Context, svc *Service) error {
 	if strings.TrimSpace(svc.Name) == "" {
 		return errors.New("create service: the name must not be empty")
 	}
 	now := nowTime()
+	svc.MonitorNames = NormalizeMonitorNames(svc.MonitorNames)
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		var id int64
 		err := tx.QueryRowContext(ctx,
-			`INSERT INTO services (name, description, category, sort_order, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
-			svc.Name, svc.Description, svc.Category, svc.SortOrder, now.Unix()).Scan(&id)
+			`INSERT INTO services (name, description, category, sort_order, created_at, monitor_names) VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+			svc.Name, svc.Description, svc.Category, svc.SortOrder, now.Unix(), encodeMonitorNames(svc.MonitorNames)).Scan(&id)
 		if err != nil {
 			return err
 		}
@@ -116,16 +159,18 @@ func (s *Store) CreateService(ctx context.Context, svc *Service) error {
 	return nil
 }
 
-// UpdateService updates name, description, category, sort order and replaces
-// the GroupIDs of svc. Returns ErrNotFound for an unknown service.
+// UpdateService updates name, description, category, sort order and the
+// names in monitoring tools, and replaces the GroupIDs of svc. Returns
+// ErrNotFound for an unknown service.
 func (s *Store) UpdateService(ctx context.Context, svc *Service) error {
 	if strings.TrimSpace(svc.Name) == "" {
 		return errors.New("update service: the name must not be empty")
 	}
+	svc.MonitorNames = NormalizeMonitorNames(svc.MonitorNames)
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		err := affected(tx.ExecContext(ctx,
-			`UPDATE services SET name = ?, description = ?, category = ?, sort_order = ? WHERE id = ?`,
-			svc.Name, svc.Description, svc.Category, svc.SortOrder, svc.ID))
+			`UPDATE services SET name = ?, description = ?, category = ?, sort_order = ?, monitor_names = ? WHERE id = ?`,
+			svc.Name, svc.Description, svc.Category, svc.SortOrder, encodeMonitorNames(svc.MonitorNames), svc.ID))
 		if err != nil {
 			return err
 		}

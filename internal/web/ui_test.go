@@ -180,7 +180,7 @@ func TestUIStylesheetVocabulary(t *testing.T) {
 			}
 		}
 	}
-	generated := regexp.MustCompile(`^(status|incident|maintenance|notif|flash)-|^nodata$`)
+	generated := regexp.MustCompile(`^(status|incident|maintenance|notif|flash|event)-|^nodata$`)
 	for c := range defined {
 		if !used[c] && !generated.MatchString(c) {
 			t.Errorf("style.css styles class %q that no template uses", c)

@@ -206,6 +206,82 @@ ALTER TABLE idp_groups ADD COLUMN directory_found_at BIGINT;
 UPDATE idp_groups SET name = '' WHERE name = external_id AND provisioned = {{FALSE}};
 ALTER TABLE users ADD COLUMN app_roles TEXT NOT NULL DEFAULT '';
 `,
+	// 6: monitoring integrations (package monitoring): monitoring tools send
+	//    their alerts to a webhook URL, and the alerts open and resolve
+	//    incidents of the services they name.
+	//   integrations                one per monitoring tool (webhook URL)
+	//     provider                  the tool (monitoring.Provider ID): how the
+	//                               requests are read
+	//     token_hash                SHA-256 (hex) of the token in the webhook
+	//                               URL; the token itself is shown only once
+	//     impact                    '' = from each alert's severity, else the
+	//                               impact of every alert
+	//     notify                    e-mail about the incidents it opens and
+	//                               resolves
+	//     paused                    requests are recorded but change nothing
+	//   integration_alerts          the alerts of an integration, one row per
+	//                               service an alert names
+	//     alert_key                 identifies the alert within the integration
+	//     incident_id               the incident it opened or joined (NULL:
+	//                               none: suppressed, or the incident was
+	//                               deleted)
+	//     firing                    the latest state reported by the tool
+	//     suppressed                it fired while maintenance of its service
+	//                               was in progress: it opens an incident when
+	//                               the maintenance ends, if it still fires
+	//   integration_events          the latest requests of each integration and
+	//                               what they changed, for administrators
+	//   services.monitor_names      other names of the service in monitoring
+	//                               tools, one per line (alerts that name the
+	//                               service by one of them affect it)
+	//   incidents.automatic         opened by monitoring: resolved when its
+	//                               alerts clear
+	//   incident_updates.source     the integration that posted the update ('':
+	//                               a person, see created_by)
+	`
+CREATE TABLE integrations (
+	id               {{PK}},
+	name             TEXT NOT NULL,
+	provider         TEXT NOT NULL,
+	token_hash       TEXT NOT NULL UNIQUE,
+	token_created_at BIGINT NOT NULL,
+	impact           TEXT NOT NULL DEFAULT '',
+	notify           {{BOOL}} NOT NULL DEFAULT {{TRUE}},
+	paused           {{BOOL}} NOT NULL DEFAULT {{FALSE}},
+	last_event_at    BIGINT,
+	created_at       BIGINT NOT NULL
+);
+
+CREATE TABLE integration_alerts (
+	integration_id BIGINT NOT NULL REFERENCES integrations (id) ON DELETE CASCADE,
+	alert_key      TEXT NOT NULL,
+	service_id     BIGINT NOT NULL REFERENCES services (id) ON DELETE CASCADE,
+	incident_id    BIGINT REFERENCES incidents (id) ON DELETE SET NULL,
+	firing         {{BOOL}} NOT NULL,
+	suppressed     {{BOOL}} NOT NULL DEFAULT {{FALSE}},
+	impact         TEXT NOT NULL,
+	title          TEXT NOT NULL DEFAULT '',
+	started_at     BIGINT NOT NULL,
+	updated_at     BIGINT NOT NULL,
+	PRIMARY KEY (integration_id, alert_key, service_id)
+);
+CREATE INDEX integration_alerts_incident_idx ON integration_alerts (incident_id);
+CREATE INDEX integration_alerts_service_idx ON integration_alerts (service_id);
+
+CREATE TABLE integration_events (
+	id             {{PK}},
+	integration_id BIGINT NOT NULL REFERENCES integrations (id) ON DELETE CASCADE,
+	received_at    BIGINT NOT NULL,
+	outcome        TEXT NOT NULL,
+	summary        TEXT NOT NULL,
+	payload        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX integration_events_integration_idx ON integration_events (integration_id, id);
+
+ALTER TABLE services ADD COLUMN monitor_names TEXT NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN automatic {{BOOL}} NOT NULL DEFAULT {{FALSE}};
+ALTER TABLE incident_updates ADD COLUMN source TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // columnRepairs are columns that a migration gained after builds of an

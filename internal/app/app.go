@@ -25,6 +25,7 @@ import (
 	"github.com/szilvasidave/status-page-tool/internal/config"
 	"github.com/szilvasidave/status-page-tool/internal/db"
 	"github.com/szilvasidave/status-page-tool/internal/groupnames"
+	"github.com/szilvasidave/status-page-tool/internal/monitoring"
 	"github.com/szilvasidave/status-page-tool/internal/notify"
 	"github.com/szilvasidave/status-page-tool/internal/secret"
 	"github.com/szilvasidave/status-page-tool/internal/store"
@@ -224,6 +225,7 @@ func (a *app) activate(cfg *config.Config) error {
 	am := auth.New(st, key, a.log)
 	n := notify.New(st, a.log)
 	names := groupnames.New(st, a.log)
+	mon := monitoring.New(st, n, a.log)
 
 	token := ""
 	hasAdmin, err := st.HasLocalAdmin(ctx)
@@ -235,7 +237,7 @@ func (a *app) activate(cfg *config.Config) error {
 		token = a.setupToken()
 	}
 	h, err := web.NewHandler(web.Deps{
-		Config: cfg, DataDir: a.opts.DataDir, Store: st, Auth: am, Notifier: n, GroupNames: names,
+		Config: cfg, DataDir: a.opts.DataDir, Store: st, Auth: am, Notifier: n, GroupNames: names, Monitoring: mon,
 		Version: a.opts.Version, Log: a.log, SetupToken: token,
 	})
 	if err != nil {
@@ -248,6 +250,7 @@ func (a *app) activate(cfg *config.Config) error {
 
 	a.goWorker(n.Run)
 	a.goWorker(names.Run)
+	a.goWorker(mon.Run)
 	a.goWorker(func(ctx context.Context) { cleanupSessions(ctx, st, a.log) })
 	a.log.Info("database ready", "driver", cfg.DBDriver)
 	return nil

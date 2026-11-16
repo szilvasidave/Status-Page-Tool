@@ -108,8 +108,10 @@ func New(st *store.Store, key []byte, log *slog.Logger) *Manager {
 // Middleware loads the session, puts the Identity and CSRF token into the
 // request context and rejects state-changing requests (POST, PUT, PATCH,
 // DELETE) without a valid CSRF token or with a foreign Origin. SCIM
-// provisioning (/scim/) passes through untouched: it is no browser, it
-// authenticates with its own bearer token and uses no cookies. Static files
+// provisioning (/scim/) and the webhooks of monitoring tools (/hooks and
+// /hooks/…, package monitoring) pass through untouched: they are no
+// browsers, they authenticate with their own tokens and use no cookies.
+// Static files
 // (/static/) and the brand images (/brand/) are public and cacheable: a GET
 // or HEAD of them passes through as well, without a session lookup and
 // without setting the CSRF cookie (a response that may be kept in a shared
@@ -122,7 +124,7 @@ func New(st *store.Store, key []byte, log *slog.Logger) *Manager {
 // CSRF error. The parsed form stays in the request for the handler.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/scim/") || (isPublicAsset(r.URL.Path) && isSafeMethod(r.Method)) {
+		if strings.HasPrefix(r.URL.Path, "/scim/") || isWebhook(r.URL.Path) || (isPublicAsset(r.URL.Path) && isSafeMethod(r.Method)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -170,6 +172,10 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// isWebhook reports whether p is the address of the webhooks of monitoring
+// tools (monitoring.Path, which this package cannot import).
+func isWebhook(p string) bool { return p == "/hooks" || strings.HasPrefix(p, "/hooks/") }
 
 // isPublicAsset reports whether p is a static file or a brand image: public
 // and cacheable, no session needed.
