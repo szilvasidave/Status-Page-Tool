@@ -122,7 +122,7 @@ func TestHandlerAnswersAfterWriteTimeout(t *testing.T) {
 				mux := http.NewServeMux()
 				mux.Handle(Path+"/", e.handler)
 				srv := httptest.NewUnstartedServer(mux)
-				srv.Config.ReadTimeout, srv.Config.WriteTimeout = 100*time.Millisecond, 100*time.Millisecond
+				srv.Config.ReadTimeout, srv.Config.WriteTimeout = 200*time.Millisecond, 200*time.Millisecond
 				srv.EnableHTTP2 = h2
 				srv.StartTLS()
 				defer srv.Close()
@@ -146,14 +146,14 @@ func TestHandlerAnswersAfterWriteTimeout(t *testing.T) {
 					return resp, b
 				}
 
-				e.handler.applyTimeout = 300 * time.Millisecond
-				resp, b := post(`{"key": "a", "service": "VPN", "status": "down"}`, time.Second)
+				e.handler.applyTimeout = 500 * time.Millisecond
+				resp, b := post(`{"key": "a", "service": "VPN", "status": "down"}`, 1200*time.Millisecond)
 				if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
 					t.Fatalf("busy: got %d %s (Retry-After %q)", resp.StatusCode, b, resp.Header.Get("Retry-After"))
 				}
 
 				e.handler.applyTimeout = 10 * time.Second
-				resp, b = post(`{"key": "a", "service": "VPN", "status": "down"}`, 500*time.Millisecond)
+				resp, b = post(`{"key": "a", "service": "VPN", "status": "down"}`, 800*time.Millisecond)
 				if resp.StatusCode != http.StatusOK || !strings.Contains(string(b), "opened incident #1 of VPN") {
 					t.Fatalf("late: got %d %s", resp.StatusCode, b)
 				}

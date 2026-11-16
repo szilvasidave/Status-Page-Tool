@@ -348,7 +348,7 @@ func TestMonitoringWebhookAfterWriteTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := httptest.NewUnstartedServer(h)
-	srv.Config.ReadTimeout, srv.Config.WriteTimeout = 100*time.Millisecond, 100*time.Millisecond
+	srv.Config.ReadTimeout, srv.Config.WriteTimeout = 200*time.Millisecond, 200*time.Millisecond
 	srv.Start()
 	t.Cleanup(srv.Close)
 	e := &testEnv{t: t, DataDir: base.DataDir, Store: base.Store, Auth: base.Auth, Server: srv, Client: base.Client}
@@ -363,7 +363,7 @@ func TestMonitoringWebhookAfterWriteTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	timer := time.AfterFunc(400*time.Millisecond, func() { _ = tx.Rollback() })
+	timer := time.AfterFunc(800*time.Millisecond, func() { _ = tx.Rollback() })
 	defer timer.Stop()
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+hook, strings.NewReader(`{"service": "VPN", "status": "down"}`))
 	req.Header.Set("Content-Type", "application/json")

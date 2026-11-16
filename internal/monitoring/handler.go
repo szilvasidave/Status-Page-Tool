@@ -141,6 +141,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The answer may come after the server's WriteTimeout (a minute,
+	// internal/app): the request may wait for its turn until applyTimeout,
+	// and recording it and queueing its e-mails take 30 seconds at most.
+	// Extended now, as HTTP/2 ends the stream when the WriteTimeout passes.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(h.applyTimeout + time.Minute))
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -220,11 +226,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// From here on the tool may hang up: what it sent is applied, its
-	// e-mails queued and the request recorded anyway. The answer may come
-	// after the server's WriteTimeout (a minute, internal/app): the request
-	// may wait for its turn until applyTimeout, and recording it and
-	// queueing its e-mails take 30 seconds at most.
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(h.applyTimeout + time.Minute))
+	// e-mails queued and the request recorded anyway.
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.applyTimeout)
 	defer cancel()
 	res, err := h.store.ApplyAlerts(actx, in, inputs)
