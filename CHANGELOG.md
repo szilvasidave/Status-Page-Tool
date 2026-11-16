@@ -32,7 +32,21 @@ for the setup.
 - Instructions for **Prometheus Alertmanager, Grafana, Uptime Kuma, Azure
   Monitor, Zabbix, PRTG, Datadog, UptimeRobot and Nagios, Icinga or
   Checkmk**; any other tool or script that can send a webhook uses a simple
-  generic format (JSON, form fields or query parameters).
+  generic format (JSON, form fields or query parameters). The instructions
+  add the status page to the receivers that already get the alerts, so the
+  tool's routing stays as it is.
+- Each tool's alerts are read as the tool means them: its test messages
+  are listed as tests; Grafana's alerts about rules it cannot evaluate
+  (DatasourceError, DatasourceNoData) change nothing; of Azure's activity
+  log alerts, which Azure never ends, Service Health incidents and Resource
+  Health alerts open and resolve incidents by their stage and health, and
+  the others change nothing; PRTG's status is the sensor's current state,
+  so a sensor that is no longer down resolves its incident.
+- If an editor resolves an automatic incident while its alerts still fire,
+  they open no new incident until they have ended – unless the tool reports
+  that the problem started again: Alertmanager, Grafana, Azure Monitor,
+  Uptime Kuma, the Nagios example and any tool that sends the generic
+  format's optional `started`.
 - Services get **names in monitoring tools**: alerts that name a service by
   its name or one of these names affect it (e.g. a monitor, a host, a label
   value). Several services can share a name.

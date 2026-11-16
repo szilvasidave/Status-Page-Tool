@@ -995,9 +995,10 @@ curl or PowerShell (e.g. a System Center Operations Manager command channel).
   it like any other. If an editor resolves it – or an administrator deletes
   it – while its alerts still fire, they do not reopen it: they open a new
   incident once they have cleared and fire again, or when the tool reports
-  that they started again (tools that report when a problem started, e.g.
-  Alertmanager, Grafana and Azure Monitor; this also covers
-  `send_resolved: false`).
+  that they started again. Tools that report when a problem started:
+  Alertmanager (also with `send_resolved: false`), Grafana, Azure Monitor,
+  Uptime Kuma (version 1.23 only for monitors without retries), the Nagios
+  example and any tool that sends the generic format's `started`.
 - A **paused** integration lists its requests, and its firing alerts change
   nothing; its resolved alerts still clear, so that no incident stays open
   because its recovery came while the integration was paused. Deleting an
@@ -1068,12 +1069,14 @@ form fields or URL query parameters):
 | `title`, `message` | the text of the incident (`summary` and `description` are understood too) |
 | `severity` | e.g. `critical`, `error`, `warning`, `P2`, `Sev1` (see the table above) |
 | `impact` | `degraded`, `partial_outage` or `major_outage`: sets the impact directly |
-| `started` | optional: when the problem began – RFC 3339 (`2026-11-16T10:02:00Z`), `YYYY-MM-DD HH:MM:SS` (UTC unless a zone follows), or Unix seconds or milliseconds (`startsAt` is understood too). Send it only if it stays the same in every repeat of a problem, e.g. the time of the first failed check: if an editor resolves the incident of a problem that still fires, a problem that starts again later then opens a new incident (without `started` only after its end has been sent). |
+| `started` | optional: when the problem began – RFC 3339 (`2026-11-16T10:02:00Z`), `YYYY-MM-DD HH:MM:SS` (UTC, or with a zone such as `+01:00` right after the seconds), or Unix seconds or milliseconds (`startsAt`, `starts_at`, `startedAt` and `started_at` are understood too). Send it only if it stays the same in every repeat of a problem, e.g. the time of the first failed check: if an editor resolves the incident of a problem that still fires, a problem that starts again later then opens a new incident (without `started` only after its end has been sent). |
 
 Several alerts are sent as a JSON list or as `{"alerts": [ … ]}`. The answer
 is JSON with what the request did (`{"status": "ok", "alerts": 1,
 "summary": [ … ]}`); 400 means the request could not be read (the reason is
-in `error`), 401 an unknown or replaced URL.
+in `error`), 401 an unknown or replaced URL, 413 a body larger than 1 MB,
+and 503 that the status page could not apply it now (too busy, or in setup
+mode): send it again later (*Retry-After* says when).
 
 ```sh
 curl -X POST 'https://status.example.com/hooks/<token>' -H 'Content-Type: application/json' \

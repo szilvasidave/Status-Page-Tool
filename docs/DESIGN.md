@@ -723,16 +723,18 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   format** (`generic.go`): JSON object, list or `{"alerts": […]}` with
   `service` (text or list, tried in order), `status`, `key` (default
   `service:<first service>`), `title`, `message`, `severity`, `impact`,
-  `started` (keys in any case; synonyms summary, description, priority,
-  id, state, startsAt, started_at), or the same as form fields (parsed
+  `started` (keys in any case; synonyms in `genericNames`, e.g. summary,
+  description, priority, id, state, startsAt, started_at), or the same as
+  form fields (parsed
   leniently: an unescaped `%` stays) and query parameters. JSON is
   recognised by the body (`{`, `[`), not the content type, because PRTG
   sends it as a form. Status words are read by their first word
   (`statusWords`; PRTG's "X ended (now: Y)" by Y; "partial" anywhere means
   a partial outage): problems, recoveries, `test`, and everything else
   (unknown, pending, no data, paused) is ignored with a note. `started`
-  (`parseTime`: RFC 3339, `YYYY-MM-DD HH:MM:SS` in UTC unless a zone
-  follows, Unix seconds or milliseconds; before 2001 = unknown; anything
+  (`parseTime`: RFC 3339, `YYYY-MM-DD HH:MM:SS` in UTC or with a zone
+  such as `+01:00` right after the seconds, Unix seconds or milliseconds;
+  before 2001 = unknown; anything
   else is noted and ignored) is the alert's start; the Nagios example sends
   `$LASTSERVICEOK$`/`$LASTHOSTUP$`, which stay the same for a whole problem
   (also from WARNING to CRITICAL), and retries with curl within Nagios'
