@@ -1,0 +1,234 @@
+{{/* New and edit page of a monitoring integration; see internal/web/admin_monitoring.go. */}}
+
+{{/* The form fields shared by both pages. Dot: the *adminIntegrationForm. */}}
+{{define "integration-fields"}}
+  <div class="field">
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" value="{{.Integration.Name}}" required maxlength="100" aria-describedby="name_help"{{if .Errors.name}} aria-invalid="true"{{end}}>
+    <span class="help" id="name_help">E.g. “Prometheus” or “Zabbix (data centre 2)”. Editors see it on the updates of the incidents it opens.</span>
+    {{template "field-error" .Errors.name}}
+  </div>
+  <div class="field">
+    <label for="provider">Monitoring tool</label>
+    <select id="provider" name="provider" aria-describedby="provider_help"{{if .Errors.provider}} aria-invalid="true"{{end}}>
+      {{- if .IsNew}}
+      <option value="">Choose…</option>
+      {{- end}}
+      {{- with .UnknownProvider}}
+      <option value="{{.}}"{{if eq . $.Integration.Provider}} selected{{end}}>Unknown tool “{{.}}” (read as Other tool or script)</option>
+      {{- end}}
+      {{- range .Providers}}
+      <option value="{{.ID}}"{{if eq .ID $.Integration.Provider}} selected{{end}}>{{.Name}}</option>
+      {{- end}}
+    </select>
+    <span class="help" id="provider_help">How its requests are read. A tool that is not listed can send the generic format:
+      choose “Other tool or script”.</span>
+    {{template "field-error" .Errors.provider}}
+  </div>
+  <div class="field">
+    <label for="impact">Impact of a firing alert</label>
+    <select id="impact" name="impact" aria-describedby="impact_help"{{if .Errors.impact}} aria-invalid="true"{{end}}>
+      {{- range .ImpactChoices}}
+      <option value="{{.}}"{{if eq . $.Integration.Impact}} selected{{end}}>{{if .}}Always: {{statusLabel .}}{{else}}By the alert's severity (recommended){{end}}</option>
+      {{- end}}
+    </select>
+    <span class="help" id="impact_help">By severity: critical (also Disaster, High, Sev0, P1) is a major outage, error (Average,
+      Sev1, P2) a partial outage, warning and lower degraded performance; an alert without a severity is a major outage. An
+      alert can also give its impact itself: degraded, partial_outage or major_outage in its label, tag or custom property
+      statuspage_impact (in the generic format also the field impact).</span>
+    {{template "field-error" .Errors.impact}}
+  </div>
+  <div class="field">
+    <label class="checkbox"><input type="checkbox" name="notify" aria-describedby="notify_help"{{if .Integration.Notify}} checked{{end}}> Send e-mail notifications</label>
+    <span class="help" id="notify_help">E-mail the groups of the affected services when this integration's alerts open an
+      incident, and when monitoring resolves it (not for the updates in between). A change applies to the incidents
+      opened afterwards.</span>
+  </div>
+{{end}}
+
+{{/* Label of the outcome of a request. Dot: store.IntegrationEvent.Outcome. */}}
+{{define "integration-outcome"}}
+  {{- if eq . "changed"}}Incidents changed
+  {{- else if eq . "unchanged"}}No change
+  {{- else if eq . "unmatched"}}No service found
+  {{- else if eq . "test"}}Test
+  {{- else if eq . "paused"}}Paused
+  {{- else if eq . "invalid"}}Not understood
+  {{- else if eq . "failed"}}Not applied
+  {{- else}}{{.}}{{end}}
+{{- end}}
+
+{{define "content"}}
+{{with .Data}}
+<a class="back-link" href="/admin/monitoring">← Monitoring</a>
+{{- if .IsNew}}
+<h1>New integration</h1>
+<p class="lead">Add an integration for each monitoring tool, or each installation of one, that should update the status
+  page. Its webhook URL and the instructions for the tool are shown once you have created it.</p>
+
+<form method="post" action="/admin/monitoring" class="form narrow">
+  {{template "error-summary" .Errors}}
+  {{template "csrf" $}}
+  {{template "integration-fields" .}}
+  <div class="form-actions">
+    <button type="submit" class="btn-primary">Create integration</button>
+    <a class="btn" href="/admin/monitoring">Cancel</a>
+  </div>
+</form>
+{{- else}}
+<h1>{{.Heading}}</h1>
+<p class="small muted meta-row">{{.ProviderName}} · {{.Integration.Firing}} firing {{if eq .Integration.Firing 1}}alert{{else}}alerts{{end}} ·
+  {{with .Integration.LastEventAt}}last request <time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}no request yet{{end}}</p>
+{{- if .Errors}}
+<div class="flash flash-error" role="alert">The settings were not saved: <a href="#settings">correct the highlighted field
+  below</a>.</div>
+{{- end}}
+{{- if .SavedPaused}}
+<p class="flash flash-warning">This integration is paused: firing alerts it receives are listed below but change nothing;
+  resolved alerts still clear.</p>
+{{- end}}
+
+<section class="card" id="webhook" aria-labelledby="webhook-title">
+  <div class="card-header"><h2 id="webhook-title">Webhook URL</h2></div>
+  <div class="card-body">
+    {{- with .NewURL}}
+    <div class="flash flash-success" role="status">
+      <strong>{{if $.Data.Replaced}}New webhook URL generated.{{else}}Integration created.{{end}}</strong> Copy the webhook URL
+      now and enter it in the monitoring tool: it is shown only once.{{if $.Data.Replaced}} The previous URL no longer works.{{end}}
+      <code class="code-box" id="webhook-url">{{.}}</code>
+    </div>
+    {{- else}}
+    <p>The webhook URL was generated <time datetime="{{isoTime .Integration.TokenCreatedAt}}">{{fmtTime .Integration.TokenCreatedAt}}</time>.
+      It is shown only once: if you need it again, generate a new one – the current URL then stops working.</p>
+    {{- end}}
+    <p class="help">The token at the end of the URL is the tool's password: keep the URL secret. Tools that can send an
+      Authorization header can also send to <code>{{.HookURL}}</code> with the header <code>Authorization: Bearer &lt;token&gt;</code>,
+      so that the token is not part of the address.{{if not .BaseURLSet}} The address is derived from this page – set the
+      <a href="/admin/settings">base URL</a> so that it does not change.{{end}}</p>
+    <form method="post" action="/admin/monitoring/{{.Integration.ID}}/url" class="inline"
+      data-confirm="Generate a new webhook URL? The current URL stops working at once; enter the new one in the monitoring tool.">
+      {{template "csrf" $}}
+      <button type="submit">Generate new URL</button>
+    </form>
+  </div>
+</section>
+
+<section class="card" id="setup" aria-labelledby="setup-title">
+  <div class="card-header"><h2 id="setup-title">Set up {{.Provider.Name}}</h2></div>
+  <div class="card-body">
+    <details class="disclosure"{{if .ShowSetup}} open{{end}}>
+      <summary>Instructions</summary>
+      <ol>
+        {{- range .Provider.Steps}}
+        <li>{{codeText .}}</li>
+        {{- end}}
+      </ol>
+      {{- with .Example}}
+      <p class="label">{{$.Data.Provider.ExampleLabel}}</p>
+      <pre class="code-block">{{.}}</pre>
+      {{- end}}
+    </details>
+    <p class="help">An alert's service is found by {{codeText .Provider.Service}}, compared with the names of the services and their
+      <a href="/admin/services">names in monitoring tools</a> (upper and lower case do not matter).</p>
+  </div>
+</section>
+
+<section aria-labelledby="alerts">
+<h2 id="alerts">Firing alerts</h2>
+{{- if .Alerts}}
+<div class="card table-wrap" tabindex="0" role="region" aria-labelledby="alerts">
+  <table class="table">
+    <thead>
+      <tr><th scope="col">Alert</th><th scope="col">Service</th><th scope="col">Impact</th><th scope="col">Since</th><th scope="col">Incident</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
+    </thead>
+    <tbody>
+      {{- range .Alerts}}
+      <tr>
+        <td class="cell-wrap">{{with .Title}}{{.}}{{else}}<span class="mono small">{{.Key}}</span>{{end}}</td>
+        <td>{{.ServiceName}}</td>
+        <td>{{template "status-pill" .Impact}}</td>
+        <td class="nowrap"><time datetime="{{isoTime .StartedAt}}" title="{{fmtTime .StartedAt}}">{{ago .StartedAt}}</time></td>
+        <td class="cell-wrap">
+          {{- if .IncidentID}}<a href="/manage/incidents/{{.IncidentID}}">#{{.IncidentID}}</a>{{if not .IncidentOpen}} <span class="small muted">resolved by an editor</span>{{end}}
+          {{- else if .Suppressed}}<span class="small muted">waits for the end of the maintenance</span>
+          {{- else}}<span class="small muted">incident deleted</span>{{end -}}
+        </td>
+        <td>
+          <form method="post" action="/admin/monitoring/{{$.Data.Integration.ID}}/alerts/clear" class="inline"
+            data-confirm="Clear the alert “{{with .Title}}{{.}}{{else}}{{.Key}}{{end}}”? The status page treats it as resolved, as if the monitoring tool had reported it: its incident is resolved when it was the last alert. If it still fires, the tool's next notification reports it again.">
+            {{template "csrf" $}}
+            <input type="hidden" name="key" value="{{.Key}}">
+            <button type="submit" class="btn-small">Clear</button>
+          </form>
+        </td>
+      </tr>
+      {{- end}}
+    </tbody>
+  </table>
+</div>
+{{- with .MoreAlerts}}
+<p class="help">… and {{.}} more firing {{if eq . 1}}alert{{else}}alerts{{end}}, not listed.</p>
+{{- end}}
+<p class="help">If the tool did not report that an alert ended (e.g. the status page could not be reached at that
+  moment), clear the alert: its incident is then resolved as if the tool had reported it.</p>
+{{- else}}
+<p class="notice">No alert of this integration is firing.</p>
+{{- end}}
+</section>
+
+<section aria-labelledby="requests">
+<h2 id="requests">Latest requests</h2>
+<p class="help">The latest {{.EventsLimit}} requests of the monitoring tool and what they did, with the status page's
+  own entries (alerts released after maintenance or cleared by an administrator).</p>
+{{- if .Events}}
+<ul class="card card-list">
+  {{- range .Events}}
+  <li class="entry">
+    <div class="entry-head">
+      <time class="entry-title" datetime="{{isoTime .ReceivedAt}}">{{fmtTime .ReceivedAt}}</time>
+      <span class="badge event-{{.Outcome}}">{{template "integration-outcome" .Outcome}}</span>
+    </div>
+    <p class="small">{{nl2br .Summary}}</p>
+    {{- with .Payload}}
+    <details class="disclosure">
+      <summary>Request</summary>
+      <pre class="code-block">{{.}}</pre>
+    </details>
+    {{- end}}
+  </li>
+  {{- end}}
+</ul>
+{{- else}}
+<p class="notice">No requests yet. Once the tool is set up, send a test from it: it is listed here.</p>
+{{- end}}
+</section>
+
+<section aria-labelledby="settings">
+<h2 id="settings">Settings</h2>
+<form method="post" action="/admin/monitoring/{{.Integration.ID}}" class="form narrow">
+  {{template "error-summary" .Errors}}
+  {{template "csrf" $}}
+  {{template "integration-fields" .}}
+  <div class="field">
+    <label class="checkbox"><input type="checkbox" name="paused" aria-describedby="paused_help"{{if .Integration.Paused}} checked{{end}}> Paused</label>
+    <span class="help" id="paused_help">Its requests are listed, but firing alerts change nothing, e.g. while the monitoring tool
+      is reworked; resolved alerts still clear, so that no incident stays open.</span>
+  </div>
+  <div class="form-actions">
+    <button type="submit" class="btn-primary">Save integration</button>
+  </div>
+</form>
+</section>
+
+<section class="danger-zone" aria-labelledby="delete-integration">
+  <h2 id="delete-integration">Delete integration</h2>
+  <p class="muted">Its webhook URL stops working and its alerts are forgotten. The incidents it opened are kept; open ones
+    stay open until an editor resolves them (or other monitoring alerts attached to them clear).</p>
+  <form method="post" action="/admin/monitoring/{{.Integration.ID}}/delete" data-confirm="Delete the integration “{{.Heading}}”? Its webhook URL stops working at once.">
+    {{template "csrf" $}}
+    <button type="submit" class="btn-danger">Delete integration</button>
+  </form>
+</section>
+{{- end}}
+{{end}}
+{{end}}

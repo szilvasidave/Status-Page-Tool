@@ -4,6 +4,61 @@ All notable changes are listed here. Versions follow
 [semantic versioning](https://semver.org/); the release notes on GitHub start
 with the section of the released version.
 
+## Unreleased
+
+Monitoring integrations. See the
+[README](https://github.com/szilvasidave/Status-Page-Tool#monitoring-integrations)
+for the setup.
+
+- **Monitoring tools update the status page.** Under Admin → Monitoring,
+  administrators add an integration for each monitoring tool and enter its
+  webhook URL in the tool. A firing alert opens an incident of the service
+  it names, with the alert's impact; further alerts of the service join it,
+  and the incident is resolved when its alerts clear – with e-mails to the
+  service's groups when it opens and when it is resolved, if the integration
+  that opens it sends e-mails. During maintenance of a service its alerts
+  wait until the maintenance has ended. Incidents that people reported are
+  never changed, and editors can post updates to, rename and resolve the
+  automatic ones.
+- When a tool could not report that an alert ended (e.g. while the status
+  page was restarted), an administrator **clears the alert** on the
+  integration page, which resolves its incident as the tool's recovery
+  would have. A paused integration still applies recoveries, so that no
+  incident stays open because of the pause.
+- Alerts are applied even if the tool hangs up before the answer; a large
+  batch of alerts takes about a second and never holds up the pages. When
+  the status page is too busy, or still in setup mode, tools get 503 and can
+  send the alerts again.
+- Instructions for **Prometheus Alertmanager, Grafana, Uptime Kuma, Azure
+  Monitor, Zabbix, PRTG, Datadog, UptimeRobot and Nagios, Icinga or
+  Checkmk**; any other tool or script that can send a webhook uses a simple
+  generic format (JSON, form fields or query parameters). The instructions
+  add the status page to the receivers that already get the alerts, so the
+  tool's routing stays as it is.
+- Each tool's alerts are read as the tool means them: its test messages
+  are listed as tests; Grafana's alerts about rules it cannot evaluate
+  (DatasourceError, DatasourceNoData) change nothing (the instructions say
+  how a rule whose query fails because the service is down reports the
+  outage instead); of Azure's activity
+  log alerts, which Azure never ends, Service Health incidents and Resource
+  Health alerts open and resolve incidents by their stage and health, and
+  the others change nothing; PRTG's status is the sensor's current state,
+  so a sensor that is no longer down resolves its incident.
+- If an editor resolves an automatic incident while its alerts still fire,
+  they open no new incident until they have ended – unless the tool reports
+  that the problem started again: Alertmanager, Grafana, Azure Monitor,
+  Uptime Kuma (1.23 only for monitors without retries), the Nagios example
+  and any tool that sends the generic format's optional `started`.
+- Services get **names in monitoring tools**: alerts that name a service by
+  its name or one of these names affect it (e.g. a monitor, a host, a label
+  value). Several services can share a name.
+- The integration page shows the instructions for the tool, its firing
+  alerts and its request log (the latest 50 entries) with what each request
+  did, e.g. which names an alert gave that no service has. The webhook URL
+  is shown only once; its token is stored as a hash and never logged.
+- Incidents opened by monitoring are marked on the Manage page
+  (*Automatic*) and on the incident page.
+
 ## 1.1.0 – 2026-11-14
 
 Group names and roles from Microsoft Entra ID. See the

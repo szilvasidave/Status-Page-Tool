@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -67,6 +68,17 @@ func TestServices(t *testing.T) {
 			Services: []ServiceRef{{ID: vpn.ID}, {ID: erp.ID}}}
 		check(t, s.CreateMaintenance(ctx, m))
 		check(t, s.UpdateService(ctx, &Service{ID: vpn.ID, Name: "vpn", GroupIDs: []int64{g1.ID}}))
+
+		// Not while the open incident or the maintenance affects it.
+		var inUse *ServiceInUseError
+		if err := s.DeleteService(ctx, vpn.ID); !errors.As(err, &inUse) || *inUse != (ServiceInUseError{Incident: "Down"}) {
+			t.Fatalf("delete while the incident is open: got %v", err)
+		}
+		check(t, s.AddIncidentUpdate(ctx, inc.ID, &IncidentUpdate{Status: IncidentResolved, Message: "ok"}, nil))
+		if err := s.DeleteService(ctx, vpn.ID); !errors.As(err, &inUse) || *inUse != (ServiceInUseError{Maintenance: "Patch"}) {
+			t.Fatalf("delete before the maintenance: got %v", err)
+		}
+		check(t, s.CancelMaintenance(ctx, m.ID))
 
 		check(t, s.DeleteService(ctx, vpn.ID))
 		_, err = s.GetService(ctx, vpn.ID)

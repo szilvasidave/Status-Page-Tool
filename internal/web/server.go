@@ -29,6 +29,7 @@ import (
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/config"
 	"github.com/szilvasidave/status-page-tool/internal/groupnames"
+	"github.com/szilvasidave/status-page-tool/internal/monitoring"
 	"github.com/szilvasidave/status-page-tool/internal/notify"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
@@ -44,6 +45,9 @@ type Deps struct {
 	Auth       *auth.Manager        // nil in setup mode
 	Notifier   *notify.Notifier     // nil in setup mode
 	GroupNames *groupnames.Resolver // nil in setup mode (its methods then do nothing)
+	// Monitoring receives the alerts of monitoring tools (/hooks); nil in
+	// setup mode. NewHandler creates one when it is nil (tests).
+	Monitoring *monitoring.Handler
 	Version    string
 	Log        *slog.Logger
 
@@ -134,12 +138,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireSetupDone redirects everything to /setup until a local administrator
-// account exists. SCIM provisioning (/scim/) answers with its own errors;
-// static files and the brand images (/brand/) are served.
+// account exists. SCIM provisioning (/scim/) and the webhooks of monitoring
+// tools (/hooks) answer with their own errors; static files and the brand
+// images (/brand/) are served.
 func (s *Server) requireSetupDone(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.setupDone.Load() || r.URL.Path == "/setup" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" ||
-			strings.HasPrefix(r.URL.Path, "/scim/") || strings.HasPrefix(r.URL.Path, "/brand/") {
+			strings.HasPrefix(r.URL.Path, "/scim/") || monitoring.IsPath(r.URL.Path) || strings.HasPrefix(r.URL.Path, "/brand/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -182,7 +187,7 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 				if p == http.ErrAbortHandler {
 					panic(p)
 				}
-				s.Log.Error("panic in handler", "path", r.URL.Path, "panic", p)
+				s.Log.Error("panic in handler", "path", monitoring.RedactPath(r.URL.Path), "panic", p)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
@@ -200,6 +205,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap lets http.ResponseController reach the connection: the webhook
+// of monitoring tools extends its write deadline.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -214,7 +223,8 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		} else if r.Method != http.MethodGet {
 			lvl = slog.LevelInfo
 		}
-		s.Log.Log(r.Context(), lvl, "http", "method", r.Method, "path", r.URL.Path, "status", rec.status, "duration", time.Since(start).Round(time.Millisecond), "ip", auth.ClientIP(r))
+		// The path of a webhook holds its token: never log it.
+		s.Log.Log(r.Context(), lvl, "http", "method", r.Method, "path", monitoring.RedactPath(r.URL.Path), "status", rec.status, "duration", time.Since(start).Round(time.Millisecond), "ip", auth.ClientIP(r))
 	})
 }
 
@@ -401,7 +411,7 @@ func (s *Server) badRequest(w http.ResponseWriter, r *http.Request, msg string) 
 }
 
 func (s *Server) serverError(w http.ResponseWriter, r *http.Request, err error) {
-	s.Log.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	s.Log.Error("request failed", "method", r.Method, "path", monitoring.RedactPath(r.URL.Path), "err", err)
 	s.errorPage(w, r, http.StatusInternalServerError, "Something went wrong", "An unexpected error occurred. Please try again; if the problem persists check the server log.")
 }
 

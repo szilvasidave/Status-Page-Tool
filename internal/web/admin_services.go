@@ -1,7 +1,6 @@
 package web
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -79,7 +78,10 @@ type adminServiceForm struct {
 	Categories  []string // existing categories, sorted
 	Category    string   // the selected option
 	NewCategory string   // name of a new category as entered
-	Errors      adminFormErrors
+	// MonitorNames are the names in monitoring tools as entered, one per
+	// line (Service.MonitorNames).
+	MonitorNames string
+	Errors       adminFormErrors
 }
 
 // adminNewCategory is the value of the option "New category…" of the
@@ -154,7 +156,8 @@ func (s *Server) handleServiceEdit(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, r, err)
 		return
 	}
-	s.adminRenderServiceForm(w, r, http.StatusOK, &adminServiceForm{Service: *svc, SortOrder: strconv.Itoa(svc.SortOrder)})
+	s.adminRenderServiceForm(w, r, http.StatusOK, &adminServiceForm{Service: *svc, SortOrder: strconv.Itoa(svc.SortOrder),
+		MonitorNames: strings.Join(svc.MonitorNames, "\n")})
 }
 
 // adminParseServiceForm reads the service form into f and validates it.
@@ -173,6 +176,14 @@ func adminParseServiceForm(r *http.Request, f *adminServiceForm) {
 		}
 	}
 	f.Service.GroupIDs = formInt64s(r, "groups")
+	f.MonitorNames = formTrim(r, "monitor_names")
+	f.Service.MonitorNames = store.NormalizeMonitorNames(strings.Split(f.MonitorNames, "\n"))
+	switch {
+	case len(f.Service.MonitorNames) > store.MaxMonitorNames:
+		f.Errors.add("monitor_names", fmt.Sprintf("Enter at most %d names.", store.MaxMonitorNames))
+	case slices.ContainsFunc(f.Service.MonitorNames, func(n string) bool { return tooLong(n, store.MaxMonitorNameLength) }):
+		f.Errors.add("monitor_names", fmt.Sprintf("A name is too long (at most %d characters each).", store.MaxMonitorNameLength))
+	}
 	f.SortOrder = formTrim(r, "sort_order")
 	switch {
 	case f.Service.Name == "":
@@ -241,50 +252,30 @@ func (s *Server) handleServiceDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	svc, err := s.Store.GetService(ctx, id)
-	var busy string
 	if err == nil {
-		busy, err = s.adminServiceBusy(ctx, svc)
-	}
-	if err == nil && busy == "" {
 		err = s.Store.DeleteService(ctx, id)
 	}
-	if errors.Is(err, store.ErrNotFound) {
+	var inUse *store.ServiceInUseError
+	if errors.As(err, &inUse) {
+		s.redirectWithFlash(w, r, "/admin/services/"+strconv.FormatInt(id, 10), "error", serviceInUseText(svc.Name, inUse))
+		return
+	} else if errors.Is(err, store.ErrNotFound) {
 		s.notFound(w, r)
 		return
 	} else if err != nil {
 		s.serverError(w, r, err)
 		return
 	}
-	if busy != "" {
-		s.redirectWithFlash(w, r, "/admin/services/"+strconv.FormatInt(id, 10), "error", busy)
-		return
-	}
 	s.Log.Info("service deleted", "service", svc.Name, "user", adminActor(r))
 	s.redirectWithFlash(w, r, "/admin/services", "success", "Service “"+svc.Name+"” deleted.")
 }
 
-// adminServiceBusy returns why svc cannot be deleted now ("" if it can): it
-// is affected by an open incident or by maintenance that has not ended.
-// Deleting it would leave the incident without the service, so that it could
-// not be resolved properly.
-func (s *Server) adminServiceBusy(ctx context.Context, svc *store.Service) (string, error) {
-	open, err := s.Store.ListOpenIncidents(ctx)
-	if err != nil {
-		return "", err
+// serviceInUseText says why the service cannot be deleted now (the store
+// checks it in the deletion's transaction, so that no monitoring tool opens
+// an incident of the service in between).
+func serviceInUseText(name string, e *store.ServiceInUseError) string {
+	if e.Incident != "" {
+		return fmt.Sprintf("The service “%s” cannot be deleted while the open incident “%s” affects it. Resolve the incident first.", name, e.Incident)
 	}
-	for _, inc := range open {
-		if slices.Contains(inc.ServiceIDs(), svc.ID) {
-			return fmt.Sprintf("The service “%s” cannot be deleted while the open incident “%s” affects it. Resolve the incident first.", svc.Name, inc.Title), nil
-		}
-	}
-	maint, err := s.Store.ListCurrentMaintenances(ctx, time.Now())
-	if err != nil {
-		return "", err
-	}
-	for _, m := range maint {
-		if slices.Contains(m.ServiceIDs(), svc.ID) {
-			return fmt.Sprintf("The service “%s” cannot be deleted while the maintenance “%s” affects it. Wait until it has ended, or remove the service from it first.", svc.Name, m.Title), nil
-		}
-	}
-	return "", nil
+	return fmt.Sprintf("The service “%s” cannot be deleted while the maintenance “%s” affects it. Wait until it has ended, or remove the service from it first.", name, e.Maintenance)
 }

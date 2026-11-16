@@ -3,8 +3,9 @@
   <h1>Services</h1>
   <a class="btn btn-primary" href="/admin/services/new">Add service</a>
 </div>
-<p class="lead">The status of a service is derived from open incidents and maintenance windows. Members of the
-  groups to notify receive an e-mail when an incident or maintenance affects the service.</p>
+<p class="lead">The status of a service is derived from open incidents and maintenance windows; incidents can be opened
+  and resolved by <a href="/admin/monitoring">monitoring tools</a>. Members of the groups to notify receive an e-mail
+  when an incident or maintenance affects the service.</p>
 {{- if .Data}}
 <div class="card table-wrap" tabindex="0" role="region" aria-label="Services">
   <table class="table">

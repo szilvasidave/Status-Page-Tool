@@ -11,7 +11,7 @@ import (
 	"github.com/szilvasidave/status-page-tool/internal/db"
 )
 
-const incidentCols = `i.id, i.title, i.status, i.started_at, i.resolved_at, i.created_by, i.created_at, i.updated_at`
+const incidentCols = `i.id, i.title, i.status, i.started_at, i.resolved_at, i.created_by, i.created_at, i.updated_at, i.automatic`
 
 func scanIncident(sc scanner) (Incident, error) {
 	var (
@@ -20,7 +20,7 @@ func scanIncident(sc scanner) (Incident, error) {
 		started, created, updated int64
 		resolved, createdBy       sql.NullInt64
 	)
-	err := sc.Scan(&inc.ID, &inc.Title, &status, &started, &resolved, &createdBy, &created, &updated)
+	err := sc.Scan(&inc.ID, &inc.Title, &status, &started, &resolved, &createdBy, &created, &updated, &inc.Automatic)
 	inc.Status = IncidentStatus(status)
 	inc.StartedAt = fromUnix(started)
 	inc.ResolvedAt = fromNullUnix(resolved)
@@ -31,7 +31,7 @@ func scanIncident(sc scanner) (Incident, error) {
 }
 
 // updateCols are the columns read by scanUpdate (alias iu, author alias a).
-var updateCols = `iu.id, iu.incident_id, iu.status, iu.message, iu.created_by, iu.created_at, ` + displayNameSQL("a")
+var updateCols = `iu.id, iu.incident_id, iu.status, iu.message, iu.created_by, iu.created_at, iu.source, ` + displayNameSQL("a")
 
 const updateFrom = ` FROM incident_updates iu LEFT JOIN users a ON a.id = iu.created_by `
 
@@ -42,10 +42,13 @@ func scanUpdate(sc scanner) (IncidentUpdate, error) {
 		createdBy sql.NullInt64
 		created   int64
 	)
-	err := sc.Scan(&u.ID, &u.IncidentID, &status, &u.Message, &createdBy, &created, &u.AuthorName)
+	err := sc.Scan(&u.ID, &u.IncidentID, &status, &u.Message, &createdBy, &created, &u.Source, &u.AuthorName)
 	u.Status = IncidentStatus(status)
 	u.CreatedBy = createdBy.Int64
 	u.CreatedAt = fromUnix(created)
+	if u.AuthorName == "" && u.Source != "" {
+		u.AuthorName = u.Source + " (monitoring)"
+	}
 	return u, err
 }
 
@@ -83,11 +86,14 @@ func setIncidentServices(ctx context.Context, tx *db.Tx, incidentID int64, impac
 	return nil
 }
 
+// insertUpdate inserts upd (its Status, Message, CreatedBy and Source) as an
+// update of the incident at now; ID, IncidentID and CreatedAt are set on
+// upd. It does not change the incident.
 func insertUpdate(ctx context.Context, tx *db.Tx, incidentID int64, upd *IncidentUpdate, now time.Time) error {
 	var id int64
 	err := tx.QueryRowContext(ctx,
-		`INSERT INTO incident_updates (incident_id, status, message, created_by, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
-		incidentID, string(upd.Status), upd.Message, nullID(upd.CreatedBy), now.Unix()).Scan(&id)
+		`INSERT INTO incident_updates (incident_id, status, message, created_by, created_at, source) VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+		incidentID, string(upd.Status), upd.Message, nullID(upd.CreatedBy), now.Unix(), upd.Source).Scan(&id)
 	if err != nil {
 		return err
 	}
@@ -245,10 +251,16 @@ func (s *Store) GetIncident(ctx context.Context, id int64) (*Incident, error) {
 	return inc, nil
 }
 
-// DeleteIncident deletes an incident with its updates. Returns ErrNotFound
-// for an unknown incident.
+// DeleteIncident deletes an incident with its updates (the alerts of
+// monitoring attached to it stay detached, see alerts.go). Returns
+// ErrNotFound for an unknown incident.
 func (s *Store) DeleteIncident(ctx context.Context, id int64) error {
-	err := affected(s.db.ExecContext(ctx, `DELETE FROM incidents WHERE id = ?`, id))
+	// In the monitoring turn: the cascade changes alerts, which a request
+	// of a monitoring tool may be changing (on PostgreSQL the locks would
+	// be taken in the opposite order).
+	err := s.inMonitoringTx(ctx, func(tx *db.Tx) error {
+		return affected(tx.ExecContext(ctx, `DELETE FROM incidents WHERE id = ?`, id))
+	})
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("delete incident %d: %w", id, err)
 	}

@@ -1,0 +1,32 @@
+{{define "content"}}
+<div class="toolbar">
+  <h1>Monitoring</h1>
+  <a class="btn btn-primary" href="/admin/monitoring/new">Add integration</a>
+</div>
+<p class="lead">Monitoring tools can keep the status page up to date: each integration has a webhook URL to which a tool
+  sends its alerts. A firing alert opens an incident of the service it names – by the service's name or one of its
+  <a href="/admin/services">names in monitoring tools</a> – and the incident is resolved when the alert clears. Alerts
+  that fire while a service is in maintenance wait until the maintenance has ended.</p>
+{{- if .Data}}
+<div class="card table-wrap" tabindex="0" role="region" aria-label="Integrations">
+  <table class="table">
+    <thead>
+      <tr><th scope="col">Name</th><th scope="col">Monitoring tool</th><th scope="col">Firing alerts</th><th scope="col">Last request</th></tr>
+    </thead>
+    <tbody>
+      {{- range .Data}}
+      <tr>
+        <td><a href="/admin/monitoring/{{.ID}}">{{.Name}}</a>{{if .Paused}} <span class="badge badge-muted">Paused</span>{{end}}</td>
+        <td>{{.ProviderName}}</td>
+        <td>{{.Firing}}</td>
+        <td class="nowrap">{{with .LastEventAt}}<time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}<span class="muted">none yet</span>{{end}}</td>
+      </tr>
+      {{- end}}
+    </tbody>
+  </table>
+</div>
+{{- else}}
+<p class="notice">No integrations yet. Add one for each monitoring tool that should update the status page, e.g. Prometheus
+  Alertmanager, Grafana, Zabbix, PRTG, Azure Monitor or Uptime Kuma – or any tool or script that can send a webhook.</p>
+{{- end}}
+{{end}}

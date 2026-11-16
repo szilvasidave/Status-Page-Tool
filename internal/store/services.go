@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,16 +10,57 @@ import (
 	"github.com/szilvasidave/status-page-tool/internal/db"
 )
 
-const serviceCols = `sv.id, sv.name, sv.description, sv.category, sv.sort_order, sv.created_at`
+const serviceCols = `sv.id, sv.name, sv.description, sv.category, sv.sort_order, sv.created_at, sv.monitor_names`
 
 func scanService(sc scanner) (Service, error) {
 	var (
-		svc     Service
-		created int64
+		svc          Service
+		created      int64
+		monitorNames string
 	)
-	err := sc.Scan(&svc.ID, &svc.Name, &svc.Description, &svc.Category, &svc.SortOrder, &created)
+	err := sc.Scan(&svc.ID, &svc.Name, &svc.Description, &svc.Category, &svc.SortOrder, &created, &monitorNames)
 	svc.CreatedAt = fromUnix(created)
+	svc.MonitorNames = decodeMonitorNames(monitorNames)
 	return svc, err
+}
+
+// Limits of the names of a service in monitoring tools.
+const (
+	MaxMonitorNames      = 50  // names per service
+	MaxMonitorNameLength = 200 // characters per name
+)
+
+// NormalizeMonitorNames returns the names of a service in monitoring tools
+// as they are stored: every run of white space (line breaks included) as
+// one space, without surrounding spaces, without empty entries and without
+// duplicates (compared like MatchServices compares them), in their order.
+// It does not enforce MaxMonitorNames and MaxMonitorNameLength (the service
+// form checks them).
+func NormalizeMonitorNames(names []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range names {
+		n = strings.Join(strings.Fields(n), " ")
+		k := matchKey(n)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// encodeMonitorNames stores the names one per line.
+func encodeMonitorNames(names []string) string {
+	return strings.Join(NormalizeMonitorNames(names), "\n")
+}
+
+func decodeMonitorNames(v string) []string {
+	if v == "" {
+		return nil
+	}
+	return NormalizeMonitorNames(strings.Split(v, "\n"))
 }
 
 // listServices returns the services matching where (SQL with alias sv, may
@@ -89,17 +131,19 @@ func setServiceGroups(ctx context.Context, tx *db.Tx, serviceID int64, groupIDs 
 }
 
 // CreateService inserts svc (ID and CreatedAt are set on svc) together with
-// its GroupIDs (unknown group ids are ignored).
+// its GroupIDs (unknown group ids are ignored) and MonitorNames (stored
+// normalised, see NormalizeMonitorNames).
 func (s *Store) CreateService(ctx context.Context, svc *Service) error {
 	if strings.TrimSpace(svc.Name) == "" {
 		return errors.New("create service: the name must not be empty")
 	}
 	now := nowTime()
+	svc.MonitorNames = NormalizeMonitorNames(svc.MonitorNames)
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		var id int64
 		err := tx.QueryRowContext(ctx,
-			`INSERT INTO services (name, description, category, sort_order, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id`,
-			svc.Name, svc.Description, svc.Category, svc.SortOrder, now.Unix()).Scan(&id)
+			`INSERT INTO services (name, description, category, sort_order, created_at, monitor_names) VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+			svc.Name, svc.Description, svc.Category, svc.SortOrder, now.Unix(), encodeMonitorNames(svc.MonitorNames)).Scan(&id)
 		if err != nil {
 			return err
 		}
@@ -116,16 +160,18 @@ func (s *Store) CreateService(ctx context.Context, svc *Service) error {
 	return nil
 }
 
-// UpdateService updates name, description, category, sort order and replaces
-// the GroupIDs of svc. Returns ErrNotFound for an unknown service.
+// UpdateService updates name, description, category, sort order and the
+// names in monitoring tools, and replaces the GroupIDs of svc. Returns
+// ErrNotFound for an unknown service.
 func (s *Store) UpdateService(ctx context.Context, svc *Service) error {
 	if strings.TrimSpace(svc.Name) == "" {
 		return errors.New("update service: the name must not be empty")
 	}
+	svc.MonitorNames = NormalizeMonitorNames(svc.MonitorNames)
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		err := affected(tx.ExecContext(ctx,
-			`UPDATE services SET name = ?, description = ?, category = ?, sort_order = ? WHERE id = ?`,
-			svc.Name, svc.Description, svc.Category, svc.SortOrder, svc.ID))
+			`UPDATE services SET name = ?, description = ?, category = ?, sort_order = ?, monitor_names = ? WHERE id = ?`,
+			svc.Name, svc.Description, svc.Category, svc.SortOrder, encodeMonitorNames(svc.MonitorNames), svc.ID))
 		if err != nil {
 			return err
 		}
@@ -137,11 +183,66 @@ func (s *Store) UpdateService(ctx context.Context, svc *Service) error {
 	return err
 }
 
-// DeleteService deletes a service (and its incident/maintenance links).
-// Returns ErrNotFound for an unknown service.
+// ServiceInUseError is returned by DeleteService while an open incident or
+// a maintenance that has not ended affects the service: deleting it would
+// leave the incident without the service, so that it could not be resolved
+// properly (nor by its alerts).
+type ServiceInUseError struct {
+	Incident    string // the title of the open incident, or ""
+	Maintenance string // else the title of the maintenance
+}
+
+func (e *ServiceInUseError) Error() string {
+	if e.Incident != "" {
+		return fmt.Sprintf("the open incident %q affects the service", e.Incident)
+	}
+	return fmt.Sprintf("the maintenance %q affects the service", e.Maintenance)
+}
+
+// DeleteService deletes a service (and its links to resolved incidents, to
+// maintenances and to groups). Returns ErrNotFound for an unknown service,
+// and a *ServiceInUseError while an open incident or a maintenance that has
+// not ended affects it.
 func (s *Store) DeleteService(ctx context.Context, id int64) error {
-	err := affected(s.db.ExecContext(ctx, `DELETE FROM services WHERE id = ?`, id))
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	// In the monitoring turn: the cascade deletes alerts (see
+	// DeleteIncident), and no request of a monitoring tool opens an incident
+	// of the service between the check and the deletion.
+	err := s.inMonitoringTx(ctx, func(tx *db.Tx) error {
+		// The service's row first: on PostgreSQL an editor's new incident
+		// or maintenance of it then either is seen by the check or waits
+		// for the deletion (and fails); SQLite runs one writing
+		// transaction at a time.
+		lock := `SELECT id FROM services WHERE id = ?`
+		if s.db.IsPostgres() {
+			lock += ` FOR UPDATE`
+		}
+		var found int64
+		if err := notFound(tx.QueryRowContext(ctx, lock, id).Scan(&found)); err != nil {
+			return err
+		}
+		var title string
+		err := tx.QueryRowContext(ctx,
+			`SELECT i.title FROM incidents i JOIN incident_services x ON x.incident_id = i.id
+			 WHERE x.service_id = ? AND i.status <> ? ORDER BY i.started_at DESC, i.id DESC LIMIT 1`,
+			id, string(IncidentResolved)).Scan(&title)
+		if err == nil {
+			return &ServiceInUseError{Incident: title}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		err = tx.QueryRowContext(ctx,
+			`SELECT m.title FROM maintenances m JOIN maintenance_services x ON x.maintenance_id = m.id
+			 WHERE x.service_id = ? AND m.cancelled = ? AND m.ends_at > ? ORDER BY m.starts_at, m.id LIMIT 1`,
+			id, false, nowTime().Unix()).Scan(&title)
+		if err == nil {
+			return &ServiceInUseError{Maintenance: title}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return affected(tx.ExecContext(ctx, `DELETE FROM services WHERE id = ?`, id))
+	})
+	var inUse *ServiceInUseError
+	if err != nil && !errors.Is(err, ErrNotFound) && !errors.As(err, &inUse) {
 		return fmt.Errorf("delete service %d: %w", id, err)
 	}
 	return err

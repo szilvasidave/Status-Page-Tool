@@ -45,6 +45,15 @@
       {{template "field-error" .Errors.sort_order}}
     </div>
   </div>
+  <div class="field">
+    <label for="monitor_names">Names in monitoring tools <span class="muted">(optional)</span></label>
+    <textarea id="monitor_names" name="monitor_names" rows="3" aria-describedby="monitor_names_help"{{if .Errors.monitor_names}} aria-invalid="true"{{end}}>{{.MonitorNames}}</textarea>
+    <span class="help" id="monitor_names_help">One per line. Alerts of <a href="/admin/monitoring">monitoring tools</a> that name
+      the service by its name or by one of these names (e.g. an Uptime Kuma monitor, a Zabbix or PRTG host, the value of a
+      Prometheus label) open and resolve its incidents. Upper and lower case do not matter. Give several services the same
+      name to let one alert affect all of them.</span>
+    {{template "field-error" .Errors.monitor_names}}
+  </div>
   <fieldset aria-describedby="groups-help">
     <legend>Groups to notify</legend>
     {{- $ids := .Service.GroupIDs}}

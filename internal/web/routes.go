@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 
+	"github.com/szilvasidave/status-page-tool/internal/monitoring"
 	"github.com/szilvasidave/status-page-tool/internal/scim"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
@@ -84,11 +85,32 @@ func (s *Server) routes() {
 	m.Handle("GET /admin/users", admin(s.handleUsers))
 	m.Handle("POST /admin/users/{id}/delete", admin(s.handleUserDelete))
 	m.Handle("GET /admin/notifications", admin(s.handleNotifications))
+	m.Handle("GET /admin/monitoring", admin(s.handleIntegrations))
+	m.Handle("GET /admin/monitoring/new", admin(s.handleIntegrationNew))
+	m.Handle("POST /admin/monitoring", admin(s.handleIntegrationCreate))
+	m.Handle("GET /admin/monitoring/{id}", admin(s.handleIntegrationEdit))
+	m.Handle("POST /admin/monitoring/{id}", admin(s.handleIntegrationUpdate))
+	m.Handle("POST /admin/monitoring/{id}/url", admin(s.handleIntegrationNewURL))
+	m.Handle("POST /admin/monitoring/{id}/alerts/clear", admin(s.handleIntegrationClearAlert))
+	m.Handle("POST /admin/monitoring/{id}/delete", admin(s.handleIntegrationDelete))
 
 	// SCIM provisioning from Microsoft Entra ID (Tenant URL <Base URL>/scim/v2).
 	// It authenticates with its own bearer token: the middleware passes
 	// /scim/ through without session, CSRF check or setup redirect.
 	m.Handle("/scim/", scim.New(s.Store, s.Log))
+
+	// Webhooks of monitoring tools (Admin → Monitoring): <Base URL>/hooks/<token>,
+	// or /hooks with the token as bearer token. Like /scim/ they pass the
+	// middleware untouched; the request log shows the path without the token.
+	if s.Monitoring == nil {
+		var n monitoring.Notifier // stays a nil interface without a notifier
+		if s.Notifier != nil {
+			n = s.Notifier
+		}
+		s.Monitoring = monitoring.New(s.Store, n, s.Log)
+	}
+	m.Handle(monitoring.Path, s.Monitoring)
+	m.Handle(monitoring.Path+"/", s.Monitoring)
 
 	// Everything else.
 	m.HandleFunc("/", s.notFound)
@@ -98,6 +120,10 @@ func (s *Server) routes() {
 func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /setup", s.handleSetupDatabase)
 	s.mux.HandleFunc("POST /setup", s.handleSetupDatabase)
+	// Monitoring tools get an error they retry, not a redirect to a page
+	// that they would take for a delivery.
+	s.mux.HandleFunc(monitoring.Path, monitoring.ServeUnavailable)
+	s.mux.HandleFunc(monitoring.Path+"/", monitoring.ServeUnavailable)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 	})

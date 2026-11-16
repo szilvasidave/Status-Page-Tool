@@ -33,13 +33,19 @@ type Store struct {
 	db  *db.DB
 	key []byte // secret key used to encrypt secret settings
 
+	// monitoring is the turn of the transactions that change the alerts of
+	// monitoring tools (see monitoringTurn).
+	monitoring chan struct{}
+
 	settingsMu     sync.Mutex
 	settingsCache  *Settings // decoded settings, nil when not loaded
 	settingsLoaded time.Time
 }
 
 // New creates a store. key is the 32 byte secret key from the config file.
-func New(d *db.DB, key []byte) *Store { return &Store{db: d, key: key} }
+func New(d *db.DB, key []byte) *Store {
+	return &Store{db: d, key: key, monitoring: make(chan struct{}, 1)}
+}
 
 // DB exposes the underlying database (used by tests and health checks).
 func (s *Store) DB() *db.DB { return s.db }

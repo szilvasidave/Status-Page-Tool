@@ -12,6 +12,11 @@ no runtime dependencies, installed on Windows with a normal setup wizard.
   timeline of updates and an impact per affected service. **Maintenance
   windows** with start/end time and affected services. A service's status is
   always derived from these, never set by hand.
+- **Monitoring integrations:** Prometheus Alertmanager, Grafana, Zabbix, PRTG,
+  Nagios/Icinga/Checkmk, Azure Monitor, Datadog, Uptime Kuma, UptimeRobot – or
+  any tool or script that can send a webhook – open and resolve incidents
+  automatically, so that the status follows the monitoring
+  ([Monitoring integrations](#monitoring-integrations)).
 - **Single sign-on with OpenID Connect** (Microsoft Entra ID, Keycloak, any
   standard OIDC provider) plus one local administrator account for the first
   setup and emergencies. Once single sign-on works, the local sign-in can be
@@ -53,6 +58,7 @@ only notification channel.
 - [How users and groups get into the status page](#how-users-and-groups-get-into-the-status-page)
 - [Roles and groups](#roles-and-groups)
 - [Services and notifications](#services-and-notifications)
+- [Monitoring integrations](#monitoring-integrations)
 - [E-mail](#e-mail)
 - [config.json](#configjson)
 - [PostgreSQL](#postgresql)
@@ -193,6 +199,9 @@ The wizard then signs you in as the local administrator and continues with
     [Services and notifications](#services-and-notifications)).
   - Administrators can also delete incidents and maintenance windows that
     were created by mistake.
+  - Incidents that monitoring tools opened are marked *Automatic* and are
+    resolved when their alerts clear (see
+    [Monitoring integrations](#monitoring-integrations)).
 - **Your account** (click your name in the header) shows your role, your
   groups and the services you receive e-mails about. The local administrator
   can change its display name and user name there (same rules as in the
@@ -237,8 +246,8 @@ upcoming (`state` `in_progress` or `scheduled`) are listed. Times are UTC
 ## Configuration in the web interface
 
 Administrators configure the status page under **Admin** (`/admin`):
-**Settings**, **Branding**, **Services**, **Groups**, **Users** and
-**Notifications**. Only the listen address, the TLS certificate, the database
+**Settings**, **Branding**, **Services**, **Monitoring**, **Groups**,
+**Users** and **Notifications**. Only the listen address, the TLS certificate, the database
 connection and the log level are set in [`config.json`](#configjson).
 
 ### General settings
@@ -870,7 +879,9 @@ administrator cannot be removed.
 ## Services and notifications
 
 Create services in **Admin → Services**: name, description, category, sort
-order and the **groups to notify** (or assign services on a group's page).
+order, the **names in monitoring tools** (see
+[Monitoring integrations](#monitoring-integrations)) and the **groups to
+notify** (or assign services on a group's page).
 For the **category** choose *No category*, an existing category or *New
 category…* and enter its name. Services with the same category are shown
 together on the status page (upper and lower case do not matter), ordered by
@@ -903,6 +914,189 @@ little use. An e-mail the server has accepted is never sent again.
 **Admin → Notifications** shows the latest 200 e-mails with their delivery
 status, attempts and last error. Sent and failed e-mails are deleted after
 90 days.
+
+## Monitoring integrations
+
+Monitoring tools can keep the status page up to date, so that nobody has to
+report by hand what the monitoring already knows. Each tool sends its alerts
+to a **webhook URL** of the status page: a firing alert opens an incident of
+the service it names, and the incident is resolved when the alert clears.
+The status of a service stays derived from incidents and maintenance –
+monitoring simply becomes another author of incidents, with their history,
+e-mails and updates.
+
+Set up with step-by-step instructions on the integration page:
+**Prometheus Alertmanager**, **Grafana Alerting**, **Uptime Kuma**, **Azure
+Monitor**, **Zabbix**, **PRTG Network Monitor**, **Datadog**, **UptimeRobot**
+and **Nagios, Icinga or Checkmk**. Any other tool or script that can send an
+HTTP request uses the [generic format](#the-generic-format): most tools can
+send a webhook with a body of your choice (e.g. SolarWinds, New Relic,
+Dynatrace, Elastic, Healthchecks.io), and a script can report anything with
+curl or PowerShell (e.g. a System Center Operations Manager command channel).
+
+### Set up an integration
+
+1. **Give the services the names the monitoring tool uses.** An alert
+   affects the service it names: by the service's name or by one of its
+   **names in monitoring tools**, entered on the service's page (**Admin →
+   Services**, one per line; upper and lower case do not matter). For
+   example, name the Uptime Kuma monitor like the service, or add
+   `vpn-gw01:9100` to the service *VPN* for the Prometheus alerts of that
+   instance. Several services can share a name, so that one alert (e.g. of a
+   data centre) affects all of them.
+2. **Add the integration** in **Admin → Monitoring → Add integration**: a
+   name (editors see it on the incidents it opens), the monitoring tool, the
+   impact of its alerts (by default from each alert's severity) and whether
+   e-mails are sent.
+3. **Copy the webhook URL** (`<Base URL>/hooks/<token>`). Like the
+   provisioning token it is shown only once, right after it was generated;
+   *Generate new URL* replaces it. Enter it in the monitoring tool as the
+   integration page describes for that tool, and send a test from the tool.
+4. **Check the latest requests** on the integration's page. Each request is
+   listed with its body (the first 8 KB) and what it did: *Incidents
+   changed*, *No change*, *No service found* (with the names the alert gave –
+   add one of them to a service), *Test*, *Paused*, *Not understood* (with
+   the reason) or *Not applied* (the status page was too busy, or failed:
+   the tool was answered with an error, so that it may send the request
+   again). The status page's own entries – an alert released after
+   maintenance, or cleared by an administrator – show no request and do not
+   count as requests of the tool (*last request*). The page also lists the
+   integration's firing alerts with their incidents.
+
+### What alerts do
+
+- A firing alert opens an **automatic incident** for each service it names –
+  status *Investigating*, titled with the alert's title (prefixed with the
+  service's name unless the title names it in whole words) – or joins the
+  open automatic incident of the service: several alerts of a service share
+  one incident, and several alerts in one request make one update (alerts
+  with the same title are listed once with their number, and an update lists
+  at most ten lines). Incidents that people reported are never changed; an
+  alert opens an incident of its own next to them.
+- The incident's **impact** on the service is the worst impact of the alerts
+  that fire for it, and it follows them when an alert changes its severity or
+  clears. A service whose alerts have all cleared while others of the
+  incident still fire (e.g. a service an editor added to it) keeps its
+  impact until the incident is resolved.
+- When **the last alert clears**, the incident is resolved. Every change is
+  an update of the incident, posted in the name of the integration (editors
+  see "by Prometheus (monitoring)").
+- With **Send e-mail notifications** on, the groups of the affected services
+  are e-mailed when the integration's alerts open an incident, and when
+  monitoring resolves it – also if another integration's alert is the last
+  to clear –, not for the updates in between. The integration that opens an
+  incident decides: an incident opened without e-mails is resolved without
+  one. An incident that opens and is resolved by one request gets one
+  e-mail, about its resolution.
+- During **maintenance** of a service its alerts open no incident, as the
+  outage is planned. An alert that still fires when the maintenance has
+  ended opens one then (checked every minute).
+- **Editors** can post updates to an automatic incident, rename and resolve
+  it like any other. If an editor resolves it – or an administrator deletes
+  it – while its alerts still fire, they do not reopen it: they open a new
+  incident once they have cleared and fire again, or when the tool reports
+  that they started again. Tools that report when a problem started:
+  Alertmanager (also with `send_resolved: false`), Grafana, Azure Monitor,
+  Uptime Kuma (version 1.23 only for monitors without retries), the Nagios
+  example and any tool that sends the generic format's `started`.
+- A **paused** integration lists its requests, and its firing alerts change
+  nothing; its resolved alerts still clear, so that no incident stays open
+  because its recovery came while the integration was paused. Deleting an
+  integration stops its webhook URL and forgets its alerts; the incidents it
+  opened stay. Open ones are then resolved by an editor (or by other
+  monitoring alerts attached to them, when they clear).
+- Repeated notifications of a firing alert (e.g. after Alertmanager's
+  `repeat_interval`) only update it. If a tool could not tell the status page
+  that an alert ended (e.g. the status page was being restarted), **clear
+  the alert** on the integration page (*Firing alerts → Clear*): it is then
+  treated as resolved, as if the tool had reported it, and its incident is
+  resolved when it was the last alert. (Resolving the incident by hand
+  instead leaves the alert firing: a tool that does not report when a
+  problem started then opens no incident for its next problem until the
+  alert has cleared.)
+- A request is applied even if the tool hangs up before the answer; one
+  that had to wait too long behind other alerts is answered 503 (*Not
+  applied*), and tools that retry send it again. While the status page runs
+  in setup mode, webhook URLs answer 503 as well.
+
+### Which service an alert names, and its impact
+
+| Tool | The service is named by (the first that names a service wins) | Impact |
+|------|------|------|
+| Prometheus Alertmanager, Grafana | the label `statuspage_service`, else `service`, `alertname`, `job` or `instance` | the label `severity` (else `priority`) |
+| Uptime Kuma | the monitor's tag `statuspage_service`, else its tag `service`, else its name, host name or URL | a monitor that is down: major outage |
+| Azure Monitor | the alert rule's custom property `statuspage_service`, else its custom property `service`, else the rule's name, else the affected resources | the severity, Sev0–Sev4 (Service Health alerts come as Sev4); Resource Health: Unavailable major outage, Degraded degraded performance |
+| Zabbix | the event's tag `statuspage_service`, else the host's visible name | the trigger's severity |
+| PRTG | the device, else its group | Down: major outage, Down (Partial): partial outage (Warning and Unusual are not shown) |
+| Datadog | the tag `statuspage_service`, else the tag `service`, else the host | the alert type: error (triggered) major outage, warning degraded performance |
+| UptimeRobot | the monitor's friendly name | a monitor that is down: major outage |
+| Nagios, Icinga, Checkmk | the service description, else the host name | CRITICAL, DOWN, UNREACHABLE or WARNING |
+| Generic format | the field `service` (a name or a list of names) | the field `severity` or the status |
+
+| Severity (upper and lower case, spaces, hyphens and underscores do not matter) | Impact |
+|---|---|
+| `critical`, `crit`, `fatal`, `emergency`, `emerg`, `major`, `page`, `high`, `Disaster`, `Sev0`, `P1`; the status `CRITICAL` | major outage |
+| `error`, `err`, `Average`, `partial`, `Sev1`, `P2`; the status `ERROR`, or one with “partial” (PRTG's Down (Partial)) | partial outage |
+| `warning`, `warn`, `minor`, `medium`, `moderate`, `low`, `info`, `information`, `informational`, `notice`, `Not classified`, `verbose`, `debug`, `none`, `Sev2`–`Sev4`, `P3`–`P5`; the status `WARNING`, `Warn`, `Re-Warn`, `degraded` or `Unusual` | degraded performance |
+| no severity, or an unknown one | major outage (e.g. an uptime monitor that reports a service down) |
+
+The integration can give all its alerts one impact instead (*Impact of a
+firing alert*). An impact that the alert gives itself wins over both: the
+label, tag or custom property `statuspage_impact` (in the generic format
+also the field `impact`) – `degraded`, `partial_outage` or `major_outage`.
+
+### The generic format
+
+An HTTP `POST` to the webhook URL with a JSON object (or the same fields as
+form fields or URL query parameters):
+
+```json
+{
+  "service": "VPN",
+  "status": "down",
+  "key": "vpn-gateway-ping",
+  "title": "VPN gateway unreachable",
+  "message": "No answer to ping since 10:02.",
+  "severity": "critical"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `service` | required: the service's name or one of its names in monitoring tools; a list of names is tried in order |
+| `status` | required: a problem (`firing`, `problem`, `down`, `critical`, `error`, `warning`, `triggered`, …) or its end (`resolved`, `ok`, `up`, `recovered`, …); `test` only tests the connection. Only the first word counts (`Down -> Up` is a problem), or the one after `now:` (PRTG's `Down ended (now: Up)`). Unknown words (e.g. `unknown`, `pending`) change nothing. |
+| `key` | identifies the alert, so that its end clears it; default: the first name in `service` (upper and lower case do not matter). Send one when a service has several checks, or when a problem and its end may name the service differently. |
+| `title`, `message` | the text of the incident (`summary` and `description` are understood too) |
+| `severity` | e.g. `critical`, `error`, `warning`, `P2`, `Sev1` (see the table above) |
+| `impact` | `degraded`, `partial_outage` or `major_outage`: sets the impact directly (`statuspage_impact` is understood too) |
+| `started` | optional: when the problem began – RFC 3339 (`2026-11-16T10:02:00Z`), `YYYY-MM-DD HH:MM:SS` (UTC, or with a zone such as `+01:00` right after the seconds), or Unix seconds or milliseconds (`startsAt`, `starts_at`, `startedAt` and `started_at` are understood too). Send it only if it stays the same in every repeat of a problem, e.g. the time of the first failed check: if an editor resolves the incident of a problem that still fires, a problem that starts again later then opens a new incident (without `started` only after its end has been sent). |
+
+Several alerts are sent as a JSON list or as `{"alerts": [ … ]}`, at most
+1000 per request (the others are ignored; the first line of the summary says
+so). The answer is JSON with what the request did (`{"status": "ok",
+"alerts": 1, "summary": [ … ]}`, `alerts` counting the alerts read); 400 means the request could not be read (the reason is
+in `error`), 401 an unknown or replaced URL, 413 a body larger than 1 MB,
+and 503 that the status page could not apply it now (too busy, or in setup
+mode): send it again later (*Retry-After* says when).
+
+```sh
+curl -X POST 'https://status.example.com/hooks/<token>' -H 'Content-Type: application/json' \
+  -d '{"service": "VPN", "status": "down", "title": "VPN gateway unreachable"}'
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri 'https://status.example.com/hooks/<token>' -ContentType 'application/json; charset=utf-8' `
+  -Body (@{ service = 'VPN'; status = 'resolved' } | ConvertTo-Json)
+```
+
+Keep `charset=utf-8`: without it, Windows PowerShell 5.1 sends the body in
+ISO-8859-1. The status page reads that, but letters that ISO-8859-1 lacks
+are replaced (*ő* by *o*, others by *?*), so names with them
+(*Bérszámfejtő*) do not match.
+
+To support another monitoring tool in the status page itself, see
+[docs/DESIGN.md](docs/DESIGN.md#monitoring-integrations): tools that can send
+the generic format need only an entry with their setup instructions.
 
 ## E-mail
 
@@ -1203,6 +1397,20 @@ statuspage local-login status -data /var/lib/statuspage
   proxy rule), only for the IP ranges of the AzureActiveDirectory service
   tag, and keep the web interface internal. The provisioning endpoint uses
   only its token: no cookies, no sessions.
+- **Webhook URLs of monitoring integrations.** The token at the end of a
+  webhook URL lets whoever has it open and resolve incidents of any service,
+  so treat the URL like a password: the status page shows it only once,
+  stores only its SHA-256 hash and never logs it (its request log shows
+  `/hooks/…`). Reverse proxies and some tools log or show URLs: keep those
+  logs private, or let tools that can send a header (Alertmanager, Grafana,
+  Uptime Kuma, Datadog, scripts) send to `<Base URL>/hooks` with
+  `Authorization: Bearer <token>` instead. Generate a new URL if one may
+  have leaked. If tools in the cloud (Datadog, UptimeRobot, Azure Monitor)
+  must reach the status page from the internet, publish only `/hooks` and
+  the paths below `/hooks/` (e.g. a reverse proxy rule), like the
+  provisioning endpoint. The latest 50 entries of each integration's request
+  log are kept, with up to 8 KB of each request's body for troubleshooting;
+  administrators see them.
 - **App registration.** Its client secret allows what the app registration
   may do with Microsoft Graph: send e-mail (Mail.Send, or RBAC for
   Applications) and, for group names, read all groups and their members

@@ -8,6 +8,9 @@
 <div class="row meta-row">
   {{template "incident-badge" .Status}}
   {{$impact := .Impact}}{{if ne $impact "operational"}}{{template "status-pill" $impact}}{{end}}
+  {{- if .Automatic}}
+  <span class="small muted">Detected by monitoring</span>
+  {{- end}}
 </div>
 
 <div class="public-detail">

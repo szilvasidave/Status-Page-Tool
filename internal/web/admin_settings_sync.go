@@ -36,7 +36,7 @@ func (s *Server) adminSyncView(r *http.Request, cur *store.Settings, d *adminSet
 	d.Sync.Enabled = cur.SCIMEnabled()
 	d.Sync.TokenCreated = cur.SCIMTokenCreatedAt
 	if id := r.URL.Query().Get(newTokenParam); id != "" {
-		if t, ok := newTokens.take(id, tokenOwner(r)); ok {
+		if t, ok := newTokens.take(id, tokenOwner(r), 0); ok {
 			d.Sync.NewToken, d.Sync.Replaced = t.token, t.replaced
 		}
 	}
@@ -84,9 +84,11 @@ const newTokenParam = "new-token"
 // newTokenTTL is how long a generated token waits for the settings page.
 const newTokenTTL = 5 * time.Minute
 
-// newTokens holds generated tokens until the settings page shows them: each
-// one is shown once, only to the administrator who generated it, and only
-// within newTokenTTL.
+// newTokens holds generated tokens until the page that shows them is
+// opened: each one is shown once, only to the administrator who generated
+// it, only on the page of its subject (0 for the provisioning token, the id
+// of a monitoring integration for its webhook URL), and only within
+// newTokenTTL.
 var newTokens = &tokenSlots{slots: map[string]tokenSlot{}}
 
 type tokenSlots struct {
@@ -98,6 +100,7 @@ type tokenSlot struct {
 	token    string
 	replaced bool  // the token replaced a previous one
 	userID   int64 // the administrator who generated it
+	subject  int64 // what it belongs to: 0 = provisioning, else a monitoring integration
 	expires  time.Time
 }
 
@@ -114,12 +117,13 @@ func (s *tokenSlots) put(t tokenSlot) string {
 }
 
 // take returns the token of the slot id and forgets it; ok is false if the
-// slot is unknown (shown already), expired or belongs to another user.
-func (s *tokenSlots) take(id string, userID int64) (t tokenSlot, ok bool) {
+// slot is unknown (shown already), expired, or belongs to another user or
+// subject.
+func (s *tokenSlots) take(id string, userID, subject int64) (t tokenSlot, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok = s.slots[id]
-	if !ok || t.userID != userID {
+	if !ok || t.userID != userID || t.subject != subject {
 		return tokenSlot{}, false
 	}
 	delete(s.slots, id)

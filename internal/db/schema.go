@@ -206,12 +206,96 @@ ALTER TABLE idp_groups ADD COLUMN directory_found_at BIGINT;
 UPDATE idp_groups SET name = '' WHERE name = external_id AND provisioned = {{FALSE}};
 ALTER TABLE users ADD COLUMN app_roles TEXT NOT NULL DEFAULT '';
 `,
+	// 6: monitoring integrations (package monitoring): monitoring tools send
+	//    their alerts to a webhook URL, and the alerts open and resolve
+	//    incidents of the services they name.
+	//   integrations                one per monitoring tool (webhook URL)
+	//     provider                  the tool (monitoring.Provider ID): how the
+	//                               requests are read
+	//     token_hash                SHA-256 (hex) of the token in the webhook
+	//                               URL; the token itself is shown only once
+	//     impact                    '' = from each alert's severity, else the
+	//                               impact of every alert
+	//     notify                    e-mail about the incidents it opens, when
+	//                               they open and are resolved
+	//     paused                    requests are recorded; firing alerts
+	//                               change nothing, resolved ones still clear
+	//   integration_alerts          the firing alerts of an integration, one
+	//                               row per service an alert names; a row is
+	//                               deleted when its alert clears
+	//     alert_key                 identifies the alert within the integration
+	//     incident_id               the incident it opened or joined (NULL:
+	//                               none: suppressed, or the incident was
+	//                               deleted)
+	//     suppressed                it fired while maintenance of its service
+	//                               was in progress: it opens an incident when
+	//                               the maintenance ends, if it still fires
+	//     reported_start            when the problem began according to the
+	//                               tool (NULL: unknown); a later one is a new
+	//                               occurrence of the alert
+	//   integration_events          the latest requests of each integration and
+	//                               what they changed, for administrators
+	//   services.monitor_names      other names of the service in monitoring
+	//                               tools, one per line (alerts that name the
+	//                               service by one of them affect it)
+	//   incidents.automatic         opened by monitoring: resolved when its
+	//                               alerts clear
+	//   incidents.automatic_notify  opened by an integration with notify: its
+	//                               resolution by monitoring is e-mailed too
+	//   incident_updates.source     the integration that posted the update ('':
+	//                               a person, see created_by)
+	`
+CREATE TABLE integrations (
+	id               {{PK}},
+	name             TEXT NOT NULL,
+	provider         TEXT NOT NULL,
+	token_hash       TEXT NOT NULL UNIQUE,
+	token_created_at BIGINT NOT NULL,
+	impact           TEXT NOT NULL DEFAULT '',
+	notify           {{BOOL}} NOT NULL DEFAULT {{TRUE}},
+	paused           {{BOOL}} NOT NULL DEFAULT {{FALSE}},
+	last_event_at    BIGINT,
+	created_at       BIGINT NOT NULL
+);
+
+CREATE TABLE integration_alerts (
+	integration_id BIGINT NOT NULL REFERENCES integrations (id) ON DELETE CASCADE,
+	alert_key      TEXT NOT NULL,
+	service_id     BIGINT NOT NULL REFERENCES services (id) ON DELETE CASCADE,
+	incident_id    BIGINT REFERENCES incidents (id) ON DELETE SET NULL,
+	suppressed     {{BOOL}} NOT NULL DEFAULT {{FALSE}},
+	impact         TEXT NOT NULL,
+	title          TEXT NOT NULL DEFAULT '',
+	reported_start BIGINT,
+	started_at     BIGINT NOT NULL,
+	updated_at     BIGINT NOT NULL,
+	PRIMARY KEY (integration_id, alert_key, service_id)
+);
+CREATE INDEX integration_alerts_incident_idx ON integration_alerts (incident_id);
+CREATE INDEX integration_alerts_service_idx ON integration_alerts (service_id);
+
+CREATE TABLE integration_events (
+	id             {{PK}},
+	integration_id BIGINT NOT NULL REFERENCES integrations (id) ON DELETE CASCADE,
+	received_at    BIGINT NOT NULL,
+	outcome        TEXT NOT NULL,
+	summary        TEXT NOT NULL,
+	payload        TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX integration_events_integration_idx ON integration_events (integration_id, id);
+
+ALTER TABLE services ADD COLUMN monitor_names TEXT NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN automatic {{BOOL}} NOT NULL DEFAULT {{FALSE}};
+ALTER TABLE incidents ADD COLUMN automatic_notify {{BOOL}} NOT NULL DEFAULT {{FALSE}};
+ALTER TABLE incident_updates ADD COLUMN source TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // columnRepairs are columns that a migration gained after builds of an
 // unreleased branch had already applied it: such a database records the
 // migration as applied but lacks the column. Migrate adds each column where
-// it is missing, once the schema has reached the migration (version).
+// it is missing, once the schema has reached the migration (version). kind
+// may use the placeholders of the migrations ({{BOOL}}, {{FALSE}}, …).
 var columnRepairs = []struct {
 	version             int
 	table, column, kind string
@@ -219,26 +303,78 @@ var columnRepairs = []struct {
 	// Added to migration 5 after the build of commit c22fd87 (branch
 	// builds only; 5 was first released with the column).
 	{5, "idp_groups", "directory_found_at", "BIGINT"},
+	// Added to migration 6 after the build of commit 500cb22, and after
+	// the build of commit 0447b5c (branch builds only).
+	{6, "integration_alerts", "reported_start", "BIGINT"},
+	{6, "incidents", "automatic_notify", "{{BOOL}} NOT NULL DEFAULT {{FALSE}}"},
 }
 
-// repairColumns adds the columns of columnRepairs that are missing.
+// columnDrops are columns that a migration lost after builds of an
+// unreleased branch had already applied it. Migrate runs before (the rows
+// that the column marked as obsolete are deleted) and drops each column
+// where it exists, once the schema has reached the migration (version).
+var columnDrops = []struct {
+	version               int
+	table, column, before string
+}{
+	// Removed from migration 6 after the build of commit 500cb22 (branch
+	// builds only): the rows of alerts that had cleared were kept with
+	// firing false; cleared alerts have no row any more.
+	{6, "integration_alerts", "firing", `DELETE FROM integration_alerts WHERE firing = {{FALSE}}`},
+}
+
+// hasColumn reports whether a table has a column.
+func (d *DB) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	var n int
+	q := `SELECT COUNT(*) FROM pragma_table_info('` + table + `') WHERE name = ?`
+	args := []any{column}
+	if d.IsPostgres() {
+		q = `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?`
+		args = []any{table, column}
+	}
+	if err := d.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
+		return false, fmt.Errorf("check column %s.%s: %w", table, column, err)
+	}
+	return n > 0, nil
+}
+
+// repairColumns drops the columns of columnDrops that exist and adds the
+// columns of columnRepairs that are missing.
 func (d *DB) repairColumns(ctx context.Context, version int) error {
+	for _, c := range columnDrops {
+		if version < c.version {
+			continue
+		}
+		has, err := d.hasColumn(ctx, c.table, c.column)
+		if err != nil {
+			return err
+		}
+		if !has {
+			continue
+		}
+		err = d.InTx(ctx, func(tx *Tx) error {
+			if c.before != "" {
+				if _, err := tx.ExecContext(ctx, d.dialect(c.before)); err != nil {
+					return err
+				}
+			}
+			_, err := tx.ExecContext(ctx, `ALTER TABLE `+c.table+` DROP COLUMN `+c.column)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("drop column %s.%s: %w", c.table, c.column, err)
+		}
+	}
 	for _, c := range columnRepairs {
 		if version < c.version {
 			continue
 		}
-		if d.IsPostgres() {
-			if _, err := d.ExecContext(ctx, `ALTER TABLE `+c.table+` ADD COLUMN IF NOT EXISTS `+c.column+` `+c.kind); err != nil {
-				return fmt.Errorf("add column %s.%s: %w", c.table, c.column, err)
-			}
-			continue
+		has, err := d.hasColumn(ctx, c.table, c.column)
+		if err != nil {
+			return err
 		}
-		var n int
-		if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+c.table+`') WHERE name = ?`, c.column).Scan(&n); err != nil {
-			return fmt.Errorf("check column %s.%s: %w", c.table, c.column, err)
-		}
-		if n == 0 {
-			if _, err := d.ExecContext(ctx, `ALTER TABLE `+c.table+` ADD COLUMN `+c.column+` `+c.kind); err != nil {
+		if !has {
+			if _, err := d.ExecContext(ctx, `ALTER TABLE `+c.table+` ADD COLUMN `+c.column+` `+d.dialect(c.kind)); err != nil {
 				return fmt.Errorf("add column %s.%s: %w", c.table, c.column, err)
 			}
 		}
