@@ -15,6 +15,13 @@ package monitoring
 // instance name the service (in this order), the label severity (else
 // priority) the impact, unless a label statuspage_impact sets it, and the
 // annotations summary (else the alert name) and description the text.
+//
+// When Grafana cannot evaluate a rule (its data source fails, or sends no
+// data) and the rule's no data or error handling is the default, it sends
+// an alert DatasourceError or DatasourceNoData instead, with the rule's
+// labels and annotations and the rule's name as label rulename (Grafana's
+// pkg/services/ngalert/state/compat.go): only the monitoring is broken, not
+// necessarily the service, so these alerts are ignored.
 
 import (
 	"encoding/json"
@@ -26,6 +33,19 @@ import (
 // alertmanagerTargets are the labels that name the service, in order.
 var alertmanagerTargets = []string{"statuspage_service", "service", "alertname", "job", "instance"}
 
+// grafanaNotEvaluated are the notes about Grafana's alerts for a rule it
+// could not evaluate, by alert name: resolved, firing.
+var grafanaNotEvaluated = map[string][2]string{
+	"DatasourceError": {
+		"Grafana can evaluate the rule “%s” again (DatasourceError resolved): ignored.",
+		"Grafana could not evaluate the rule “%s” (DatasourceError): ignored.",
+	},
+	"DatasourceNoData": {
+		"Grafana receives data for the rule “%s” again (DatasourceNoData resolved): ignored.",
+		"Grafana received no data for the rule “%s” (DatasourceNoData): ignored.",
+	},
+}
+
 type alertmanagerAlert struct {
 	Status      string            `json:"status"`
 	Labels      map[string]string `json:"labels"`
@@ -36,7 +56,8 @@ type alertmanagerAlert struct {
 
 // ParseAlertmanager reads the webhook of Prometheus Alertmanager or of
 // Grafana Alerting. Grafana's test notification (an alert TestAlert of the
-// instance Grafana) is a test.
+// instance Grafana) is a test; its alerts DatasourceError and
+// DatasourceNoData are ignored.
 func ParseAlertmanager(r *Request) (*Batch, error) {
 	var p struct {
 		Alerts *[]alertmanagerAlert `json:"alerts"`
@@ -71,7 +92,15 @@ func ParseAlertmanager(r *Request) (*Batch, error) {
 			a.Firing = true
 		case "resolved":
 		default:
-			b.Notes = append(b.Notes, fmt.Sprintf("Alert %d: status “%s” is neither firing nor resolved: ignored.", i+1, am.Status))
+			b.Notes = append(b.Notes, fmt.Sprintf("Alert %d: status “%s” is neither firing nor resolved: ignored.", i+1, echo(am.Status)))
+			continue
+		}
+		if notes, ok := grafanaNotEvaluated[labels["alertname"]]; ok && labels["rulename"] != "" {
+			note := notes[0]
+			if a.Firing {
+				note = notes[1]
+			}
+			b.Notes = append(b.Notes, fmt.Sprintf("Alert %d: "+note, i+1, echo(labels["rulename"])))
 			continue
 		}
 		if a.Key == "" {
@@ -86,7 +115,7 @@ func ParseAlertmanager(r *Request) (*Batch, error) {
 			if impact, ok := ParseImpact(v); ok {
 				a.Impact = impact
 			} else {
-				b.Notes = append(b.Notes, fmt.Sprintf("Alert %d: unknown statuspage_impact “%s” (use degraded, partial_outage or major_outage): the severity decides.", i+1, v))
+				b.Notes = append(b.Notes, fmt.Sprintf("Alert %d: unknown statuspage_impact “%s” (use degraded, partial_outage or major_outage): the severity decides.", i+1, echo(v)))
 			}
 		}
 		b.Alerts = append(b.Alerts, a)

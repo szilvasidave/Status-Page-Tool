@@ -681,29 +681,72 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
 * **Providers** (`providers.go`): ID (stored, never changed), name, `Parse`,
   which values name the service, setup steps and an example (`{url}` is
   replaced by the webhook URL on the page, or by a placeholder once it has
-  been shown). Native parsers for tools with a fixed format: Prometheus
-  Alertmanager and Grafana (`alertmanager.go`: each alert of the group with
-  its own status; key = fingerprint, else a hash of the labels; Grafana's
-  test alert TestAlert/Grafana is a test), Uptime Kuma (`uptimekuma.go`:
-  heartbeat 0 = down, 1 = up, 2/3 = nothing; key = monitor id; without a
-  heartbeat a test or reminder) and Azure Monitor (`azure.go`: common alert
-  schema only; key = alertId; Fired/Resolved). Zabbix (a webhook media type
-  script), PRTG (an HTTP action payload), Datadog (a webhook payload),
-  UptimeRobot (a POST value), Nagios/Icinga/Checkmk (curl) and "Other tool or
-  script" use the **generic format** (`generic.go`): JSON object, list or
-  `{"alerts": […]}` with `service` (text or list, tried in order), `status`,
-  `key` (default `service:<first service>`), `title`, `message`, `severity`,
-  `impact` (keys in any case; synonyms summary, description, priority, id,
-  state), or the same as form fields (parsed leniently: an unescaped `%`
-  stays) and query parameters. JSON is recognised by the body (`{`, `[`), not
-  the content type, because PRTG sends it as a form. Status words are read by
-  their first word (`statusWords`; PRTG's "X ended (now: Y)" by Y; "partial"
-  anywhere means a partial outage): problems, recoveries, `test`, and
-  everything else (unknown, pending, no data, paused) is ignored with a note.
+  been shown). Native parsers for tools with a fixed format:
+  - Prometheus Alertmanager and Grafana (`alertmanager.go`): each alert of
+    the group with its own status; key = fingerprint, else a hash of the
+    labels; start = `startsAt`. Grafana's test alert TestAlert/Grafana is a
+    test; its alerts DatasourceError and DatasourceNoData (alert name
+    replaced, the rule's name in the label `rulename`, the rule's labels
+    kept – sent when it cannot evaluate a rule) are ignored with a note.
+    The example adds the webhook to existing receivers, so the routing
+    stays as it is.
+  - Uptime Kuma (`uptimekuma.go`): heartbeat 0 = down, 1 = up, 2/3 =
+    nothing; key = monitor id; start = the time (UTC) of an *important*
+    down heartbeat – the change of state, not a resend; without a heartbeat
+    a test or reminder.
+  - Azure Monitor (`azure.go`, common alert schema only): metric and log
+    search alerts by the monitor condition Fired/Resolved, key = alertId,
+    start = `firedDateTime`. Activity log alerts are stateless (always
+    Fired, a new alertId per event), so the alert context decides: Service
+    Health incidents (`incidentType` Incident; key = `trackingId`; stage
+    Active fires, Resolved and RCA resolve; start = `impactStartTime`;
+    maintenance, information, action required and security notices are
+    ignored), Resource Health (key = the resource; `currentHealthStatus`
+    Unavailable = severity critical, Degraded = warning, Available
+    resolves, Unknown is ignored; start = `eventTimestamp` after
+    Available); every other activity log alert is ignored with a note.
+
+  Zabbix (a webhook media type script), PRTG (an HTTP action payload),
+  Datadog (a webhook payload), UptimeRobot (a POST value),
+  Nagios/Icinga/Checkmk (curl) and "Other tool or script" use the **generic
+  format** (`generic.go`): JSON object, list or `{"alerts": […]}` with
+  `service` (text or list, tried in order), `status`, `key` (default
+  `service:<first service>`), `title`, `message`, `severity`, `impact`,
+  `started` (keys in any case; synonyms summary, description, priority,
+  id, state, startsAt, started_at), or the same as form fields (parsed
+  leniently: an unescaped `%` stays) and query parameters. JSON is
+  recognised by the body (`{`, `[`), not the content type, because PRTG
+  sends it as a form. Status words are read by their first word
+  (`statusWords`; PRTG's "X ended (now: Y)" by Y; "partial" anywhere means
+  a partial outage): problems, recoveries, `test`, and everything else
+  (unknown, pending, no data, paused) is ignored with a note. `started`
+  (`parseTime`: RFC 3339, `YYYY-MM-DD HH:MM:SS` in UTC unless a zone
+  follows, Unix seconds or milliseconds; before 2001 = unknown; anything
+  else is noted and ignored) is the alert's start; the Nagios example sends
+  `$LASTSERVICEOK$`/`$LASTHOSTUP$`, which stay the same for a whole problem
+  (also from WARNING to CRITICAL), and retries with curl within Nagios'
+  notification timeout.
+
+  A *dialect* (`dialect`: how the state, severity and test message are
+  read) adapts the generic format to a tool: PRTG (`prtg.go`) reads the
+  status as the sensor's current state – one trigger for Down sends it
+  when the sensor goes Down and when it is no longer Down – so Down in any
+  form fires (Down (Partial) a partial outage) and every other status of
+  PRTG (Up, Warning, Unusual, Paused, Unknown, None) resolves; a template
+  test (the placeholders unfilled) is a test. Datadog (`datadog.go`): the
+  transition decides whether the monitor alerts, the alert type
+  (`$ALERT_TYPE`, sent as severity) how badly (error: critical, warning:
+  warning); a Renotify counts only with the alert type error or warning (it
+  does not say which state it renotifies), and a title whose leading tags
+  in square brackets include `[TEST]` (Test Notifications) is a test.
 * **Normalisation** (`Alert.input`): title one line, ≤ 200 characters;
   message without control characters, ≤ 2000; key > 200 characters replaced
   by its SHA-256; at most 10 targets, each ≤ 200 characters; at most 1000
-  alerts per request. Impact precedence: the alert's own
+  alerts per request. Values of a request quoted in notes and parse errors
+  (status words, impacts, names) are one line of ≤ 80 characters (`echo`).
+  A start counts only if it is the start of the problem and stays the same
+  in every repeat of it, else every repeat would look like a new problem
+  (`newOccurrence`). Impact precedence: the alert's own
   (`statuspage_impact`, `impact`), else the integration's, else the severity
   (`severityImpacts`: critical/Disaster/High/Sev0/P1 → major outage,
   error/Average/Sev1/P2 → partial outage, warning and lower → degraded; a
@@ -793,14 +836,23 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
    code: add a `Provider` to `providers` in
    `internal/monitoring/providers.go` with `Parse: ParseGeneric`, the setup
    steps and the body as `Example`, and add the body, with the tool's
-   variables filled in, to `TestProviderExamples`.
+   variables filled in, to `TestProviderExamples`. Send `started` only with
+   a variable that the tool documents as the start of the problem and that
+   stays the same in repeated notifications of it. If the tool's status
+   words or its test message need rules of their own, write a small
+   dialect (`ParseXxx` calling `parseGeneric`, like `prtg.go` and
+   `datadog.go`).
 2. Otherwise write `ParseXxx(*Request) (*Batch, error)` in a file of its own:
    one `Alert` per alert with a stable `Key`, `Firing`, the `Targets` that
    may name the service (most specific first), `Title`, `Message`,
-   `Severity` (as the tool sends it; extend `severityImpacts` for new words)
-   and `StartsAt`; set `Batch.Test` for the tool's test message, add notes
-   for what was ignored, and return a `ParseError` with a hint for requests
-   that cannot be read. Test it with a request the tool really sends.
+   `Severity` (as the tool sends it; extend `severityImpacts` for new words
+   and the severity table of the README – `TestREADMESeverityTable` compares
+   them) and `StartsAt` (with the same condition as `started`); set
+   `Batch.Test` for the tool's test message, add notes for what was ignored
+   (quoting the request's values with `echo`), and return a `ParseError`
+   with a hint for requests that cannot be read. Test it with a request the
+   tool really sends (the vendor's documented samples, verbatim, where
+   there are any).
 3. Never change or remove a provider ID: integrations store it.
 
 ## URL map

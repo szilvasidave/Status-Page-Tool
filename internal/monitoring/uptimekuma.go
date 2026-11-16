@@ -13,6 +13,14 @@ package monitoring
 // statuspage_impact sets the impact (else a major outage). Without a
 // heartbeat (the "Test" button, certificate expiry reminders) nothing
 // changes.
+//
+// The heartbeat of a change of state is "important"; the resends of a
+// monitor that stays down ("Resend Notification if Down X times
+// consecutively") are not (server/model/monitor.js, 1.23 and 2.0). So the
+// time of an important down heartbeat (UTC, "YYYY-MM-DD HH:mm:ss.SSS") is
+// when the problem began, and a later outage is a new occurrence. Uptime
+// Kuma sends nothing when a monitor enters or leaves one of its own
+// maintenances.
 
 import (
 	"encoding/json"
@@ -24,6 +32,8 @@ type kumaPayload struct {
 		MonitorID text   `json:"monitorID"`
 		Status    *int   `json:"status"`
 		Msg       string `json:"msg"`
+		Time      text   `json:"time"`
+		Important text   `json:"important"` // true or 1
 	} `json:"heartbeat"`
 	Monitor *struct {
 		ID       text   `json:"id"`
@@ -61,7 +71,7 @@ func ParseUptimeKuma(r *Request) (*Batch, error) {
 		// certificate expiry reminder).
 		b.Test = p.Monitor == nil && strings.HasSuffix(strings.TrimSpace(p.Msg), "Testing")
 		if !b.Test {
-			b.Notes = append(b.Notes, "A message without a monitor state (“"+clip(oneLine(p.Msg), 200)+"”): nothing to change.")
+			b.Notes = append(b.Notes, "A message without a monitor state (“"+echo(p.Msg)+"”): nothing to change.")
 		}
 		return b, nil
 	}
@@ -74,6 +84,9 @@ func ParseUptimeKuma(r *Request) (*Batch, error) {
 	case kumaDown:
 		a.Firing = true
 		a.Title = m.Name + " is down"
+		if important := strings.ToLower(string(p.Heartbeat.Important)); important == "true" || important == "1" {
+			a.StartsAt = parseTime(string(p.Heartbeat.Time)) // it went down
+		}
 	case kumaUp:
 		a.Title = m.Name + " is up"
 	default:
@@ -81,7 +94,7 @@ func ParseUptimeKuma(r *Request) (*Batch, error) {
 		if *p.Heartbeat.Status == kumaMaintenance {
 			state = "in maintenance"
 		}
-		b.Notes = append(b.Notes, "“"+m.Name+"” is "+state+": nothing to change.")
+		b.Notes = append(b.Notes, "“"+echo(m.Name)+"” is "+state+": nothing to change.")
 		return b, nil
 	}
 	id := string(m.ID)
@@ -103,7 +116,7 @@ func ParseUptimeKuma(r *Request) (*Batch, error) {
 		if impact, ok := ParseImpact(v); ok {
 			a.Impact = impact
 		} else {
-			b.Notes = append(b.Notes, "Unknown tag value statuspage_impact “"+v+"” (use degraded, partial_outage or major_outage): ignored.")
+			b.Notes = append(b.Notes, "Unknown tag value statuspage_impact “"+echo(v)+"” (use degraded, partial_outage or major_outage): ignored.")
 		}
 	}
 	b.Alerts = append(b.Alerts, a)

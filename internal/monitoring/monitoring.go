@@ -10,11 +10,12 @@
 //     function that reads its requests (Parse) and the setup instructions
 //     shown to administrators. Tools whose request body can be configured
 //     (Zabbix, PRTG, Datadog, UptimeRobot, Nagios, scripts, …) send the
-//     generic format (generic.go); tools with a fixed format have their own
-//     parser (alertmanager.go for Prometheus Alertmanager and Grafana,
-//     uptimekuma.go, azure.go). To support another tool, add an entry to
-//     providers – with a parser of its own only if it cannot send the
-//     generic format – and a test with a request the tool really sends.
+//     generic format (generic.go; PRTG and Datadog with a few rules of
+//     their own, prtg.go and datadog.go); tools with a fixed format have
+//     their own parser (alertmanager.go for Prometheus Alertmanager and
+//     Grafana, uptimekuma.go, azure.go). To support another tool, add an
+//     entry to providers – with a parser of its own only if it cannot send
+//     the generic format – and a test with a request the tool really sends.
 //   - Normalisation (this file): status words, severities and impacts of
 //     the tools mapped to the status page's, and the limits applied to
 //     every alert before it reaches the store.
@@ -32,7 +33,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -54,6 +57,7 @@ const (
 	maxKeyLength     = 200     // longer keys are replaced by their SHA-256
 	maxTargets       = 10      // values that may name the service
 	maxTargetLength  = 200     // characters, like the names of services in monitoring tools
+	maxEchoLength    = 80      // characters of a value quoted in a note or an error (echo)
 )
 
 // Request is a webhook request as a Provider reads it.
@@ -339,6 +343,11 @@ func clip(s string, n int) string {
 	return strings.TrimSpace(string(r[:n-1])) + "…"
 }
 
+// echo returns a value of a request as it is quoted in a note or an error
+// (the request log shows them as lines of their own): one line of at most
+// maxEchoLength characters.
+func echo(s string) string { return clip(oneLine(s), maxEchoLength) }
+
 // ------------------------------------------------------------------ JSON helpers
 
 // text is a JSON value read as text: strings as they are, numbers and
@@ -397,21 +406,69 @@ func jsonError(err error) string {
 	var typeErr *json.UnmarshalTypeError
 	switch {
 	case errors.As(err, &syntax):
-		return fmt.Sprintf("the request is not valid JSON (at byte %d: %v)", syntax.Offset, syntax)
+		return fmt.Sprintf("the request is not valid JSON (at byte %d: %s)", syntax.Offset, echo(syntax.Error()))
 	case errors.As(err, &typeErr) && typeErr.Field != "":
-		return fmt.Sprintf("unexpected JSON value for “%s” (%s)", typeErr.Field, typeErr.Value)
+		// Value can hold the number that did not fit, as it was sent.
+		return fmt.Sprintf("unexpected JSON value for “%s” (%s)", echo(typeErr.Field), echo(typeErr.Value))
 	}
-	return "the request is not valid JSON: " + err.Error()
+	return "the request is not valid JSON: " + clip(oneLine(err.Error()), 2*maxEchoLength)
 }
 
-// parseTime reads an RFC 3339 time; zero for anything else and for times
-// before 2001 (e.g. Alertmanager's "0001-01-01T00:00:00Z").
+// timeLayouts are the layouts of the times parseTime reads besides Unix
+// times. A time without a zone is UTC; fractions of a second are read
+// after the seconds whether the layout has them or not.
+var timeLayouts = []string{
+	time.RFC3339,                // 2026-11-16T10:02:00Z, 2026-11-16T10:02:00.123+01:00
+	"2006-01-02T15:04:05",       // 2026-11-16T10:02:00
+	"2006-01-02 15:04:05Z07:00", // 2026-11-16 10:02:00+01:00
+	"2006-01-02 15:04:05",       // 2026-11-16 10:02:00, 2026-11-16 10:02:00.123 (Uptime Kuma)
+}
+
+// parseTime reads a time: RFC 3339, "YYYY-MM-DD HH:MM:SS" (UTC unless a
+// zone follows), or Unix seconds or milliseconds (also as text). It returns
+// the zero time for anything else and for times before 2001 (e.g.
+// Alertmanager's "0001-01-01T00:00:00Z", or 0 for "never").
 func parseTime(s string) time.Time {
-	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(s))
-	if err != nil || t.Year() < 2001 {
-		return time.Time{}
-	}
+	t, _ := readTime(s)
 	return t
+}
+
+// readTime is parseTime that also reports whether s is a time at all: ok
+// is false for text in none of the formats, not for an empty one or a time
+// before 2001.
+func readTime(s string) (t time.Time, ok bool) {
+	s = strings.TrimSpace(s)
+	switch {
+	case s == "":
+		return time.Time{}, true
+	case strings.Trim(s, "0123456789.") == "":
+		n, err := strconv.ParseFloat(s, 64)
+		switch {
+		case err != nil:
+			return time.Time{}, false
+		case n < 1e11: // seconds (1e11 s is the year 5138)
+			sec, frac := math.Modf(n)
+			t = time.Unix(int64(sec), int64(frac*1e9)).UTC()
+		case n < 1e14: // milliseconds
+			t = time.UnixMilli(int64(n)).UTC()
+		default:
+			return time.Time{}, false
+		}
+	default:
+		for _, layout := range timeLayouts {
+			if parsed, err := time.Parse(layout, s); err == nil {
+				t, ok = parsed, true
+				break
+			}
+		}
+		if !ok {
+			return time.Time{}, false
+		}
+	}
+	if t.Year() < 2001 {
+		return time.Time{}, true
+	}
+	return t.UTC(), true
 }
 
 // lowerKeys returns m with lower-case keys (labels, tags and properties are

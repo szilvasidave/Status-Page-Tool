@@ -1,9 +1,13 @@
 package monitoring
 
 import (
+	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +109,49 @@ func TestSeverityImpact(t *testing.T) {
 	}
 }
 
+// The severity table of the README lists exactly the severities of
+// severityImpacts, with their impacts.
+func TestREADMESeverityTable(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, table, ok := strings.Cut(string(readme), "\n| Severity ")
+	if !ok {
+		t.Fatal("README: no severity table")
+	}
+	table, _, _ = strings.Cut(table, "\n\n")
+	impacts := map[string]store.Status{"major outage": store.StatusMajorOutage, "partial outage": store.StatusPartialOutage, "degraded performance": store.StatusDegraded}
+	got := map[string]store.Status{}
+	unknown := false
+	for _, row := range strings.Split(table, "\n")[2:] {
+		cells := strings.Split(row, "|")
+		if len(cells) != 4 {
+			t.Fatalf("README: severity row %q", row)
+		}
+		severities, impact := strings.TrimSpace(cells[1]), strings.TrimSpace(cells[2])
+		if severities == "no severity, or an unknown one" {
+			unknown = strings.HasPrefix(impact, "major outage")
+			continue
+		}
+		severities, _, _ = strings.Cut(severities, ";") // the status words follow
+		parts := strings.Split(severities, "`")         // the names are the odd parts
+		for i := 1; i < len(parts); i += 2 {
+			got[severityKey(parts[i])] = impacts[impact]
+			if i+2 < len(parts) && parts[i+1] == "–" { // a range: `Sev2`–`Sev4`
+				from, to := strings.TrimRight(parts[i], "0123456789"), strings.TrimRight(parts[i+2], "0123456789")
+				first, _ := strconv.Atoi(parts[i][len(from):])
+				last, _ := strconv.Atoi(parts[i+2][len(to):])
+				for n := first; from == to && n < last; n++ {
+					got[severityKey(from+strconv.Itoa(n))] = impacts[impact]
+				}
+			}
+		}
+	}
+	equal(t, "README severity table", got, severityImpacts)
+	equal(t, "README: no severity, or an unknown one, is a major outage", unknown, true)
+}
+
 func TestParseImpact(t *testing.T) {
 	for in, want := range map[string]store.Status{
 		"degraded": store.StatusDegraded, "Degraded performance": store.StatusDegraded,
@@ -148,6 +195,46 @@ func TestAlertInput(t *testing.T) {
 	}
 	equal(t, "message", in.Message, "line 1\nline 2")
 	equal(t, "targets", in.Targets, []string{"VPN", "a", "b", "c", "d", "e", "f", "g", "h", "i"})
+}
+
+func TestParseTime(t *testing.T) {
+	at := time.Date(2026, 11, 16, 10, 2, 3, 0, time.UTC)
+	for in, want := range map[string]time.Time{
+		"2026-11-16T10:02:03Z":          at,
+		"2026-11-16T11:02:03+01:00":     at,
+		"2026-11-16T10:02:03.250Z":      at.Add(250 * time.Millisecond),
+		"2026-11-16T10:02:03":           at, // no zone: UTC
+		"2026-11-16 10:02:03":           at,
+		"2026-11-16 10:02:03.123":       at.Add(123 * time.Millisecond), // Uptime Kuma
+		"2026-11-16 11:02:03+01:00":     at,
+		" 2026-11-16 10:02:03 ":         at,
+		"1794823323":                    at, // Unix seconds
+		"1794823323.5":                  at.Add(500 * time.Millisecond),
+		"1794823323000":                 at, // Unix milliseconds
+		"2019-03-22T13:58:24.3713213Z":  time.Date(2019, 3, 22, 13, 58, 24, 371321300, time.UTC),
+		"2017-07-20T21:41:00.0000000Z":  time.Date(2017, 7, 20, 21, 41, 0, 0, time.UTC),
+		"2019-06-24T15:42:54.074+00:00": time.Date(2019, 6, 24, 15, 42, 54, 74e6, time.UTC),
+	} {
+		got, ok := readTime(in)
+		if !ok || !got.Equal(want) {
+			t.Errorf("readTime(%q) = %v, %v; want %v", in, got, ok, want)
+		}
+		if got := parseTime(in); !got.Equal(want) {
+			t.Errorf("parseTime(%q) = %v; want %v", in, got, want)
+		}
+	}
+	// Times before 2001 ("never") are no start, but times.
+	for _, in := range []string{"", "0", "0001-01-01T00:00:00Z", "978307199"} {
+		if got, ok := readTime(in); !ok || !got.IsZero() {
+			t.Errorf("readTime(%q) = %v, %v; want the zero time", in, got, ok)
+		}
+	}
+	// Not times.
+	for _, in := range []string{"yesterday", "16.11.2026 10:02", "11/16/2026 10:02:03 AM", "1.2.3", ".", "-1794823323", "1e9", "179482332300000000"} {
+		if got, ok := readTime(in); ok || !got.IsZero() {
+			t.Errorf("readTime(%q) = %v, %v; want no time", in, got, ok)
+		}
+	}
 }
 
 // ------------------------------------------------------------------ generic format
@@ -196,6 +283,36 @@ func TestParseGeneric(t *testing.T) {
 		b = parse(t, ParseGeneric, "application/x-www-form-urlencoded", "id=event-1&key=k&summary=S&title=T&state=ok&status=down&service=A")
 		equal(t, "synonyms (form)", b.Alerts, []Alert{{Key: "k", Firing: true, Targets: []string{"A"}, Title: "T"}})
 	}
+
+	// started: when the problem began, in any of the formats of parseTime,
+	// also as startsAt, started_at, startedAt or starts_at; the field's own
+	// name wins
+	began := time.Date(2026, 11, 16, 10, 2, 3, 0, time.UTC)
+	for body, want := range map[string]time.Time{
+		`{"service": "VPN", "status": "down", "started": "2026-11-16T11:02:03+01:00"}`:                      began,
+		`{"service": "VPN", "status": "down", "startsAt": "2026-11-16 10:02:03"}`:                           began,
+		`{"service": "VPN", "status": "down", "started_at": 1794823323}`:                                    began,
+		`{"service": "VPN", "status": "down", "startedAt": 1794823323000}`:                                  began,
+		`{"service": "VPN", "status": "down", "starts_at": "1794823323"}`:                                   began,
+		`{"service": "VPN", "status": "down", "startsAt": "2001-01-01T00:00:00Z", "started": "1794823323"}`: began,
+		`{"service": "VPN", "status": "down", "started": 0}`:                                                {}, // never: unknown
+	} {
+		b = parse(t, ParseGeneric, "application/json", body)
+		equal(t, "started "+body, b.Alerts[0].StartsAt, want)
+		equal(t, "no note "+body, len(b.Notes), 0)
+	}
+	b = parse(t, ParseGeneric, "application/x-www-form-urlencoded", "service=VPN&status=CRITICAL&started=1794823323")
+	equal(t, "started as a form field", b.Alerts[0].StartsAt, began)
+	b = parse(t, ParseGeneric, "application/json", `{"service": "VPN", "status": "down", "started": "16.11.2026 10:02"}`)
+	equal(t, "a start that is no time", b.Alerts[0].StartsAt, time.Time{})
+	equal(t, "its note", b.Notes, []string{"Start “16.11.2026 10:02” is not a time (RFC 3339, “YYYY-MM-DD HH:MM:SS” in UTC, or Unix seconds or milliseconds): ignored."})
+
+	// values quoted in notes and errors: one line, clipped
+	long := "no\npe " + strings.Repeat("x", 300)
+	b = parse(t, ParseGeneric, "application/json", `{"service": "VPN", "status": "`+strings.ReplaceAll(long, "\n", `\n`)+`"}`)
+	equal(t, "unknown status, clipped", b.Notes, []string{"Status “no pe " + strings.Repeat("x", 73) + "…” is neither a problem nor a recovery: ignored."})
+	_, err = ParseGeneric(&Request{Body: []byte(`{"service": "VPN", "status": "down", "impact": "` + strings.ReplaceAll(long, "\n", `\n`) + `"}`)})
+	equal(t, "unknown impact, clipped", err.Error(), "unknown impact “no pe "+strings.Repeat("x", 73)+"…”: send degraded, partial_outage or major_outage, or leave it out")
 
 	// errors
 	parseError(t, ParseGeneric, `{"service": "VPN"}`, "the status is missing")
@@ -282,6 +399,37 @@ func TestParseAlertmanager(t *testing.T) {
 		"labels": {"alertname": "TestAlert", "instance": "Grafana"}, "annotations": {"summary": "Notification test"}, "fingerprint": "x"}]}`)
 	equal(t, "grafana test", b.Test, true)
 
+	// Grafana's alerts for a rule it could not evaluate keep the rule's
+	// labels and annotations, with the rule's name as rulename: ignored,
+	// firing or resolved. An alert of such a name without rulename is not
+	// one of them.
+	b = parse(t, ParseAlertmanager, "application/json", `{"receiver": "status-page", "status": "firing", "orgId": 1, "alerts": [
+		{"status": "firing", "labels": {"alertname": "DatasourceError", "rulename": "VPN gateway", "datasource_uid": "P1809F7CD0C75ACF3",
+		 "grafana_folder": "Network", "statuspage_service": "VPN", "severity": "critical"},
+		 "annotations": {"summary": "VPN gateway unreachable", "Error": "failed to execute query A: connection refused"},
+		 "startsAt": "2026-11-16T10:00:00Z", "endsAt": "0001-01-01T00:00:00Z", "fingerprint": "8a3d5c1f2b9e7d04"},
+		{"status": "resolved", "labels": {"alertname": "DatasourceNoData", "rulename": "Mail queue", "statuspage_service": "Mail"},
+		 "annotations": {}, "startsAt": "2026-11-16T09:00:00Z", "endsAt": "2026-11-16T09:30:00Z", "fingerprint": "1b2c3d4e5f607182"},
+		{"status": "firing", "labels": {"alertname": "DatasourceNoData", "rulename": "Disk\nfull", "statuspage_service": "Mail"}, "fingerprint": "aa"},
+		{"status": "resolved", "labels": {"alertname": "DatasourceError", "rulename": "Disk"}, "fingerprint": "bb"},
+		{"status": "firing", "labels": {"alertname": "DatasourceError", "service": "VPN"}, "fingerprint": "cc"}]}`)
+	equal(t, "not evaluated", b.Notes, []string{
+		"Alert 1: Grafana could not evaluate the rule “VPN gateway” (DatasourceError): ignored.",
+		"Alert 2: Grafana receives data for the rule “Mail queue” again (DatasourceNoData resolved): ignored.",
+		"Alert 3: Grafana received no data for the rule “Disk full” (DatasourceNoData): ignored.",
+		"Alert 4: Grafana can evaluate the rule “Disk” again (DatasourceError resolved): ignored.",
+	})
+	equal(t, "without rulename", b.Alerts, []Alert{{Key: "cc", Firing: true, Targets: []string{"VPN", "DatasourceError"}, Title: "DatasourceError"}})
+
+	// values quoted in notes: one line, clipped
+	long := strings.Repeat("y", 100)
+	b = parse(t, ParseAlertmanager, "application/json", `{"alerts": [{"status": "odd\n`+long+`", "fingerprint": "a"},
+		{"status": "firing", "labels": {"service": "VPN", "statuspage_impact": "huge\n`+long+`"}, "fingerprint": "b"}]}`)
+	equal(t, "clipped notes", b.Notes, []string{
+		"Alert 1: status “odd " + strings.Repeat("y", 75) + "…” is neither firing nor resolved: ignored.",
+		"Alert 2: unknown statuspage_impact “huge " + strings.Repeat("y", 74) + "…” (use degraded, partial_outage or major_outage): the severity decides.",
+	})
+
 	// an alert without fingerprint is identified by its labels
 	b1 := parse(t, ParseAlertmanager, "", `{"alerts": [{"status": "firing", "labels": {"a": "1", "b": "2"}}]}`)
 	b2 := parse(t, ParseAlertmanager, "", `{"alerts": [{"status": "resolved", "labels": {"b": "2", "a": "1"}}]}`)
@@ -308,17 +456,29 @@ func kumaPayloadJSON(status int, msg string) string {
 }
 
 func TestParseUptimeKuma(t *testing.T) {
+	// The heartbeat of the change to down is important: its time (UTC) is
+	// when the problem began.
 	b := parse(t, ParseUptimeKuma, "application/json", kumaPayloadJSON(0, "connect ECONNREFUSED"))
 	equal(t, "down", b.Alerts, []Alert{{
 		Key: "monitor:7", Firing: true, Targets: []string{"VPN", "", "VPN gateway", "", "https://vpn.example.com"},
-		Title: "VPN gateway is down", Message: "connect ECONNREFUSED",
+		Title: "VPN gateway is down", Message: "connect ECONNREFUSED", StartsAt: time.Date(2026, 11, 16, 10, 2, 0, 123e6, time.UTC),
 	}})
+	// A resend while the monitor stays down is not important: no start.
+	resend := strings.Replace(kumaPayloadJSON(0, "timeout"), `"important": true`, `"important": false`, 1)
+	b = parse(t, ParseUptimeKuma, "application/json", resend)
+	equal(t, "resend firing", b.Alerts[0].Firing, true)
+	equal(t, "resend without a start", b.Alerts[0].StartsAt, time.Time{})
+	b = parse(t, ParseUptimeKuma, "application/json", strings.Replace(kumaPayloadJSON(0, "timeout"), `"important": true`, `"important": 1`, 1))
+	equal(t, "important as a number", b.Alerts[0].StartsAt, time.Date(2026, 11, 16, 10, 2, 0, 123e6, time.UTC))
 	b = parse(t, ParseUptimeKuma, "application/json", kumaPayloadJSON(1, "200 - OK"))
 	equal(t, "up", b.Alerts[0].Firing, false)
 	equal(t, "up key", b.Alerts[0].Key, "monitor:7")
+	equal(t, "up without a start", b.Alerts[0].StartsAt, time.Time{})
 	b = parse(t, ParseUptimeKuma, "application/json", kumaPayloadJSON(2, "timeout"))
 	equal(t, "pending", len(b.Alerts), 0)
 	equal(t, "pending note", b.Notes, []string{"“VPN gateway” is pending: nothing to change."})
+	b = parse(t, ParseUptimeKuma, "application/json", strings.Replace(kumaPayloadJSON(2, "timeout"), `"name": "VPN gateway"`, `"name": "VPN\ngateway`+strings.Repeat(" x", 100)+`"`, 1))
+	equal(t, "a name in a note: one line, clipped", b.Notes, []string{"“VPN gateway" + strings.Repeat(" x", 34) + "…” is pending: nothing to change."})
 
 	b = parse(t, ParseUptimeKuma, "application/json", `{"heartbeat": null, "monitor": null, "msg": "Status page Testing"}`)
 	equal(t, "test", b.Test, true)
@@ -376,8 +536,227 @@ func TestParseAzureMonitor(t *testing.T) {
 	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(azureSample, `"customProperties": {"Key1": "Value1", "Key2": "Value2"}`, `"customProperties": null`, 1))
 	equal(t, "no custom properties", len(b.Alerts), 1)
 
+	// The custom property service comes after statuspage_service, before
+	// the rule's name.
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(fired, `{"StatusPage_Service": "ERP", "statuspage_impact": "degraded"}`,
+		`{"Service": "Networking", "Owner": "Team A"}`, 1))
+	equal(t, "custom property service", b.Alerts[0].Targets[:3], []string{"", "Networking", "WCUS-R2-Gen2"})
+
+	// values quoted in notes: one line, clipped
+	long := strings.Repeat("z", 100)
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(azureSample, `"Resolved"`, `"Odd\n`+long+`"`, 1))
+	equal(t, "clipped condition", b.Notes, []string{"Monitor condition “Odd " + strings.Repeat("z", 75) + "…” is neither Fired nor Resolved: ignored."})
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(fired, `"degraded"`, `"huge\n`+long+`"`, 1))
+	equal(t, "clipped impact", b.Notes, []string{"Unknown custom property statuspage_impact “huge " + strings.Repeat("z", 74) + "…” (use degraded, partial_outage or major_outage): the severity decides."})
+
 	parseError(t, ParseAzureMonitor, `{"schemaId": "Microsoft.Insights/activityLogs", "data": {}}`, "common alert schema")
 	parseError(t, ParseAzureMonitor, `{"status": "Activated", "context": {}}`, "common alert schema")
+}
+
+// azureActivity returns an activity log alert: essentials like those of the
+// sample test actions of Microsoft Learn, for monitoringService and with
+// the alert id id, and the alert context context – as a JSON object, or as
+// the samples give it, {"alertContext": {…}}.
+func azureActivity(monitoringService, id, context string) string {
+	var wrapped struct {
+		AlertContext json.RawMessage `json:"alertContext"`
+	}
+	if json.Unmarshal([]byte(context), &wrapped) == nil && wrapped.AlertContext != nil {
+		context = string(wrapped.AlertContext)
+	}
+	return `{"schemaId": "azureMonitorCommonAlertSchema", "data": {"essentials": {
+		"alertId": "/subscriptions/aaaa0a0a-bb1b-cc2c-dd3d-eeeeee4e4e4e/providers/Microsoft.AlertsManagement/alerts/` + id + `",
+		"alertRule": "VPN health", "severity": "Sev4", "signalType": "Activity Log", "monitorCondition": "Fired",
+		"monitoringService": "` + monitoringService + `",
+		"alertTargetIDs": ["/subscriptions/aaaa0a0a-bb1b-cc2c-dd3d-eeeeee4e4e4e/resourcegroups/net-rg/providers/microsoft.compute/virtualmachines/vpn-vm"],
+		"configurationItems": ["vpn-vm"], "firedDateTime": "2026-11-16T10:05:00.000Z", "description": "VPN gateway VM",
+		"essentialsVersion": "1.0", "alertContextVersion": "1.0"},
+		"alertContext": ` + context + `, "customProperties": {"statuspage_service": "VPN"}}}`
+}
+
+// Activity log alerts are stateless (always Fired): Service Health and
+// Resource Health alerts are read from their alert context, the others
+// ignored.
+func TestParseAzureActivityLog(t *testing.T) {
+	// Service Health: the sample test action is an incident in the stage
+	// Resolved (Azure sent it as Fired); the tracking id is the key.
+	b := parse(t, ParseAzureMonitor, "application/json", azureServiceHealthTest)
+	equal(t, "service health resolved", b.Alerts, []Alert{{
+		Key: "servicehealth:TEST-TTT", Targets: []string{"", "", "test-ServiceHealthAlertRule", "aaaa0a0a-bb1b-cc2c-dd3d-eeeeee4e4e4e"},
+		Title: "test-ServiceHealthAlertRule", Message: "TestActionGroup-TestServiceHealthAlert", Severity: "Sev4",
+		StartsAt: time.Date(2025, 4, 15, 18, 20, 36, 256e6, time.UTC),
+	}})
+	equal(t, "no notes", len(b.Notes), 0)
+	active := strings.Replace(strings.Replace(azureServiceHealthTest, `"stage": "Resolved"`, `"stage": "Active"`, 1), `"status": "Resolved"`, `"status": "Active"`, 1)
+	b = parse(t, ParseAzureMonitor, "application/json", active)
+	equal(t, "service health active", b.Alerts[0].Firing, true)
+	equal(t, "same key", b.Alerts[0].Key, "servicehealth:TEST-TTT")
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(azureServiceHealthTest, `"stage": "Resolved"`, `"stage": "RCA"`, 1))
+	equal(t, "root cause analysis: over", len(b.Alerts) == 1 && !b.Alerts[0].Firing, true)
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(active, `"stage": "Active",`, ``, 1))
+	equal(t, "no stage: the status", b.Alerts[0].Firing, true)
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(active, `"stage": "Active"`, `"stage": "Odd"`, 1))
+	equal(t, "unknown stage", b.Notes, []string{"“test-ServiceHealthAlertRule”: stage “Odd” of the Service Health incident TEST-TTT is neither Active nor Resolved: ignored."})
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(active, `"trackingId": "TEST-TTT",`, ``, 1))
+	equal(t, "no tracking id", b.Notes, []string{"“test-ServiceHealthAlertRule”: a Service Health incident without a tracking id: ignored."})
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(active, `"incidentType": "Incident"`, `"incidentType": "Security"`, 1))
+	equal(t, "security advisory", b.Notes, []string{"“test-ServiceHealthAlertRule”: a Service Health notice of the type “Security”, not an incident: ignored."})
+	// A planned maintenance (the alert context of Microsoft Learn): ignored.
+	b = parse(t, ParseAzureMonitor, "application/json", azureActivity("ServiceHealth", "m1", azureServiceHealthContext))
+	equal(t, "maintenance", b.Notes, []string{"“VPN health”: a Service Health notice of the type “Maintenance”, not an incident: ignored."})
+	equal(t, "maintenance alerts", len(b.Alerts), 0)
+
+	// Resource Health: the sample test action, Unavailable after Available:
+	// a major outage from the time of the event; the resource is the key.
+	resourceKey := "resourcehealth:/subscriptions/aaaa0a0a-bb1b-cc2c-dd3d-eeeeee4e4e4e/resourcegroups/test-rg/providers/microsoft.compute/virtualmachines/test-vm"
+	b = parse(t, ParseAzureMonitor, "application/json", azureResourceHealthTest)
+	equal(t, "resource unavailable", b.Alerts, []Alert{{
+		Key: resourceKey, Firing: true, Targets: []string{"", "", "test-ResourceHealthAlertRule", "test-VM", "test-VM"},
+		Title: "test-ResourceHealthAlertRule", Message: "Rebooted by user", Severity: "critical",
+		StartsAt: time.Date(2025, 4, 15, 18, 19, 45, 304e6, time.UTC),
+	}})
+	degraded := strings.Replace(strings.Replace(azureResourceHealthTest, `"currentHealthStatus": "Unavailable"`, `"currentHealthStatus": "Degraded"`, 1),
+		`"previousHealthStatus": "Available"`, `"previousHealthStatus": "Unavailable"`, 1)
+	b = parse(t, ParseAzureMonitor, "application/json", degraded)
+	equal(t, "degraded", b.Alerts[0].Firing && b.Alerts[0].Severity == "warning" && b.Alerts[0].Key == resourceKey, true)
+	equal(t, "still unhealthy: no start", b.Alerts[0].StartsAt, time.Time{})
+	available := strings.Replace(strings.Replace(azureResourceHealthTest, `"currentHealthStatus": "Unavailable"`, `"currentHealthStatus": "Available"`, 1),
+		`"previousHealthStatus": "Available"`, `"previousHealthStatus": "Unavailable"`, 1)
+	b = parse(t, ParseAzureMonitor, "application/json", available)
+	equal(t, "available again", len(b.Alerts) == 1 && !b.Alerts[0].Firing && b.Alerts[0].Key == resourceKey, true)
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(azureResourceHealthTest, `"currentHealthStatus": "Unavailable"`, `"currentHealthStatus": "Unknown"`, 1))
+	equal(t, "unknown", b.Notes, []string{"“test-ResourceHealthAlertRule”: the health of the resource is “Unknown”: ignored."})
+	noHealth := strings.Replace(azureResourceHealthTest, `"currentHealthStatus": "Unavailable"`, `"currentHealthStatus": null`, 1)
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(noHealth, `"status": "Active"`, `"status": "Updated"`, 1))
+	equal(t, "updated without a health", b.Notes, []string{"“test-ResourceHealthAlertRule”: a Resource Health event without a health status: nothing to change."})
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(noHealth, `"status": "Active"`, `"status": "Resolved"`, 1))
+	equal(t, "resolved without a health", len(b.Alerts) == 1 && !b.Alerts[0].Firing, true)
+	// The alert context of Microsoft Learn (monitoringService ResourceHealth,
+	// without a space), with custom properties.
+	b = parse(t, ParseAzureMonitor, "application/json", azureActivity("ResourceHealth", "r1", azureResourceHealthContext))
+	equal(t, "resource health context", b.Alerts, []Alert{{
+		Key:    "resourcehealth:/subscriptions/aaaa0a0a-bb1b-cc2c-dd3d-eeeeee4e4e4e/resourcegroups/net-rg/providers/microsoft.compute/virtualmachines/vpn-vm",
+		Firing: true, Targets: []string{"VPN", "", "VPN health", "vpn-vm", "vpn-vm"}, Title: "VPN health",
+		Message:  "This virtual machine is stopping and deallocating as requested by an authorized user or process",
+		Severity: "critical", StartsAt: time.Date(2019, 6, 24, 15, 42, 54, 74e6, time.UTC),
+	}})
+
+	// Other activity log alerts never resolve: ignored.
+	b = parse(t, ParseAzureMonitor, "application/json", azureActivityLogTest)
+	equal(t, "administrative", b.Notes, []string{"“test-activityLogAlertRule” is an activity log alert (Activity Log - Administrative), which never resolves: ignored (of the activity log alerts, only Service Health and Resource Health alerts are read)."})
+	equal(t, "administrative alerts", len(b.Alerts), 0)
+	b = parse(t, ParseAzureMonitor, "application/json", azureActivity("Activity Log - Security", "s1", `{"eventSource": "Security", "status": "Active", "properties": {"severity": "Low"}}`))
+	equal(t, "security", len(b.Alerts) == 0 && len(b.Notes) == 1, true)
+}
+
+// ------------------------------------------------------------------ PRTG
+
+// prtgBody is the payload of the instructions as PRTG sends it, with the
+// status status.
+func prtgBody(status string) string {
+	return "key=2041&status=" + url.QueryEscape(status) + "&service=vpn-gw01&service=Network&title=vpn-gw01: Ping&message=Request timed out"
+}
+
+// The status is the sensor's current status: Down in any form is a
+// problem, every other status of PRTG its end.
+func TestParsePRTG(t *testing.T) {
+	for status, want := range map[string]Alert{
+		"Down":                      {Firing: true},
+		"Down (Partial)":            {Firing: true, Severity: "partial"},
+		"Down (Acknowledged)":       {Firing: true},
+		"Down (was: Up)":            {Firing: true},
+		"Warning ended (now: Down)": {Firing: true},
+		"Up":                        {},
+		"Warning":                   {},
+		"Unusual":                   {},
+		"Paused (paused by user)":   {},
+		"Paused by parent":          {},
+		"Unknown":                   {},
+		"None":                      {},
+		"Down ended (now: Warning)": {},
+		"Down ended (now: Up)":      {},
+		"Up (was: Down)":            {},
+	} {
+		b := parse(t, ParsePRTG, "application/x-www-form-urlencoded", prtgBody(status))
+		want.Key, want.Targets, want.Title, want.Message = "2041", []string{"vpn-gw01", "Network"}, "vpn-gw01: Ping", "Request timed out"
+		equal(t, status, b.Alerts, []Alert{want})
+	}
+	b := parse(t, ParsePRTG, "application/x-www-form-urlencoded", prtgBody("Down")+"&severity=warning")
+	equal(t, "the field severity wins", b.Alerts[0].Severity, "warning")
+
+	// The test of a notification template sends the placeholders unfilled.
+	b = parse(t, ParsePRTG, "application/x-www-form-urlencoded", "key=%sensorid&status=%laststatus&service=%device&service=%group&title=%device: %name&message=%message")
+	equal(t, "test", b.Test, true)
+	// A status PRTG did not fill in (%laststatus before 20.1.57) is no state.
+	b = parse(t, ParsePRTG, "application/x-www-form-urlencoded", "key=2041&status=%laststatus&service=vpn-gw01")
+	equal(t, "unfilled status", b.Notes, []string{"Status “%laststatus” is neither a problem nor a recovery: ignored."})
+	equal(t, "unfilled status: no test", b.Test, false)
+}
+
+// ------------------------------------------------------------------ Datadog
+
+// datadogBody is the payload of the instructions as Datadog sends it, with
+// the variables vars filled in.
+func datadogBody(vars map[string]string) string {
+	body := Lookup("datadog").Example
+	for k, v := range map[string]string{"$AGGREG_KEY": "9bd4ac313a4d1e8fae2482df7b77628", "$TAGS[statuspage_service]": "", "$TAGS[service]": "vpn",
+		"$HOSTNAME": "vpn-gw01", "$ALERT_TITLE": "[Triggered on {host:vpn-gw01}] Host is Down", "$TEXT_ONLY_MSG": "No data"} {
+		if _, ok := vars[k]; !ok {
+			vars[k] = v
+		}
+	}
+	for k, v := range vars {
+		body = strings.ReplaceAll(body, k, v)
+	}
+	return body
+}
+
+// The transition says whether the monitor alerts, the alert type how
+// badly; a Renotify counts only with the alert type error or warning.
+func TestParseDatadog(t *testing.T) {
+	for _, tc := range []struct {
+		transition, alertType string
+		firing                bool
+		severity              string
+	}{
+		{"Triggered", "error", true, "critical"},
+		{"Re-Triggered", "error", true, "critical"},
+		{"Triggered", "", true, ""}, // the payload before the alert type: a major outage
+		{"Warn", "warning", true, "warning"},
+		{"Re-Warn", "warning", true, "warning"},
+		{"Warn", "", true, "warning"},
+		{"Renotify", "warning", true, "warning"},
+		{"Renotify", "error", true, "critical"},
+		{"Recovered", "success", false, ""},
+	} {
+		b := parse(t, ParseDatadog, "application/json", datadogBody(map[string]string{"$ALERT_TRANSITION": tc.transition, "$ALERT_TYPE": tc.alertType}))
+		equal(t, tc.transition+"/"+tc.alertType, b.Alerts, []Alert{{Key: "9bd4ac313a4d1e8fae2482df7b77628", Firing: tc.firing,
+			Targets: []string{"vpn", "vpn-gw01"}, Title: "[Triggered on {host:vpn-gw01}] Host is Down", Message: "No data", Severity: tc.severity}})
+	}
+	for _, tc := range []struct{ transition, alertType, note string }{
+		{"No Data", "error", "Status “No Data” is neither a problem nor a recovery: ignored."},
+		{"Re-No Data", "info", "Status “Re-No Data” is neither a problem nor a recovery: ignored."},
+		{"Renotify", "info", "Status “Renotify” of the alert type “info”, neither error nor warning (e.g. No Data): ignored."},
+		{"Renotify", "", "Status “Renotify” without the alert type: ignored (send \"severity\": \"$ALERT_TYPE\" as in the payload of the instructions)."},
+	} {
+		b := parse(t, ParseDatadog, "application/json", datadogBody(map[string]string{"$ALERT_TRANSITION": tc.transition, "$ALERT_TYPE": tc.alertType}))
+		equal(t, tc.transition+"/"+tc.alertType+": no alert", len(b.Alerts), 0)
+		equal(t, tc.transition+"/"+tc.alertType+": note", b.Notes, []string{tc.note})
+	}
+
+	// Test Notifications: [TEST] among the tags the title starts with.
+	for title, test := range map[string]bool{
+		"[TEST] [Triggered on {host:vpn-gw01}] Host is Down": true,
+		"[P2] [Triggered] [TEST] Test Monitor":               true,
+		"[test] Host is Down":                                true,
+		"[Triggered on {host:vpn-gw01}] Host is Down":        false,
+		"Host [TEST] is Down":                                false,
+		"[Triggered on {host:vpn-gw01} Host is Down":         false,
+	} {
+		b := parse(t, ParseDatadog, "application/json", datadogBody(map[string]string{"$ALERT_TRANSITION": "Triggered", "$ALERT_TYPE": "error", "$ALERT_TITLE": title}))
+		equal(t, title, b.Test, test)
+		equal(t, title+": alerts", len(b.Alerts) == 0, test)
+	}
 }
 
 // ------------------------------------------------------------------ providers
@@ -414,10 +793,15 @@ func TestProviderExamples(t *testing.T) {
 		want            Alert
 	}{
 		{"datadog", "application/json", map[string]string{
-			"$AGGREG_KEY": "9bd4ac313a4d1e8fae2482df7b77628", "$ALERT_TRANSITION": "Re-Triggered", "$TAGS[statuspage_service]": "",
+			"$AGGREG_KEY": "9bd4ac313a4d1e8fae2482df7b77628", "$ALERT_TRANSITION": "Re-Triggered", "$ALERT_TYPE": "error", "$TAGS[statuspage_service]": "",
 			"$TAGS[service]": "vpn", "$HOSTNAME": "vpn-gw01", "$ALERT_TITLE": "[Triggered on {host:vpn-gw01}] Host is Down", "$TEXT_ONLY_MSG": "No data",
 		}, Alert{Key: "9bd4ac313a4d1e8fae2482df7b77628", Firing: true, Targets: []string{"vpn", "vpn-gw01"},
-			Title: "[Triggered on {host:vpn-gw01}] Host is Down", Message: "No data"}},
+			Title: "[Triggered on {host:vpn-gw01}] Host is Down", Message: "No data", Severity: "critical"}},
+		{"datadog", "application/json", map[string]string{
+			"$AGGREG_KEY": "9bd4ac313a4d1e8fae2482df7b77628", "$ALERT_TRANSITION": "Renotify", "$ALERT_TYPE": "warning", "$TAGS[statuspage_service]": "VPN",
+			"$TAGS[service]": "vpn", "$HOSTNAME": "vpn-gw01", "$ALERT_TITLE": "[Warn on {host:vpn-gw01}] Packet loss", "$TEXT_ONLY_MSG": "",
+		}, Alert{Key: "9bd4ac313a4d1e8fae2482df7b77628", Firing: true, Targets: []string{"VPN", "vpn", "vpn-gw01"},
+			Title: "[Warn on {host:vpn-gw01}] Packet loss", Severity: "warning"}},
 		{"uptimerobot", "application/json", map[string]string{
 			"*monitorID*": "778899", "*alertTypeFriendlyName*": "Down", "*monitorFriendlyName*": "VPN", "*alertDetails*": "Connection Timeout",
 		}, Alert{Key: "778899", Firing: true, Targets: []string{"VPN"}, Title: "VPN", Message: "Connection Timeout"}},
@@ -440,15 +824,61 @@ func TestProviderExamples(t *testing.T) {
 	equal(t, "zabbix", b.Alerts, []Alert{{Key: "4711", Targets: []string{"{EVENT.TAGS.statuspage_service}", "vpn-gw01"},
 		Title: "Unavailable by ICMP ping", Severity: "High"}})
 
-	// Nagios: what curl --data-urlencode sends.
-	b = parse(t, Lookup("nagios").Parse, "application/x-www-form-urlencoded",
-		"key=vpn-gw01%2FPING&status=CRITICAL&service=PING&service=vpn-gw01&title=PING+on+vpn-gw01&message=PING+CRITICAL+-+Packet+loss+%3D+100%25")
-	equal(t, "nagios", b.Alerts, []Alert{{Key: "vpn-gw01/PING", Firing: true, Targets: []string{"PING", "vpn-gw01"},
-		Title: "PING on vpn-gw01", Message: "PING CRITICAL - Packet loss = 100%", Severity: "critical"}})
+	// Nagios: the bodies curl sends for the commands of the example, with
+	// the macros filled in; it tries again for a while within Nagios'
+	// notification timeout (30 s): at most 15 s of retries, 10 s per try.
+	nagios := Lookup("nagios").Example
+	for _, want := range []string{"-m 10 ", "--retry 4 ", "--retry-connrefused ", "--retry-max-time 15 "} {
+		if strings.Count(nagios, want) != 2 {
+			t.Errorf("nagios: both commands should have %q", want)
+		}
+	}
+	macros := strings.NewReplacer("$HOSTNAME$", "vpn-gw01", "$SERVICEDESC$", "PING", "$SERVICESTATE$", "CRITICAL", "$LASTSERVICEOK$", "1794823323",
+		"$SERVICEOUTPUT$", "PING CRITICAL - Packet loss = 100%", "$HOSTSTATE$", "DOWN", "$LASTHOSTUP$", "0", "$HOSTOUTPUT$", "CRITICAL - 10.0.0.1: rta nan, lost 100%")
+	commands := strings.Split(nagios, "define command")
+	equal(t, "nagios commands", len(commands), 3)
+	for i, want := range []Alert{
+		{Key: "vpn-gw01/PING", Firing: true, Targets: []string{"PING", "vpn-gw01"}, Title: "PING on vpn-gw01",
+			Message: "PING CRITICAL - Packet loss = 100%", Severity: "critical", StartsAt: time.Date(2026, 11, 16, 10, 2, 3, 0, time.UTC)},
+		{Key: "vpn-gw01", Firing: true, Targets: []string{"vpn-gw01"}, Title: "vpn-gw01", Message: "CRITICAL - 10.0.0.1: rta nan, lost 100%"}, // never up: no start
+	} {
+		b = parse(t, Lookup("nagios").Parse, "application/x-www-form-urlencoded", curlFormBody(t, macros.Replace(commands[i+1])))
+		equal(t, "nagios", b.Alerts, []Alert{want})
+	}
 
-	// The generic example.
+	// Alertmanager: a webhook of an existing receiver; the routes stay.
+	am := Lookup("alertmanager").Example
+	for _, want := range []string{"receivers:\n", "    webhook_configs:\n      - url: '{url}'\n        send_resolved: true"} {
+		if !strings.Contains(am, want) {
+			t.Errorf("alertmanager: the example lacks %q", want)
+		}
+	}
+	if strings.Contains(am, "routes:") || strings.Contains(am, "continue:") {
+		t.Error("alertmanager: the example should not change the routes")
+	}
+
+	// The generic example; PowerShell sends UTF-8 only with the charset.
 	b = parse(t, ParseGeneric, "application/json", `{"service": "VPN", "status": "down", "title": "VPN gateway unreachable"}`)
 	equal(t, "generic", b.Alerts, []Alert{{Key: "service:vpn", Firing: true, Targets: []string{"VPN"}, Title: "VPN gateway unreachable"}})
+	if !strings.Contains(Lookup(Generic).Example, "-ContentType 'application/json; charset=utf-8'") {
+		t.Error("generic: PowerShell must send the charset (Windows PowerShell 5.1 encodes the body as ISO-8859-1 without it)")
+	}
+}
+
+// curlFormBody returns the form body that a curl command line sends with
+// its --data-urlencode 'name=content' arguments.
+func curlFormBody(t *testing.T, command string) string {
+	t.Helper()
+	var fields []string
+	for _, arg := range strings.Split(command, "--data-urlencode '")[1:] {
+		arg, _, _ = strings.Cut(arg, "'")
+		name, content, ok := strings.Cut(arg, "=")
+		if !ok {
+			t.Fatalf("curl argument %q", arg)
+		}
+		fields = append(fields, name+"="+url.QueryEscape(content))
+	}
+	return strings.Join(fields, "&")
 }
 
 func TestRedactPath(t *testing.T) {

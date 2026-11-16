@@ -1,0 +1,339 @@
+package monitoring
+
+// What the requests of particular monitoring tools do, through the
+// handler: Grafana's alerts for rules it cannot evaluate, Azure's activity
+// log alerts, PRTG's states, Datadog's tests and renotifications, and the
+// starts that Uptime Kuma and the generic format report.
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/szilvasidave/status-page-tool/internal/store"
+)
+
+// created sets when the integration was created: incidents do not start
+// before it.
+func (e *hookEnv) created(in *store.Integration, at time.Time) {
+	e.t.Helper()
+	if _, err := e.store.DB().ExecContext(ctx, `UPDATE integrations SET created_at = ? WHERE id = ?`, at.Unix(), in.ID); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// resolve resolves an incident as an editor does.
+func (e *hookEnv) resolve(id int64) {
+	e.t.Helper()
+	if err := e.store.AddIncidentUpdate(ctx, id, &store.IncidentUpdate{Status: store.IncidentResolved, Message: "Fixed."}, nil); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// onlyOpen returns the one open incident.
+func (e *hookEnv) onlyOpen(what string) *store.Incident {
+	e.t.Helper()
+	open := e.openIncidents()
+	if len(open) != 1 {
+		e.t.Fatalf("%s: %d open incidents, want 1", what, len(open))
+	}
+	return &open[0]
+}
+
+func TestToolsGrafanaNotEvaluated(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN")
+		in, token := e.integration("grafana", nil)
+		// The data source of a rule labelled for VPN fails: Grafana sends
+		// DatasourceError with the rule's labels and annotations.
+		body := `{"receiver": "status-page", "status": "firing", "orgId": 1, "alerts": [{"status": "firing",
+			"labels": {"alertname": "DatasourceError", "rulename": "VPN gateway", "datasource_uid": "P1809F7CD0C75ACF3",
+			"grafana_folder": "Network", "statuspage_service": "VPN", "severity": "critical"},
+			"annotations": {"summary": "VPN gateway unreachable", "Error": "failed to execute query A: connection refused"},
+			"startsAt": "2026-11-16T10:00:00Z", "endsAt": "0001-01-01T00:00:00Z", "fingerprint": "8a3d5c1f2b9e7d04"}]}`
+		r := e.post(Path+"/"+token, "application/json", body)
+		equal(t, "status", r.body.Status, "ok")
+		equal(t, "summary", r.body.Summary, []string{"Alert 1: Grafana could not evaluate the rule “VPN gateway” (DatasourceError): ignored."})
+		equal(t, "nothing opened", len(e.openIncidents()), 0)
+		equal(t, "no e-mail", len(e.notifier.calls), 0)
+		if outcome := e.events(in)[0].Outcome; outcome == store.EventChanged {
+			t.Fatalf("outcome %q", outcome)
+		}
+		r = e.post(Path+"/"+token, "application/json", strings.ReplaceAll(body, "DatasourceError", "DatasourceNoData"))
+		equal(t, "no data", r.body.Summary, []string{"Alert 1: Grafana received no data for the rule “VPN gateway” (DatasourceNoData): ignored."})
+		equal(t, "still nothing opened", len(e.openIncidents()), 0)
+	})
+}
+
+// newAlertID replaces the alert id of an Azure alert: each event of an
+// activity log alert is an alert of its own.
+func newAlertID(body string, n int) string {
+	i := strings.Index(body, `"alertId": "`) + len(`"alertId": "`)
+	end := i + strings.Index(body[i:], `"`)
+	return body[:i] + fmt.Sprintf("%s-%d", body[i:end], n) + body[end:]
+}
+
+func TestToolsAzureServiceHealth(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("Azure SQL", "test-ServiceHealthAlertRule")
+		in, token := e.integration("azuremonitor", nil)
+		e.created(in, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+		url := Path + "/" + token
+
+		// The test action of the action group: an incident in the stage
+		// Resolved (sent as Fired) – nothing was firing.
+		e.post(url, "application/json", azureServiceHealthTest)
+		equal(t, "the test action opens nothing", len(e.openIncidents()), 0)
+
+		// The incident is active: degraded performance (Sev4) since its
+		// impact started.
+		active := strings.Replace(strings.Replace(azureServiceHealthTest, `"stage": "Resolved"`, `"stage": "Active"`, 1), `"status": "Resolved"`, `"status": "Active"`, 1)
+		e.post(url, "application/json", newAlertID(active, 1))
+		inc := e.onlyOpen("active")
+		equal(t, "impact", inc.Impact(), store.StatusDegraded)
+		equal(t, "start", inc.StartedAt.Unix(), time.Date(2025, 4, 15, 18, 20, 36, 0, time.UTC).Unix())
+		equal(t, "e-mail", e.notifier.calls, []string{fmt.Sprintf("created %d", inc.ID)})
+
+		// More notices of the incident (new alert ids, the same tracking
+		// id) are repeats.
+		e.post(url, "application/json", newAlertID(active, 2))
+		equal(t, "a repeat", e.onlyOpen("repeat").ID, inc.ID)
+		equal(t, "repeat: firing alerts", len(e.firing(in)), 1)
+
+		// Resolved: the incident is resolved; the root cause analysis later
+		// changes nothing.
+		e.post(url, "application/json", newAlertID(azureServiceHealthTest, 3))
+		equal(t, "resolved", len(e.openIncidents()), 0)
+		equal(t, "resolved: e-mails", e.notifier.calls, []string{fmt.Sprintf("created %d", inc.ID), fmt.Sprintf("updated %d", inc.ID)})
+		e.post(url, "application/json", newAlertID(strings.Replace(azureServiceHealthTest, `"stage": "Resolved"`, `"stage": "RCA"`, 1), 4))
+		equal(t, "after the RCA", len(e.openIncidents()), 0)
+
+		// A planned maintenance is no incident.
+		r := e.post(url, "application/json", azureActivity("ServiceHealth", "m1", azureServiceHealthContext))
+		equal(t, "maintenance", r.body.Summary, []string{"“VPN health”: a Service Health notice of the type “Maintenance”, not an incident: ignored."})
+		equal(t, "maintenance opens nothing", len(e.openIncidents()), 0)
+	})
+}
+
+func TestToolsAzureResourceHealth(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN", "test-VM")
+		in, token := e.integration("azuremonitor", nil)
+		e.created(in, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+		url := Path + "/" + token
+
+		// The test action: test-VM became Unavailable – a major outage since
+		// the event.
+		e.post(url, "application/json", azureResourceHealthTest)
+		inc := e.onlyOpen("unavailable")
+		equal(t, "impact", inc.Impact(), store.StatusMajorOutage)
+		equal(t, "start", inc.StartedAt.Unix(), time.Date(2025, 4, 15, 18, 19, 45, 0, time.UTC).Unix())
+
+		// Degraded: the same incident, degraded performance.
+		degraded := strings.Replace(strings.Replace(azureResourceHealthTest, `"currentHealthStatus": "Unavailable"`, `"currentHealthStatus": "Degraded"`, 1),
+			`"previousHealthStatus": "Available"`, `"previousHealthStatus": "Unavailable"`, 1)
+		e.post(url, "application/json", newAlertID(degraded, 1))
+		inc2 := e.onlyOpen("degraded")
+		equal(t, "the same incident", inc2.ID, inc.ID)
+		equal(t, "degraded impact", inc2.Impact(), store.StatusDegraded)
+
+		// Unknown says nothing about the resource.
+		r := e.post(url, "application/json", newAlertID(strings.Replace(degraded, `"currentHealthStatus": "Degraded"`, `"currentHealthStatus": "Unknown"`, 1), 2))
+		equal(t, "unknown", r.body.Summary, []string{"“test-ResourceHealthAlertRule”: the health of the resource is “Unknown”: ignored."})
+		equal(t, "still degraded", e.onlyOpen("unknown").Impact(), store.StatusDegraded)
+
+		// Available again: resolved.
+		available := strings.Replace(strings.Replace(azureResourceHealthTest, `"currentHealthStatus": "Unavailable"`, `"currentHealthStatus": "Available"`, 1),
+			`"previousHealthStatus": "Available"`, `"previousHealthStatus": "Degraded"`, 1)
+		e.post(url, "application/json", newAlertID(available, 3))
+		equal(t, "resolved", len(e.openIncidents()), 0)
+		equal(t, "no firing alert", len(e.firing(in)), 0)
+	})
+}
+
+func TestToolsAzureOtherActivityLog(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN", "test-activityLogAlertRule", "test-VM")
+		in, token := e.integration("azuremonitor", nil)
+		r := e.post(Path+"/"+token, "application/json", azureActivityLogTest)
+		equal(t, "summary", r.body.Summary, []string{"“test-activityLogAlertRule” is an activity log alert (Activity Log - Administrative), which never resolves: ignored (of the activity log alerts, only Service Health and Resource Health alerts are read)."})
+		equal(t, "nothing opened", len(e.openIncidents()), 0)
+		equal(t, "no firing alert", len(e.firing(in)), 0)
+	})
+}
+
+func TestToolsPRTG(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN", "vpn-gw01")
+		in, token := e.integration("prtg", nil)
+		url, form := Path+"/"+token, "application/x-www-form-urlencoded"
+
+		// The test of the notification template sends the placeholders.
+		r := e.post(url, form, "key=%sensorid&status=%laststatus&service=%device&service=%group&title=%device: %name&message=%message")
+		equal(t, "test", r.body.Status, "test")
+		equal(t, "test outcome", e.events(in)[0].Outcome, store.EventTest)
+
+		// Down opens a major outage; the trigger's "no longer Down" with the
+		// status Warning resolves it (Warning sends nothing more).
+		e.post(url, form, prtgBody("Down"))
+		equal(t, "down", e.onlyOpen("down").Impact(), store.StatusMajorOutage)
+		e.post(url, form, prtgBody("Warning"))
+		equal(t, "no longer down", len(e.openIncidents()), 0)
+
+		// In a failover cluster: Down (Partial) is a partial outage, Down a
+		// major one; Up (as %status before 20.1.57) resolves it.
+		e.post(url, form, prtgBody("Down (Partial)"))
+		inc := e.onlyOpen("partial")
+		equal(t, "partial", inc.Impact(), store.StatusPartialOutage)
+		e.post(url, form, prtgBody("Down ended (now: Down)"))
+		equal(t, "down after partial", e.onlyOpen("down").Impact(), store.StatusMajorOutage)
+		e.post(url, form, prtgBody("Down ended (now: Up)"))
+		equal(t, "up", len(e.openIncidents()), 0)
+
+		// Paused or Unknown end it too.
+		e.post(url, form, prtgBody("Down"))
+		e.post(url, form, prtgBody("Paused (paused by user)"))
+		equal(t, "paused", len(e.openIncidents()), 0)
+	})
+}
+
+func TestToolsDatadog(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN")
+		in, token := e.integration("datadog", nil)
+		send := func(vars map[string]string) hookResponse {
+			t.Helper()
+			return e.post(Path+"/"+token, "application/json", datadogBody(vars))
+		}
+
+		// Test Notifications: a test, nothing opened, no e-mail.
+		r := send(map[string]string{"$ALERT_TRANSITION": "Triggered", "$ALERT_TYPE": "error", "$ALERT_TITLE": "[TEST] [Triggered on {host:vpn-gw01}] Host is Down"})
+		equal(t, "test", r.body.Status, "test")
+		equal(t, "test outcome", e.events(in)[0].Outcome, store.EventTest)
+		equal(t, "nothing opened", len(e.openIncidents()), 0)
+		equal(t, "no e-mail", len(e.notifier.calls), 0)
+
+		// Warn: degraded performance; its renotification stays degraded.
+		send(map[string]string{"$ALERT_TRANSITION": "Warn", "$ALERT_TYPE": "warning"})
+		inc := e.onlyOpen("warn")
+		equal(t, "warn", inc.Impact(), store.StatusDegraded)
+		send(map[string]string{"$ALERT_TRANSITION": "Renotify", "$ALERT_TYPE": "warning"})
+		equal(t, "renotify of a warning", e.onlyOpen("renotify").Impact(), store.StatusDegraded)
+
+		// A renotification of no data changes nothing.
+		r = send(map[string]string{"$ALERT_TRANSITION": "Renotify", "$ALERT_TYPE": "info"})
+		equal(t, "renotify of no data", r.body.Summary, []string{"Status “Renotify” of the alert type “info”, neither error nor warning (e.g. No Data): ignored."})
+		equal(t, "still degraded", e.onlyOpen("no data").Impact(), store.StatusDegraded)
+
+		// Triggered: a major outage; recovered: resolved.
+		send(map[string]string{"$ALERT_TRANSITION": "Triggered", "$ALERT_TYPE": "error"})
+		equal(t, "triggered", e.onlyOpen("triggered").Impact(), store.StatusMajorOutage)
+		send(map[string]string{"$ALERT_TRANSITION": "Recovered", "$ALERT_TYPE": "success"})
+		equal(t, "recovered", len(e.openIncidents()), 0)
+	})
+}
+
+// kumaDownAt is a down notification of Uptime Kuma at the time at; important
+// is false for a resend.
+func kumaDownAt(at time.Time, important bool) string {
+	body := strings.Replace(kumaPayloadJSON(0, "timeout"), `"time": "2026-11-16 10:02:00.123"`, `"time": "`+at.UTC().Format("2006-01-02 15:04:05.000")+`"`, 1)
+	if !important {
+		body = strings.Replace(body, `"important": true`, `"important": false`, 1)
+	}
+	return body
+}
+
+// Uptime Kuma: the important down heartbeat starts the problem; its
+// resends are repeats, and a later outage is a new problem even if the
+// status page did not hear that the monitor came up in between.
+func TestToolsUptimeKumaOccurrences(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN")
+		in, token := e.integration("uptimekuma", nil)
+		e.created(in, time.Now().Add(-24*time.Hour))
+		url := Path + "/" + token
+
+		first := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+		e.post(url, "application/json", kumaDownAt(first, true))
+		inc := e.onlyOpen("down")
+		equal(t, "it started when the monitor went down", inc.StartedAt.Unix(), first.Unix())
+
+		// An editor resolves the incident while the monitor is still down;
+		// the resends of the monitor open nothing.
+		e.resolve(inc.ID)
+		e.post(url, "application/json", kumaDownAt(first.Add(10*time.Minute), false))
+		e.post(url, "application/json", kumaDownAt(first.Add(20*time.Minute), false))
+		equal(t, "resends open nothing", len(e.openIncidents()), 0)
+
+		// The monitor came up, but the status page missed it; an hour later
+		// it goes down again: a new problem.
+		second := first.Add(time.Hour)
+		e.post(url, "application/json", kumaDownAt(second, true))
+		inc2 := e.onlyOpen("down again")
+		equal(t, "a new incident", inc2.ID != inc.ID, true)
+		equal(t, "its start", inc2.StartedAt.Unix(), second.Unix())
+	})
+}
+
+// The generic format's started: a repeat with the same start, or without
+// one, stays dismissed when an editor resolved its incident; a later start
+// is a new problem.
+func TestToolsGenericStarted(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN")
+		in, token := e.integration(Generic, nil)
+		e.created(in, time.Now().Add(-24*time.Hour))
+		url := Path + "/" + token
+		down := func(started time.Time) string {
+			return fmt.Sprintf(`{"service": "VPN", "status": "down", "title": "VPN gateway unreachable", "started": %d}`, started.Unix())
+		}
+
+		first := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+		e.post(url, "application/json", down(first))
+		inc := e.onlyOpen("down")
+		equal(t, "start", inc.StartedAt.Unix(), first.Unix())
+		e.resolve(inc.ID)
+
+		e.post(url, "application/json", down(first))
+		e.post(url, "application/json", `{"service": "VPN", "status": "down", "title": "VPN gateway unreachable"}`)
+		equal(t, "repeats stay dismissed", len(e.openIncidents()), 0)
+
+		later := first.Add(time.Hour)
+		e.post(url, "application/json", down(later))
+		inc2 := e.onlyOpen("started again")
+		equal(t, "a new incident", inc2.ID != inc.ID, true)
+		equal(t, "its start", inc2.StartedAt.Unix(), later.Unix())
+
+		// A start that is no time is noted and ignored.
+		r := e.post(url, "application/json", `{"service": "VPN", "status": "down", "started": "yesterday"}`)
+		if !strings.Contains(strings.Join(r.body.Summary, "\n"), "Start “yesterday” is not a time") {
+			t.Fatalf("summary: %q", r.body.Summary)
+		}
+	})
+}
+
+// Values of a request that the summary quotes are one line and short.
+func TestToolsEchoOneLine(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN")
+		in, token := e.integration(Generic, nil)
+		r := e.post(Path+"/"+token, "application/json", `{"service": "VPN", "status": "odd\nAlert 2: faked line `+strings.Repeat("x", 500)+`"}`)
+		equal(t, "one line", len(r.body.Summary), 1)
+		if l := r.body.Summary[0]; strings.Contains(l, "\n") || utf8.RuneCountInString(l) > 150 {
+			t.Fatalf("summary line %q", l)
+		}
+		equal(t, "recorded as one line", strings.Count(e.events(in)[0].Summary, "\n"), 0)
+	})
+}
+
+// firing returns the firing alerts of an integration.
+func (e *hookEnv) firing(in *store.Integration) []store.IntegrationAlert {
+	e.t.Helper()
+	alerts, err := e.store.ListIntegrationAlerts(ctx, in.ID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return alerts
+}

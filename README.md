@@ -1023,21 +1023,21 @@ curl or PowerShell (e.g. a System Center Operations Manager command channel).
 | Tool | The service is named by (the first that names a service wins) | Impact |
 |------|------|------|
 | Prometheus Alertmanager, Grafana | the label `statuspage_service`, else `service`, `alertname`, `job` or `instance` | the label `severity` (else `priority`) |
-| Uptime Kuma | the monitor's tag `statuspage_service`, else its name, host name or URL | a monitor that is down: major outage |
-| Azure Monitor | the alert rule's custom property `statuspage_service`, else the rule's name, else the affected resources | the severity, Sev0–Sev4 |
+| Uptime Kuma | the monitor's tag `statuspage_service`, else its tag `service`, else its name, host name or URL | a monitor that is down: major outage |
+| Azure Monitor | the alert rule's custom property `statuspage_service`, else its custom property `service`, else the rule's name, else the affected resources | the severity, Sev0–Sev4 (Service Health alerts come as Sev4); Resource Health: Unavailable major outage, Degraded degraded performance |
 | Zabbix | the event's tag `statuspage_service`, else the host's visible name | the trigger's severity |
-| PRTG | the device, else its group | Down, Down (partial), Warning and Unusual |
-| Datadog | the tag `statuspage_service`, else the tag `service`, else the host | triggered or warning |
+| PRTG | the device, else its group | Down: major outage, Down (Partial): partial outage (Warning and Unusual are not shown) |
+| Datadog | the tag `statuspage_service`, else the tag `service`, else the host | the alert type: error (triggered) major outage, warning degraded performance |
 | UptimeRobot | the monitor's friendly name | a monitor that is down: major outage |
 | Nagios, Icinga, Checkmk | the service description, else the host name | CRITICAL, DOWN, UNREACHABLE or WARNING |
 | Generic format | the field `service` (a name or a list of names) | the field `severity` or the status |
 
-| Severity | Impact |
+| Severity (upper and lower case, spaces, hyphens and underscores do not matter) | Impact |
 |---|---|
-| critical, fatal, emergency, Disaster, High, Sev0, P1, page; status DOWN, CRITICAL | major outage |
-| error, Average, Sev1, P2; PRTG's partial down | partial outage |
-| warning, info, Information, Not classified, minor, low, Sev2–Sev4, P3–P5; status WARNING, Unusual | degraded performance |
-| none, or unknown | major outage (e.g. an uptime monitor that reports a service down) |
+| `critical`, `crit`, `fatal`, `emergency`, `emerg`, `major`, `page`, `high`, `Disaster`, `Sev0`, `P1`; the status `CRITICAL` | major outage |
+| `error`, `err`, `Average`, `partial`, `Sev1`, `P2`; the status `ERROR`, or one with “partial” (PRTG's Down (Partial)) | partial outage |
+| `warning`, `warn`, `minor`, `medium`, `moderate`, `low`, `info`, `information`, `informational`, `notice`, `Not classified`, `verbose`, `debug`, `none`, `Sev2`–`Sev4`, `P3`–`P5`; the status `WARNING`, `Warn`, `Re-Warn`, `degraded` or `Unusual` | degraded performance |
+| no severity, or an unknown one | major outage (e.g. an uptime monitor that reports a service down) |
 
 The integration can give all its alerts one impact instead (*Impact of a
 firing alert*). An impact that the alert gives itself wins over both: the
@@ -1068,6 +1068,7 @@ form fields or URL query parameters):
 | `title`, `message` | the text of the incident (`summary` and `description` are understood too) |
 | `severity` | e.g. `critical`, `error`, `warning`, `P2`, `Sev1` (see the table above) |
 | `impact` | `degraded`, `partial_outage` or `major_outage`: sets the impact directly |
+| `started` | optional: when the problem began – RFC 3339 (`2026-11-16T10:02:00Z`), `YYYY-MM-DD HH:MM:SS` (UTC unless a zone follows), or Unix seconds or milliseconds (`startsAt` is understood too). Send it only if it stays the same in every repeat of a problem, e.g. the time of the first failed check: if an editor resolves the incident of a problem that still fires, a problem that starts again later then opens a new incident (without `started` only after its end has been sent). |
 
 Several alerts are sent as a JSON list or as `{"alerts": [ … ]}`. The answer
 is JSON with what the request did (`{"status": "ok", "alerts": 1,
@@ -1080,9 +1081,12 @@ curl -X POST 'https://status.example.com/hooks/<token>' -H 'Content-Type: applic
 ```
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri 'https://status.example.com/hooks/<token>' -ContentType 'application/json' `
+Invoke-RestMethod -Method Post -Uri 'https://status.example.com/hooks/<token>' -ContentType 'application/json; charset=utf-8' `
   -Body (@{ service = 'VPN'; status = 'resolved' } | ConvertTo-Json)
 ```
+
+Keep `charset=utf-8`: without it, Windows PowerShell 5.1 sends the body in
+ISO-8859-1, and names with accents (*Könyvelés*) do not match.
 
 To support another monitoring tool in the status page itself, see
 [docs/DESIGN.md](docs/DESIGN.md#monitoring-integrations): tools that can send

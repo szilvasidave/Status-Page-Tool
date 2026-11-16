@@ -14,8 +14,14 @@ package monitoring
 //
 // Required: service and status. The key defaults to the first service
 // value, so that a script that reports one state per service needs none.
-// Tools may send synonyms (genericNames: id, summary, description,
-// priority, state, services); a field's own name wins over a synonym.
+// Optional: started, when the problem began (see parseTime), so that a
+// problem that starts again can be told from a repeat of one an editor
+// dismissed. Tools may send synonyms (genericNames: id, summary,
+// description, priority, state, services, startsAt); a field's own name
+// wins over a synonym.
+//
+// PRTG and Datadog send the generic format with rules of their own for the
+// status and the test message: a dialect (prtg.go, datadog.go).
 
 import (
 	"bytes"
@@ -36,6 +42,7 @@ var genericNames = map[string][]string{
 	"message":  {"message", "description"},
 	"severity": {"severity", "priority"},
 	"impact":   {"impact"},
+	"started":  {"started", "startsat", "starts_at", "startedat", "started_at"},
 }
 
 // knownName reports whether name (lower case) is a name of a field.
@@ -73,8 +80,37 @@ func (g genericAlert) get(field string) string {
 	return ""
 }
 
+// A dialect is the generic format as a tool sends it with rules of its own
+// (PRTG, Datadog). The zero dialect is the generic format itself.
+type dialect struct {
+	// read returns the state of an alert, its severity and, for an alert
+	// that is ignored (stateUnknown), the note that says why ("" for the
+	// usual one). Nil: genericRead.
+	read func(g genericAlert) (st state, severity, note string)
+	// test reports whether an alert is the tool's test message (an alert
+	// with the status test always is one). Nil: none.
+	test func(g genericAlert) bool
+}
+
+// genericRead reads the state of an alert of the generic format from its
+// status; its severity is the field severity, else the one the status
+// implies (e.g. WARNING).
+func genericRead(g genericAlert) (state, string, string) {
+	st, implied := parseStatus(g.get("status"))
+	if severity := g.get("severity"); severity != "" {
+		return st, severity, ""
+	}
+	return st, implied, ""
+}
+
 // ParseGeneric reads the generic format.
-func ParseGeneric(r *Request) (*Batch, error) {
+func ParseGeneric(r *Request) (*Batch, error) { return parseGeneric(r, dialect{}) }
+
+// parseGeneric reads the generic format in a dialect.
+func parseGeneric(r *Request, d dialect) (*Batch, error) {
+	if d.read == nil {
+		d.read = genericRead
+	}
 	var alerts []genericAlert
 	body := bytes.TrimSpace(r.Body)
 	switch {
@@ -122,13 +158,20 @@ func ParseGeneric(r *Request) (*Batch, error) {
 		if status == "" {
 			return nil, parseErrorf("%sthe status is missing: send firing (or problem, down, critical, warning, …) or resolved (or ok, up, recovered, …)", where)
 		}
-		st, implied := parseStatus(status)
+		if d.test != nil && d.test(g) {
+			tests++
+			continue
+		}
+		st, severity, note := d.read(g)
 		switch st {
 		case stateTest:
 			tests++
 			continue
 		case stateUnknown:
-			b.Notes = append(b.Notes, fmt.Sprintf("%sstatus “%s” is neither a problem nor a recovery: ignored.", capitalize(where), status))
+			if note == "" {
+				note = fmt.Sprintf("status “%s” is neither a problem nor a recovery: ignored.", echo(status))
+			}
+			b.Notes = append(b.Notes, capitalize(where+note))
 			continue
 		}
 		var targets []string
@@ -146,20 +189,24 @@ func ParseGeneric(r *Request) (*Batch, error) {
 			Targets:  targets,
 			Title:    g.get("title"),
 			Message:  g.get("message"),
-			Severity: g.get("severity"),
+			Severity: severity,
 		}
 		if a.Key == "" {
 			a.Key = "service:" + strings.ToLower(oneLine(targets[0]))
 		}
-		if a.Severity == "" {
-			a.Severity = implied
-		}
 		if v := g.get("impact"); v != "" {
 			impact, ok := ParseImpact(v)
 			if !ok {
-				return nil, parseErrorf("%sunknown impact “%s”: send degraded, partial_outage or major_outage, or leave it out", where, v)
+				return nil, parseErrorf("%sunknown impact “%s”: send degraded, partial_outage or major_outage, or leave it out", where, echo(v))
 			}
 			a.Impact = impact
+		}
+		if v := g.get("started"); v != "" {
+			t, ok := readTime(v)
+			if !ok {
+				b.Notes = append(b.Notes, capitalize(where+fmt.Sprintf("start “%s” is not a time (RFC 3339, “YYYY-MM-DD HH:MM:SS” in UTC, or Unix seconds or milliseconds): ignored.", echo(v))))
+			}
+			a.StartsAt = t
 		}
 		b.Alerts = append(b.Alerts, a)
 	}
