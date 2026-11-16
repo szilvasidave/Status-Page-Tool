@@ -116,10 +116,14 @@ func (s *Store) SetIntegrationToken(ctx context.Context, id int64, tokenHash str
 }
 
 // DeleteIntegration deletes an integration with its alerts and events. The
-// incidents it opened stay (open ones until an editor resolves them).
-// Returns ErrNotFound for an unknown integration.
+// incidents it opened stay; open ones are no longer resolved by its alerts
+// (an editor resolves them, or the alerts of other integrations attached to
+// them when they clear). Returns ErrNotFound for an unknown integration.
 func (s *Store) DeleteIntegration(ctx context.Context, id int64) error {
-	err := affected(s.db.ExecContext(ctx, `DELETE FROM integrations WHERE id = ?`, id))
+	// In the monitoring turn: the cascade deletes alerts (see DeleteIncident).
+	err := s.inMonitoringTx(ctx, func(tx *db.Tx) error {
+		return affected(tx.ExecContext(ctx, `DELETE FROM integrations WHERE id = ?`, id))
+	})
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("delete integration %d: %w", id, err)
 	}
@@ -168,14 +172,18 @@ func (s *Store) ListIntegrations(ctx context.Context) ([]Integration, error) {
 
 // AddIntegrationEvent records a request of an integration (ID set on ev; a
 // zero ReceivedAt is now), stores at most MaxEventPayload bytes of its
-// payload, sets the integration's last request time and deletes all but its
-// latest KeepIntegrationEvents events.
+// payload (saying so if it was longer), sets the integration's last request
+// time (unless ev.Internal) and deletes all but its latest
+// KeepIntegrationEvents events.
 func (s *Store) AddIntegrationEvent(ctx context.Context, ev *IntegrationEvent) error {
 	if ev.ReceivedAt.IsZero() {
 		ev.ReceivedAt = nowTime()
 	}
 	ev.ReceivedAt = truncate(ev.ReceivedAt)
-	ev.Payload = truncateUTF8(ev.Payload, MaxEventPayload)
+	if n := len(ev.Payload); n > MaxEventPayload {
+		ev.Payload = truncateUTF8(ev.Payload, MaxEventPayload) +
+			fmt.Sprintf("\n… (shortened: the first %d KB of %d bytes are kept)", MaxEventPayload>>10, n)
+	}
 	ev.Summary = truncateUTF8(ev.Summary, maxEventSummary)
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		err := tx.QueryRowContext(ctx,
@@ -184,8 +192,10 @@ func (s *Store) AddIntegrationEvent(ctx context.Context, ev *IntegrationEvent) e
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE integrations SET last_event_at = ? WHERE id = ?`, ev.ReceivedAt.Unix(), ev.IntegrationID); err != nil {
-			return err
+		if !ev.Internal {
+			if _, err := tx.ExecContext(ctx, `UPDATE integrations SET last_event_at = ? WHERE id = ?`, ev.ReceivedAt.Unix(), ev.IntegrationID); err != nil {
+				return err
+			}
 		}
 		_, err = tx.ExecContext(ctx,
 			`DELETE FROM integration_events WHERE integration_id = ? AND id NOT IN (

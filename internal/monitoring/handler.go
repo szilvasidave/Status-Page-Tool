@@ -11,7 +11,8 @@ package monitoring
 // read (also when an alert names no service or the integration is paused,
 // so that the tool does not repeat it), 400 for a request that cannot be
 // read, 401 for an unknown token, 405 for other methods, 413 for a body
-// over MaxBodyBytes. Each request of a known integration is recorded in its
+// over MaxBodyBytes, 503 when the status page was too busy to apply it, 500
+// for an error. Each request of a known integration is recorded in its
 // request log (store.AddIntegrationEvent).
 
 import (
@@ -26,6 +27,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/szilvasidave/status-page-tool/internal/auth"
 	"github.com/szilvasidave/status-page-tool/internal/store"
@@ -34,9 +36,15 @@ import (
 // Notifier sends the e-mails about incidents (implemented by
 // notify.Notifier).
 type Notifier interface {
-	IncidentCreated(ctx context.Context, incidentID int64) (int, error)
-	IncidentUpdated(ctx context.Context, incidentID int64, previousServiceIDs []int64) (int, error)
+	// IncidentUpdateNotice e-mails the groups of an incident's services
+	// about one of its updates; created marks the update that opened it.
+	IncidentUpdateNotice(ctx context.Context, incidentID, updateID int64, created bool) (int, error)
 }
+
+// defaultApplyTimeout is how long a request may wait for its turn and take
+// to apply its alerts. The tool may hang up meanwhile: what it sent is
+// applied anyway (it may not send it again).
+const defaultApplyTimeout = 5 * time.Minute
 
 // Handler serves the webhook endpoint; Run is its worker. Create it with
 // New.
@@ -47,6 +55,9 @@ type Handler struct {
 	// releaseInterval is how often Run checks for alerts that waited for
 	// the end of a maintenance.
 	releaseInterval time.Duration
+	// applyTimeout is how long a request may wait for its turn and take to
+	// apply its alerts (defaultApplyTimeout).
+	applyTimeout time.Duration
 }
 
 // New returns the webhook endpoint for the routes under Path.
@@ -54,7 +65,7 @@ func New(st *store.Store, n Notifier, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{store: st, notifier: n, log: log, releaseInterval: time.Minute}
+	return &Handler{store: st, notifier: n, log: log, releaseInterval: time.Minute, applyTimeout: defaultApplyTimeout}
 }
 
 // IsPath reports whether p is the path of a webhook URL (Path or below).
@@ -144,7 +155,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf")) // a UTF-8 byte order mark (e.g. Windows PowerShell 5)
-	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	mediaType, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	body = toUTF8(body, params["charset"])
 	req := &Request{Body: body, ContentType: strings.ToLower(mediaType), Query: r.URL.Query()}
 	payload := string(body)
 	if payload == "" && r.URL.RawQuery != "" {
@@ -168,42 +180,121 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, response{Status: "error", Error: msg})
 		return
 	}
-	switch {
-	case b.Test:
+	if b.Test {
 		lines := capLines(append([]string{"Test message received: the connection works. Nothing was changed."}, b.Notes...))
 		h.record(ctx, in, store.EventTest, lines, payload)
 		writeJSON(w, http.StatusOK, response{Status: "test", Summary: lines})
 		return
-	case in.Paused:
-		lines := capLines(append([]string{fmt.Sprintf("The integration is paused: %s received, nothing was changed.", plural(len(b.Alerts), "alert"))}, b.Notes...))
-		h.record(ctx, in, store.EventPaused, lines, payload)
-		writeJSON(w, http.StatusOK, response{Status: "paused", Alerts: len(b.Alerts), Summary: lines})
-		return
 	}
 
-	inputs := make([]store.AlertInput, len(b.Alerts))
+	// A paused integration applies only resolved alerts: they can only end
+	// what its alerts started, and an incident must not stay open because
+	// its recovery came while the integration was paused.
+	var (
+		inputs []store.AlertInput
+		head   []string
+		status = "ok"
+	)
 	for i := range b.Alerts {
-		inputs[i] = b.Alerts[i].input(in.Impact)
+		if !in.Paused || !b.Alerts[i].Firing {
+			inputs = append(inputs, b.Alerts[i].input(in.Impact))
+		}
 	}
-	res, err := h.store.ApplyAlerts(ctx, in, inputs)
+	if in.Paused {
+		status = "paused"
+		if len(inputs) == 0 {
+			lines := capLines(append([]string{fmt.Sprintf("The integration is paused: %s received, nothing was changed.", plural(len(b.Alerts), "alert"))}, b.Notes...))
+			h.record(ctx, in, store.EventPaused, lines, payload)
+			writeJSON(w, http.StatusOK, response{Status: status, Alerts: len(b.Alerts), Summary: lines})
+			return
+		}
+		head = []string{"The integration is paused: resolved alerts still clear."}
+		if ignored := len(b.Alerts) - len(inputs); ignored > 0 {
+			head = []string{fmt.Sprintf("The integration is paused: %s ignored; resolved alerts still clear.", plural(ignored, "firing alert"))}
+		}
+	}
+
+	// From here on the tool may hang up: what it sent is applied, its
+	// e-mails queued and the request recorded anyway.
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.applyTimeout)
+	defer cancel()
+	res, err := h.store.ApplyAlerts(actx, in, inputs)
+	ctx, cancelRest := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelRest()
 	if err != nil {
+		code, msg := http.StatusInternalServerError, "Internal error of the status page; details are in its log file."
+		line := "The alerts were not applied because of an internal error; details are in the log file of the status page."
+		if errors.Is(err, store.ErrBusy) || actx.Err() != nil {
+			// Out of time, waiting behind other alerts.
+			code, msg = http.StatusServiceUnavailable, "The status page is busy: send the alerts again later."
+			line = "The alerts were not applied: the status page was busy applying other alerts for too long."
+			w.Header().Set("Retry-After", "60")
+		}
 		h.log.Error("monitoring request failed", "integration", in.Name, "err", err)
-		writeJSON(w, http.StatusInternalServerError, response{Status: "error", Error: "Internal error of the status page; details are in its log file."})
+		h.record(ctx, in, store.EventFailed, capLines(append([]string{line}, b.Notes...)), payload)
+		writeJSON(w, code, response{Status: "error", Error: msg})
 		return
 	}
-	// The changes are made: queue their e-mails and record the request even
-	// if the tool hangs up now.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
 	h.notify(ctx, res.Notices)
 	outcome, lines := summarize(res)
-	lines = capLines(append(lines, b.Notes...))
+	if in.Paused && outcome != store.EventChanged {
+		outcome = store.EventPaused
+	}
+	lines = capLines(append(append(head, lines...), b.Notes...))
 	if len(lines) == 0 {
 		lines = []string{"The request contained no alerts."}
 	}
 	h.record(ctx, in, outcome, lines, payload)
-	h.log.Info("monitoring alerts received", "integration", in.Name, "alerts", len(inputs), "outcome", outcome)
-	writeJSON(w, http.StatusOK, response{Status: "ok", Alerts: len(inputs), Summary: lines})
+	h.log.Info("monitoring alerts received", "integration", in.Name, "alerts", len(b.Alerts), "outcome", outcome)
+	writeJSON(w, http.StatusOK, response{Status: status, Alerts: len(b.Alerts), Summary: lines})
+}
+
+// toUTF8 returns a request body as UTF-8: decoded from the charset of its
+// Content-Type if that is Windows-1252 or one of its subsets (ISO-8859-1,
+// US-ASCII), else as it is if it is valid UTF-8, else – without a charset –
+// as Windows-1252, which Windows PowerShell 5.1 and other Windows tools send
+// without saying so.
+func toUTF8(body []byte, charset string) []byte {
+	switch strings.ToLower(strings.TrimSpace(charset)) {
+	case "windows-1252", "cp1252", "x-cp1252", "iso-8859-1", "iso8859-1", "latin1", "l1", "us-ascii", "ascii":
+		return decodeWindows1252(body)
+	case "":
+		if !utf8.Valid(body) {
+			return decodeWindows1252(body)
+		}
+	}
+	return body
+}
+
+// windows1252 are the characters of the bytes 0x80–0x9F in Windows-1252
+// (the bytes it leaves undefined stand for themselves, as in browsers).
+var windows1252 = [32]rune{
+	'€', '\u0081', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u008D', 'Ž', '\u008F',
+	'\u0090', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u009D', 'ž', 'Ÿ',
+}
+
+func decodeWindows1252(b []byte) []byte {
+	out := make([]byte, 0, len(b)+len(b)/4)
+	for _, c := range b {
+		switch {
+		case c < 0x80:
+			out = append(out, c)
+		case c < 0xA0:
+			out = utf8.AppendRune(out, windows1252[c-0x80])
+		default:
+			out = utf8.AppendRune(out, rune(c))
+		}
+	}
+	return out
+}
+
+// ServeUnavailable answers webhook requests while the status page runs in
+// setup mode (no configuration): 503, so that tools that retry send the
+// alerts again later.
+func ServeUnavailable(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", "300")
+	writeJSON(w, http.StatusServiceUnavailable, response{Status: "error",
+		Error: "The status page is not set up (setup mode): send the alerts again later."})
 }
 
 // maxSummaryLines is the number of lines of a request's summary that are
@@ -234,7 +325,14 @@ func tokenOf(r *http.Request) string {
 // record adds a request to the integration's request log; a failure is
 // only logged (the alerts were applied).
 func (h *Handler) record(ctx context.Context, in *store.Integration, outcome string, lines []string, payload string) {
-	ev := &store.IntegrationEvent{IntegrationID: in.ID, Outcome: outcome, Summary: storable(strings.Join(lines, "\n")), Payload: storable(payload)}
+	h.addEvent(ctx, in, &store.IntegrationEvent{Outcome: outcome, Summary: strings.Join(lines, "\n"), Payload: payload})
+}
+
+// addEvent adds an entry to the integration's request log; a failure is
+// only logged.
+func (h *Handler) addEvent(ctx context.Context, in *store.Integration, ev *store.IntegrationEvent) {
+	ev.IntegrationID = in.ID
+	ev.Summary, ev.Payload = storable(ev.Summary), storable(ev.Payload)
 	if err := h.store.AddIntegrationEvent(ctx, ev); err != nil {
 		h.log.Warn("could not record a monitoring request", "integration", in.Name, "err", err)
 	}
@@ -253,13 +351,7 @@ func (h *Handler) notify(ctx context.Context, notices []store.IncidentNotice) {
 		return
 	}
 	for _, n := range notices {
-		var err error
-		if n.Created {
-			_, err = h.notifier.IncidentCreated(ctx, n.IncidentID)
-		} else {
-			_, err = h.notifier.IncidentUpdated(ctx, n.IncidentID, nil)
-		}
-		if err != nil {
+		if _, err := h.notifier.IncidentUpdateNotice(ctx, n.IncidentID, n.UpdateID, n.Created); err != nil {
 			h.log.Warn("could not queue the e-mails about an incident of monitoring", "incident", n.IncidentID, "err", err)
 		}
 	}
@@ -274,10 +366,7 @@ func summarize(res *store.ApplyResult) (outcome string, lines []string) {
 	unmatched := false
 	for _, ar := range res.Alerts {
 		a := ar.Alert
-		name := "“" + a.Title + "”"
-		if a.Title == "" {
-			name = "Alert " + clip(a.Key, 60)
-		}
+		name := alertName(a)
 		if !a.Firing {
 			name += " (resolved)"
 		} else {
@@ -312,6 +401,14 @@ func summarize(res *store.ApplyResult) (outcome string, lines []string) {
 		outcome = store.EventUnmatched
 	}
 	return outcome, lines
+}
+
+// alertName names an alert in the request log: its title, or its key.
+func alertName(a *store.AlertInput) string {
+	if a.Title == "" {
+		return "Alert " + clip(a.Key, 60)
+	}
+	return "“" + a.Title + "”"
 }
 
 // describe says what happened for one service of an alert.
@@ -405,11 +502,37 @@ func (h *Handler) release(ctx context.Context) {
 		}
 		for _, sr := range ar.Services {
 			byIntegration[ar.IntegrationID] = append(byIntegration[ar.IntegrationID],
-				"“"+ar.Alert.Title+"” (firing since a maintenance that has ended): "+describe(sr))
+				alertName(ar.Alert)+" (firing since a maintenance that has ended): "+describe(sr))
 		}
 	}
 	for _, id := range order {
-		h.record(ctx, &store.Integration{ID: id}, store.EventChanged, capLines(byIntegration[id]), "")
+		h.addEvent(ctx, &store.Integration{ID: id}, &store.IntegrationEvent{Outcome: store.EventChanged,
+			Summary: strings.Join(capLines(byIntegration[id]), "\n"), Internal: true})
 	}
 	h.log.Info("monitoring: alerts that fired during maintenance opened incidents", "alerts", len(res.Alerts))
+}
+
+// Clear treats a firing alert of the integration as resolved, as if the
+// tool had reported its recovery (store.ClearIntegrationAlert), on behalf
+// of the administrator by: it sends the e-mails, records what it did in
+// the request log and returns that. Returns store.ErrNotFound if the alert
+// is not firing.
+func (h *Handler) Clear(ctx context.Context, in *store.Integration, key, by string) ([]string, error) {
+	res, err := h.store.ClearIntegrationAlert(ctx, in, key)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	h.notify(ctx, res.Notices)
+	var lines []string
+	for _, ar := range res.Alerts {
+		for _, sr := range ar.Services {
+			lines = append(lines, alertName(ar.Alert)+" (cleared by "+by+"): "+describe(sr))
+		}
+	}
+	lines = capLines(lines)
+	h.addEvent(ctx, in, &store.IntegrationEvent{Outcome: store.EventChanged, Summary: strings.Join(lines, "\n"), Internal: true})
+	h.log.Info("monitoring: alert cleared by an administrator", "integration", in.Name, "by", by)
+	return lines, nil
 }

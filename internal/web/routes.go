@@ -91,6 +91,7 @@ func (s *Server) routes() {
 	m.Handle("GET /admin/monitoring/{id}", admin(s.handleIntegrationEdit))
 	m.Handle("POST /admin/monitoring/{id}", admin(s.handleIntegrationUpdate))
 	m.Handle("POST /admin/monitoring/{id}/url", admin(s.handleIntegrationNewURL))
+	m.Handle("POST /admin/monitoring/{id}/alerts/clear", admin(s.handleIntegrationClearAlert))
 	m.Handle("POST /admin/monitoring/{id}/delete", admin(s.handleIntegrationDelete))
 
 	// SCIM provisioning from Microsoft Entra ID (Tenant URL <Base URL>/scim/v2).
@@ -119,6 +120,10 @@ func (s *Server) routes() {
 func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /setup", s.handleSetupDatabase)
 	s.mux.HandleFunc("POST /setup", s.handleSetupDatabase)
+	// Monitoring tools get an error they retry, not a redirect to a page
+	// that they would take for a delivery.
+	s.mux.HandleFunc(monitoring.Path, monitoring.ServeUnavailable)
+	s.mux.HandleFunc(monitoring.Path+"/", monitoring.ServeUnavailable)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 	})

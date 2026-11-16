@@ -102,8 +102,10 @@ func TestIntegrationEvents(t *testing.T) {
 		check(t, s.AddIntegrationEvent(ctx, ev))
 		evs, err = s.ListIntegrationEvents(ctx, in.ID, 1)
 		check(t, err)
-		equal(t, "payload length", len(evs[0].Payload), MaxEventPayload)
-		equal(t, "payload", evs[0].Payload, strings.Repeat("ä", MaxEventPayload/2))
+		kept, note, _ := strings.Cut(evs[0].Payload, "\n… (shortened")
+		equal(t, "payload length", len(kept), MaxEventPayload)
+		equal(t, "payload", kept, strings.Repeat("ä", MaxEventPayload/2))
+		equal(t, "says it was shortened", note, ": the first 8 KB of 16384 bytes are kept)")
 	})
 }
 

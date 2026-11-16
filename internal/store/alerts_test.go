@@ -112,6 +112,13 @@ func mustIncident(t *testing.T, s *Store, id int64) *Incident {
 	return inc
 }
 
+// wantNotice is the notice about the latest update of an incident.
+func wantNotice(t *testing.T, s *Store, incidentID int64, created bool) IncidentNotice {
+	t.Helper()
+	inc := mustIncident(t, s, incidentID)
+	return IncidentNotice{IncidentID: incidentID, UpdateID: inc.Updates[0].ID, Created: created}
+}
+
 func currentStatus(t *testing.T, s *Store, serviceID int64) Status {
 	t.Helper()
 	services, err := s.ListServices(ctx)
@@ -139,7 +146,7 @@ func TestApplyAlertsLifecycle(t *testing.T) {
 		res := apply(t, s, in, a)
 		equal(t, "opened", actions(res), []string{"VPN:opened:1"})
 		equal(t, "matched", res.Alerts[0].Matched, "vpn01")
-		equal(t, "notices", res.Notices, []IncidentNotice{{IncidentID: 1, Created: true}})
+		equal(t, "notices", res.Notices, []IncidentNotice{wantNotice(t, s, 1, true)})
 		inc := mustIncident(t, s, 1)
 		equal(t, "automatic", inc.Automatic, true)
 		equal(t, "title (names the service)", inc.Title, "VPN gateway unreachable")
@@ -197,7 +204,7 @@ func TestApplyAlertsLifecycle(t *testing.T) {
 		// The last alert clears: the incident is resolved.
 		res = apply(t, s, in, resolved("b"))
 		equal(t, "resolved", actions(res), []string{"VPN:resolved:1"})
-		equal(t, "resolve notice", res.Notices, []IncidentNotice{{IncidentID: 1}})
+		equal(t, "resolve notice", res.Notices, []IncidentNotice{wantNotice(t, s, 1, false)})
 		inc = mustIncident(t, s, 1)
 		equal(t, "resolved status", inc.Status, IncidentResolved)
 		if inc.ResolvedAt == nil || !recent(*inc.ResolvedAt) {
@@ -375,7 +382,7 @@ func TestApplyAlertsMaintenance(t *testing.T) {
 		rel, err = s.ReleaseSuppressedAlerts(ctx)
 		check(t, err)
 		equal(t, "released", actions(rel), []string{"VPN:opened:2"})
-		equal(t, "notice", rel.Notices, []IncidentNotice{{IncidentID: 2, Created: true}})
+		equal(t, "notice", rel.Notices, []IncidentNotice{wantNotice(t, s, 2, true)})
 		inc := mustIncident(t, s, 2)
 		if !recent(inc.StartedAt) {
 			t.Fatalf("an incident opened after maintenance starts now, not %v", inc.StartedAt)
@@ -467,7 +474,7 @@ func TestApplyAlertsEditorResolvesConcurrently(t *testing.T) {
 			t.Fatal("no result")
 		}
 		equal(t, "a new incident", actions(res), []string{"VPN:opened:2"})
-		equal(t, "notice", res.Notices, []IncidentNotice{{IncidentID: 2, Created: true}})
+		equal(t, "notice", res.Notices, []IncidentNotice{wantNotice(t, s, 2, true)})
 		equal(t, "VPN is down", currentStatus(t, s, vpn.ID), StatusPartialOutage)
 	})
 }

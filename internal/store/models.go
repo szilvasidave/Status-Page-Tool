@@ -702,10 +702,13 @@ type Integration struct {
 	// Impact is the impact of every alert of the integration; "" means the
 	// impact follows each alert's severity.
 	Impact Status
-	// Notify sends e-mails about the incidents the integration opens and
-	// resolves (to the groups of the affected services).
+	// Notify sends e-mails about the incidents the integration opens, when
+	// they open and when monitoring resolves them (to the groups of the
+	// affected services).
 	Notify bool
-	// Paused integrations record their requests but change nothing.
+	// Paused integrations record their requests; their firing alerts change
+	// nothing, their resolved alerts still clear (so that no incident stays
+	// open because of a recovery received while paused).
 	Paused         bool
 	TokenCreatedAt time.Time
 	LastEventAt    *time.Time // last request, nil if none
@@ -772,15 +775,19 @@ type AlertServiceResult struct {
 	IncidentID  int64 // the incident it opened, joined, cleared or resolved (0: none)
 }
 
-// IncidentNotice asks for the e-mails about an incident that monitoring
-// opened (Created) or resolved; ApplyAlerts and ReleaseSuppressedAlerts
-// return them for integrations with Notify.
+// IncidentNotice asks for the e-mail about an update of an incident that
+// monitoring opened (Created: the update that opened it) or resolved. They
+// are returned for incidents opened by an integration with Notify (also
+// when another integration's alert resolves them); an incident opened and
+// resolved in one run gets one notice, about its resolution.
 type IncidentNotice struct {
 	IncidentID int64
+	UpdateID   int64
 	Created    bool
 }
 
-// ApplyResult is the result of ApplyAlerts and ReleaseSuppressedAlerts.
+// ApplyResult is the result of ApplyAlerts, ReleaseSuppressedAlerts and
+// ClearIntegrationAlert.
 type ApplyResult struct {
 	Alerts  []AlertResult
 	Notices []IncidentNotice
@@ -812,6 +819,7 @@ const (
 	EventTest      = "test"      // a test message of the tool
 	EventPaused    = "paused"    // received while the integration is paused
 	EventInvalid   = "invalid"   // the request could not be read
+	EventFailed    = "failed"    // read, but not applied (an error, or the status page was busy)
 )
 
 // IntegrationEvent is a request an integration received, with what it did.
@@ -822,4 +830,9 @@ type IntegrationEvent struct {
 	Outcome       string // Event*
 	Summary       string // one line per alert
 	Payload       string // the start of the request body
+	// Internal marks a record that the status page wrote itself (an alert
+	// released after maintenance, an alert an administrator cleared), not
+	// a request of the tool: it does not set the integration's last
+	// request time. It is not stored.
+	Internal bool
 }

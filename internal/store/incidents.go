@@ -251,10 +251,16 @@ func (s *Store) GetIncident(ctx context.Context, id int64) (*Incident, error) {
 	return inc, nil
 }
 
-// DeleteIncident deletes an incident with its updates. Returns ErrNotFound
-// for an unknown incident.
+// DeleteIncident deletes an incident with its updates (the alerts of
+// monitoring attached to it stay detached, see alerts.go). Returns
+// ErrNotFound for an unknown incident.
 func (s *Store) DeleteIncident(ctx context.Context, id int64) error {
-	err := affected(s.db.ExecContext(ctx, `DELETE FROM incidents WHERE id = ?`, id))
+	// In the monitoring turn: the cascade changes alerts, which a request
+	// of a monitoring tool may be changing (on PostgreSQL the locks would
+	// be taken in the opposite order).
+	err := s.inMonitoringTx(ctx, func(tx *db.Tx) error {
+		return affected(tx.ExecContext(ctx, `DELETE FROM incidents WHERE id = ?`, id))
+	})
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("delete incident %d: %w", id, err)
 	}

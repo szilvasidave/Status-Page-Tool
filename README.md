@@ -953,45 +953,70 @@ curl or PowerShell (e.g. a System Center Operations Manager command channel).
    *Generate new URL* replaces it. Enter it in the monitoring tool as the
    integration page describes for that tool, and send a test from the tool.
 4. **Check the latest requests** on the integration's page. Each request is
-   listed with its body and what it did: *Incidents changed*, *No change*,
-   *No service found* (with the names the alert gave – add one of them to a
-   service), *Test*, *Paused* or *Not understood* (with the reason). The page
-   also lists the integration's firing alerts with their incidents.
+   listed with its body (the first 8 KB) and what it did: *Incidents
+   changed*, *No change*, *No service found* (with the names the alert gave –
+   add one of them to a service), *Test*, *Paused*, *Not understood* (with
+   the reason) or *Not applied* (the status page was too busy, or failed:
+   the tool was answered with an error, so that it may send the request
+   again). Entries without a body were written by the status page itself:
+   an alert released after maintenance, or cleared by an administrator; they
+   do not count as requests of the tool (*last request*). The page also lists
+   the integration's firing alerts with their incidents.
 
 ### What alerts do
 
 - A firing alert opens an **automatic incident** for each service it names –
   status *Investigating*, titled with the alert's title (prefixed with the
-  service's name unless it contains it) – or joins the open automatic
-  incident of the service: several alerts of a service share one incident,
-  and several alerts in one request make one update. Incidents that people
-  reported are never changed; an alert opens an incident of its own next to
-  them.
+  service's name unless the title names it in whole words) – or joins the
+  open automatic incident of the service: several alerts of a service share
+  one incident, and several alerts in one request make one update (alerts
+  with the same title are listed once with their number, and an update lists
+  at most ten lines). Incidents that people reported are never changed; an
+  alert opens an incident of its own next to them.
 - The incident's **impact** on the service is the worst impact of the alerts
   that fire for it, and it follows them when an alert changes its severity or
-  clears.
+  clears. A service whose alerts have all cleared while others of the
+  incident still fire (e.g. a service an editor added to it) keeps its
+  impact until the incident is resolved.
 - When **the last alert clears**, the incident is resolved. Every change is
   an update of the incident, posted in the name of the integration (editors
   see "by Prometheus (monitoring)").
 - With **Send e-mail notifications** on, the groups of the affected services
-  are e-mailed when monitoring opens and when it resolves an incident, not
-  for the updates in between.
+  are e-mailed when the integration's alerts open an incident, and when
+  monitoring resolves it – also if another integration's alert is the last
+  to clear –, not for the updates in between. The integration that opens an
+  incident decides: an incident opened without e-mails is resolved without
+  one. An incident that opens and is resolved by one request gets one
+  e-mail, about its resolution.
 - During **maintenance** of a service its alerts open no incident, as the
   outage is planned. An alert that still fires when the maintenance has
   ended opens one then (checked every minute).
 - **Editors** can post updates to an automatic incident, rename and resolve
   it like any other. If an editor resolves it – or an administrator deletes
-  it – while its alerts still fire, they do not reopen it; when they fire
-  again later, they open a new incident. Tools that report when an alert
-  started (Alertmanager, Grafana, Azure Monitor) also open a new incident
-  for an alert that starts again without having cleared in between, e.g.
-  with `send_resolved: false`.
-- A **paused** integration lists its requests but changes nothing. Deleting
-  an integration stops its webhook URL; the incidents it opened stay (open
-  ones until an editor resolves them).
+  it – while its alerts still fire, they do not reopen it: they open a new
+  incident once they have cleared and fire again, or when the tool reports
+  that they started again (tools that report when a problem started, e.g.
+  Alertmanager, Grafana and Azure Monitor; this also covers
+  `send_resolved: false`).
+- A **paused** integration lists its requests, and its firing alerts change
+  nothing; its resolved alerts still clear, so that no incident stays open
+  because its recovery came while the integration was paused. Deleting an
+  integration stops its webhook URL and forgets its alerts; the incidents it
+  opened stay. Open ones are then resolved by an editor (or by other
+  monitoring alerts attached to them, when they clear).
 - Repeated notifications of a firing alert (e.g. after Alertmanager's
-  `repeat_interval`) only update it. If a tool cannot reach the status page
-  when an alert clears, the incident stays open: resolve it by hand.
+  `repeat_interval`) only update it. If a tool could not tell the status page
+  that an alert ended (e.g. the status page was being restarted), **clear
+  the alert** on the integration page (*Firing alerts → Clear*): it is then
+  treated as resolved, as if the tool had reported it, and its incident is
+  resolved when it was the last alert. (Resolving the incident by hand
+  instead leaves the alert firing: a tool that does not report when a
+  problem started then opens no incident for its next problem until the
+  alert has cleared.)
+- A request is applied even if the tool hangs up before the answer; one
+  that had to wait too long behind other alerts is answered 503 (*Not
+  applied*), and tools that retry send it again. While the status page runs
+  in setup mode, webhook URLs answer 503 as well.
 
 ### Which service an alert names, and its impact
 

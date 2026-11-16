@@ -185,7 +185,10 @@ func (s *Store) UpdateService(ctx context.Context, svc *Service) error {
 // DeleteService deletes a service (and its incident/maintenance links).
 // Returns ErrNotFound for an unknown service.
 func (s *Store) DeleteService(ctx context.Context, id int64) error {
-	err := affected(s.db.ExecContext(ctx, `DELETE FROM services WHERE id = ?`, id))
+	// In the monitoring turn: the cascade deletes alerts (see DeleteIncident).
+	err := s.inMonitoringTx(ctx, func(tx *db.Tx) error {
+		return affected(tx.ExecContext(ctx, `DELETE FROM services WHERE id = ?`, id))
+	})
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("delete service %d: %w", id, err)
 	}

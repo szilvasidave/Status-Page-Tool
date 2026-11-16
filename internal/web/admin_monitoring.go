@@ -13,6 +13,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/szilvasidave/status-page-tool/internal/monitoring"
 	"github.com/szilvasidave/status-page-tool/internal/store"
@@ -28,11 +29,14 @@ type adminIntegrationRow struct {
 	ProviderName string
 }
 
+// providerName is the name of a tool; an ID this version does not know
+// (e.g. after going back to an older version) is read as the generic
+// format.
 func providerName(id string) string {
 	if p := monitoring.Lookup(id); p != nil {
 		return p.Name
 	}
-	return id
+	return "Unknown tool “" + id + "” (read as " + monitoring.Lookup(monitoring.Generic).Name + ")"
 }
 
 func (s *Server) handleIntegrations(w http.ResponseWriter, r *http.Request) {
@@ -59,16 +63,25 @@ type adminIntegrationForm struct {
 	Heading     string               // the saved name
 	SavedPaused bool                 // the saved pause (the form may differ)
 	Provider    *monitoring.Provider // the saved tool, for its setup instructions
-	HookURL     string               // <base>/hooks, for the Authorization header
-	NewURL      string               // the webhook URL generated just now (shown once)
-	Replaced    bool                 // NewURL replaced a previous URL
-	Example     string               // the tool's example with the webhook URL (or a placeholder)
-	BaseURLSet  bool
-	Alerts      []store.IntegrationAlert
-	Events      []store.IntegrationEvent
-	ShowSetup   bool // open the setup instructions: new URL, or nothing received yet
-	EventsLimit int
+	// ProviderName is the saved tool's name (see providerName).
+	ProviderName string
+	// UnknownProvider is the saved tool's ID if this version does not know
+	// it: the select keeps it, so that saving other settings keeps it.
+	UnknownProvider string
+	HookURL         string // <base>/hooks, for the Authorization header
+	NewURL          string // the webhook URL generated just now (shown once)
+	Replaced        bool   // NewURL replaced a previous URL
+	Example         string // the tool's example with the webhook URL (or a placeholder)
+	BaseURLSet      bool
+	Alerts          []store.IntegrationAlert // the first adminIntegrationAlerts
+	MoreAlerts      int                      // firing alerts not listed
+	Events          []store.IntegrationEvent
+	ShowSetup       bool // open the setup instructions: new URL, or nothing received yet
+	EventsLimit     int
 }
+
+// adminIntegrationAlerts is the number of firing alerts listed on the page.
+const adminIntegrationAlerts = 100
 
 // ImpactChoices returns the options of the impact select ("" = by the
 // alert's severity).
@@ -113,9 +126,9 @@ func (s *Server) adminIntegrationDetails(r *http.Request, f *adminIntegrationFor
 			f.NewURL, f.Replaced = monitoring.URL(r, st.BaseURL, t.token), t.replaced
 		}
 	}
-	f.Provider = monitoring.Lookup(saved.Provider)
+	f.Provider, f.ProviderName = monitoring.Lookup(saved.Provider), providerName(saved.Provider)
 	if f.Provider == nil {
-		f.Provider = monitoring.Lookup(monitoring.Generic)
+		f.Provider, f.UnknownProvider = monitoring.Lookup(monitoring.Generic), saved.Provider
 	}
 	url := f.NewURL
 	if url == "" {
@@ -125,6 +138,9 @@ func (s *Server) adminIntegrationDetails(r *http.Request, f *adminIntegrationFor
 	if f.Alerts, err = s.Store.ListIntegrationAlerts(ctx, f.Integration.ID); err != nil {
 		return err
 	}
+	if len(f.Alerts) > adminIntegrationAlerts {
+		f.Alerts, f.MoreAlerts = f.Alerts[:adminIntegrationAlerts], len(f.Alerts)-adminIntegrationAlerts
+	}
 	f.EventsLimit = adminIntegrationEvents
 	if f.Events, err = s.Store.ListIntegrationEvents(ctx, f.Integration.ID, adminIntegrationEvents); err != nil {
 		return err
@@ -133,8 +149,10 @@ func (s *Server) adminIntegrationDetails(r *http.Request, f *adminIntegrationFor
 	return nil
 }
 
-// adminParseIntegrationForm reads the form into f and validates it.
-func adminParseIntegrationForm(r *http.Request, f *adminIntegrationForm) {
+// adminParseIntegrationForm reads the form into f and validates it. On the
+// edit page the saved tool is accepted even if this version does not know
+// it (savedProvider).
+func adminParseIntegrationForm(r *http.Request, f *adminIntegrationForm, savedProvider string) {
 	f.Errors = adminFormErrors{}
 	in := &f.Integration
 	in.Name = formTrim(r, "name")
@@ -148,7 +166,7 @@ func adminParseIntegrationForm(r *http.Request, f *adminIntegrationForm) {
 	case tooLong(in.Name, 100):
 		f.Errors.add("name", "The name is too long (at most 100 characters).")
 	}
-	if monitoring.Lookup(in.Provider) == nil {
+	if monitoring.Lookup(in.Provider) == nil && (f.IsNew || in.Provider != savedProvider) {
 		f.Errors.add("provider", "Choose the monitoring tool.")
 	}
 	if in.Impact != "" && !store.ValidImpact(in.Impact) {
@@ -163,7 +181,7 @@ func (s *Server) handleIntegrationNew(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIntegrationCreate(w http.ResponseWriter, r *http.Request) {
 	f := &adminIntegrationForm{IsNew: true}
-	adminParseIntegrationForm(r, f)
+	adminParseIntegrationForm(r, f, "")
 	if len(f.Errors) > 0 {
 		s.adminRenderIntegration(w, r, http.StatusUnprocessableEntity, f)
 		return
@@ -213,7 +231,7 @@ func (s *Server) handleIntegrationUpdate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	f := &adminIntegrationForm{Integration: store.Integration{ID: in.ID}}
-	adminParseIntegrationForm(r, f)
+	adminParseIntegrationForm(r, f, in.Provider)
 	if len(f.Errors) > 0 {
 		s.adminRenderIntegration(w, r, http.StatusUnprocessableEntity, f)
 		return
@@ -251,12 +269,42 @@ func (s *Server) handleIntegrationNewURL(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, adminIntegrationPath(in.ID)+"?"+newURLParam+"="+id+"#webhook", http.StatusSeeOther)
 }
 
+// handleIntegrationClearAlert treats a firing alert as resolved, as if the
+// tool had reported its recovery (the remedy for a recovery that was lost).
+func (s *Server) handleIntegrationClearAlert(w http.ResponseWriter, r *http.Request) {
+	in := s.adminLoadIntegration(w, r)
+	if in == nil {
+		return
+	}
+	back := adminIntegrationPath(in.ID) + "#alerts"
+	lines, err := s.Monitoring.Clear(r.Context(), in, r.PostFormValue("key"), adminActor(r))
+	if errors.Is(err, store.ErrNotFound) {
+		s.redirectWithFlash(w, r, back, "info", "This alert is no longer firing.")
+		return
+	} else if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	s.redirectWithFlash(w, r, back, "success", "The alert has been cleared: "+strings.Join(lines, " "))
+}
+
 func (s *Server) handleIntegrationDelete(w http.ResponseWriter, r *http.Request) {
 	in := s.adminLoadIntegration(w, r)
 	if in == nil {
 		return
 	}
-	err := s.Store.DeleteIntegration(r.Context(), in.ID)
+	alerts, err := s.Store.ListIntegrationAlerts(r.Context(), in.ID)
+	if err != nil {
+		s.serverError(w, r, err)
+		return
+	}
+	open := map[int64]bool{}
+	for _, a := range alerts {
+		if a.IncidentOpen {
+			open[a.IncidentID] = true
+		}
+	}
+	err = s.Store.DeleteIntegration(r.Context(), in.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		s.notFound(w, r)
 		return
@@ -266,8 +314,12 @@ func (s *Server) handleIntegrationDelete(w http.ResponseWriter, r *http.Request)
 	}
 	s.Log.Info("monitoring integration deleted", "integration", in.Name, "user", adminActor(r))
 	msg := "The integration “" + in.Name + "” has been deleted. Its webhook URL no longer works."
-	if in.Firing > 0 {
-		msg += " Incidents it opened stay open until an editor resolves them."
+	switch len(open) {
+	case 0:
+	case 1:
+		msg += " The open incident of its alerts stays open until an editor resolves it (or other monitoring alerts attached to it clear)."
+	default:
+		msg += " The open incidents of its alerts stay open until an editor resolves them (or other monitoring alerts attached to them clear)."
 	}
 	s.redirectWithFlash(w, r, "/admin/monitoring", "success", msg)
 }

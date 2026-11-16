@@ -15,7 +15,7 @@
       <div class="entry-head">
         <a class="entry-title" href="/manage/incidents/{{.ID}}">{{.Title}}</a>
         {{- if .Automatic}}
-        <span class="badge badge-muted" title="Opened by monitoring; resolved when its alerts clear">Monitoring</span>
+        <span class="badge badge-muted" title="Opened by monitoring">Monitoring</span>
         {{- end}}
         {{template "status-pill" .Impact}}
         {{template "incident-badge" .Status}}

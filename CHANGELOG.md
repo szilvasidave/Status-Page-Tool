@@ -15,10 +15,20 @@ for the setup.
   webhook URL in the tool. A firing alert opens an incident of the service
   it names, with the alert's impact; further alerts of the service join it,
   and the incident is resolved when its alerts clear – with e-mails to the
-  service's groups when it opens and when it is resolved, if wanted. During
-  maintenance of a service its alerts wait until the maintenance has ended.
-  Incidents that people reported are never changed, and editors can post
-  updates to, rename and resolve the automatic ones.
+  service's groups when it opens and when it is resolved, if the integration
+  that opens it sends e-mails. During maintenance of a service its alerts
+  wait until the maintenance has ended. Incidents that people reported are
+  never changed, and editors can post updates to, rename and resolve the
+  automatic ones.
+- When a tool could not report that an alert ended (e.g. while the status
+  page was restarted), an administrator **clears the alert** on the
+  integration page, which resolves its incident as the tool's recovery
+  would have. A paused integration still applies recoveries, so that no
+  incident stays open because of the pause.
+- Alerts are applied even if the tool hangs up before the answer; a large
+  batch of alerts takes about a second and never holds up the pages. When
+  the status page is too busy, or still in setup mode, tools get 503 and can
+  send the alerts again.
 - Instructions for **Prometheus Alertmanager, Grafana, Uptime Kuma, Azure
   Monitor, Zabbix, PRTG, Datadog, UptimeRobot and Nagios, Icinga or
   Checkmk**; any other tool or script that can send a webhook uses a simple

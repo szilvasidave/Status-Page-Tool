@@ -90,6 +90,29 @@ func (n *Notifier) IncidentUpdated(ctx context.Context, incidentID int64, previo
 	return n.incident(ctx, incidentID, previousServiceIDs, false)
 }
 
+// IncidentUpdateNotice notifies about one update of an incident (monitoring
+// opening or resolving it): created marks the update that opened it. The
+// e-mail shows that update even if the incident changed since, e.g. was
+// resolved by a request that came right after.
+func (n *Notifier) IncidentUpdateNotice(ctx context.Context, incidentID, updateID int64, created bool) (int, error) {
+	about := "incident " + strconv.FormatInt(incidentID, 10)
+	st, err := n.mailSettings(ctx, about)
+	if st == nil {
+		return 0, err
+	}
+	inc, err := n.store.GetIncident(ctx, incidentID)
+	if err != nil {
+		return 0, err
+	}
+	var upd *store.IncidentUpdate // nil: the latest update
+	for i := range inc.Updates {
+		if inc.Updates[i].ID == updateID {
+			upd = &inc.Updates[i]
+		}
+	}
+	return n.queue(ctx, about, inc.ServiceIDs(), RenderIncident(st, inc, upd, created))
+}
+
 // MaintenanceScheduled notifies about a newly created maintenance. A window
 // that had already started (or ended) when it was created gets the
 // "started" (or "completed") e-mail instead, as the worker sends none for it.

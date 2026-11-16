@@ -22,16 +22,24 @@
 <div class="flash">
   {{- if $inc.Resolved}}
   This incident was opened by monitoring.
-  {{- else}}
+  {{- else if .Data.Alerts}}
   This incident was opened by monitoring and is resolved automatically when its alerts have cleared; while they fire, monitoring
-  sets the impact on their services. You can post updates and rename it as usual. If you resolve it yourself, alerts that still
-  fire do not reopen it; when they fire again later, they open a new incident.
+  sets the impact on their services. You can post updates and rename it as usual. If you resolve it yourself, the alerts that
+  still fire do not reopen it: they open a new incident after they have cleared, or when the tool reports that they started
+  again. If the tool missed that an alert ended, an administrator can clear the alert (Admin → Monitoring).
+  {{- else}}
+  This incident was opened by monitoring, but no monitoring alert is attached to it any more (its integration was deleted, or
+  it was reopened after monitoring had resolved it): resolve it yourself when the problem is over. Alerts of its services that
+  fire meanwhile join it, and resolve it when they clear.
   {{- end}}
   {{- with .Data.Alerts}}
   <ul>
     {{- range .}}
     <li>{{with .Title}}{{.}}{{else}}<span class="mono">{{.Key}}</span>{{end}} – {{.ServiceName}}, {{statusLabel .Impact}}, firing since
       <time datetime="{{isoTime .StartedAt}}">{{fmtTime .StartedAt}}</time> ({{.IntegrationName}})</li>
+    {{- end}}
+    {{- with $.Data.MoreAlerts}}
+    <li>… and {{.}} more {{if eq . 1}}alert{{else}}alerts{{end}}</li>
     {{- end}}
   </ul>
   {{- end}}

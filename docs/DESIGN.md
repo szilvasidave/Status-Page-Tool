@@ -122,8 +122,12 @@ migration 5 `idp_groups.directory_name`, `directory_checked_at` and
 names that only repeat the external id, except those of provisioned groups)
 and `users.app_roles`, migration 6 the tables `integrations`,
 `integration_alerts` and `integration_events` (monitoring integrations),
-`services.monitor_names`, `incidents.automatic` and
-`incident_updates.source`.
+`services.monitor_names`, `incidents.automatic`, `incidents.automatic_notify`
+and `incident_updates.source`. Columns that an unreleased migration gained or
+lost after branch builds had applied it are repaired at the start
+(`columnRepairs`, `columnDrops`: e.g. builds of migration 6 kept the rows of
+cleared alerts with `integration_alerts.firing` false; the repair deletes them
+and drops the column).
 
 ## Key decisions
 
@@ -637,7 +641,14 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   on the page of that integration – `tokenSlot.subject`) and redirect to the
   integration page with the slot id (`?new-url=`). A new token replaces the
   old one at once; deleting an integration deletes its alerts and request log
-  (the incidents stay).
+  (the incidents stay; open ones are resolved by an editor, or by the alerts
+  of other integrations attached to them). A provider ID this version does
+  not know (after going back to an older version) is read as the generic
+  format and kept when the integration is saved. Paused: firing alerts change
+  nothing, resolved alerts are applied (they can only end what the
+  integration's alerts started; otherwise a recovery received while paused
+  would leave its incident open, or release a held-back alert after the
+  maintenance).
 * **Endpoint** (`monitoring.Handler`, mounted at `/hooks` and `/hooks/`):
   like `/scim/`, the auth middleware passes it untouched (no session, cookie
   or CSRF check) and the setup redirect lets it through; the request log of
@@ -647,15 +658,26 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   proxy prefix). POST only (405 with `Allow: POST`); unknown
   token 401 (logged with the client address, never the token); body ≤ 1 MiB
   (413); a request that cannot be read 400 with the reason; everything that
-  was read 200 – also when an alert names no service or the integration is
-  paused, so that tools do not retry it – with a JSON summary. Each request of
-  a known integration is recorded (`integration_events`: outcome changed,
-  unchanged, unmatched, test, paused or invalid, a summary line per alert
-  and service – at most 100 lines –, the first 8 KB of the body, as valid
-  UTF-8 without NUL characters); the latest 50 per integration are kept
-  and shown on its page. The e-mails and the record of a request whose
-  alerts were applied use a context that the tool cannot cancel by hanging
-  up.
+  was read and applied 200 – also when an alert names no service or the
+  integration is paused, so that tools do not retry it – with a JSON
+  summary; 503 with `Retry-After` when it could not be applied in time
+  (waiting behind other alerts, `defaultApplyTimeout` 5 minutes), 500 for an
+  error. The body is decoded to UTF-8 first (`toUTF8`: the charset of the
+  Content-Type if it is Windows-1252 or a subset, else Windows-1252 if it is
+  not valid UTF-8 – Windows PowerShell 5.1 sends that without saying so).
+  Once read, the alerts are applied, the e-mails queued and the request
+  recorded with a context that the tool cannot cancel by hanging up (tools
+  such as Uptime Kuma do not send a notification twice). Each request of a
+  known integration is recorded (`integration_events`: outcome changed,
+  unchanged, unmatched, test, paused, invalid or failed, a summary line per
+  alert and service – at most 100 lines –, the first 8 KB of the body with a
+  note when it was longer, as valid UTF-8 without NUL characters); the
+  latest 50 per integration are kept and shown on its page. Records the
+  status page writes itself (`IntegrationEvent.Internal`: alerts released
+  after maintenance, alerts an administrator cleared) have no body and do
+  not set the integration's last request time. In setup mode `/hooks`
+  answers 503 (`monitoring.ServeUnavailable`) instead of redirecting to
+  `/setup`, which tools that follow redirects would take for a delivery.
 * **Providers** (`providers.go`): ID (stored, never changed), name, `Parse`,
   which values name the service, setup steps and an example (`{url}` is
   replaced by the webhook URL on the page, or by a placeholder once it has
@@ -692,10 +714,22 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   that name are affected (shared names let one alert affect several).
   `NormalizeMonitorNames` stores them trimmed, collapsed and without
   duplicates; the service form allows 50 of ≤ 200 characters.
-* **What alerts change** (`store.ApplyAlerts`, one transaction per request;
-  on PostgreSQL after the advisory lock `monitoringLockID`, so that two
-  requests cannot both open an incident for a service; SQLite serialises
-  writers). State: `integration_alerts`, one row per integration, firing
+* **What alerts change** (`store.ApplyAlerts`, one transaction per request).
+  The transactions that change alerts run one at a time: in the process
+  (`monitoringTurn`, a semaphore taken before the transaction, so that
+  requests queued behind a long batch hold no database connection the pages
+  need; `ErrBusy` when the context ends first) and on PostgreSQL across
+  processes (advisory lock `monitoringLockID`), so that two requests cannot
+  both open an incident for a service; SQLite serialises writers anyway.
+  Deleting an incident, a service or an integration takes the same turn and
+  lock (`inMonitoringTx`): their cascades change alert rows, and a request
+  that holds an alert row and then locks the incident would otherwise
+  deadlock with them on PostgreSQL. A run asks once per service whether
+  maintenance is in progress and which incident is open, locks each
+  incident once, and writes the rows of an alert with few statements (one
+  `INSERT` of all its new rows, one `UPDATE` of all its repeats), so that a
+  batch of 1000 alerts over 40 services sharing a name takes about a second.
+  State: `integration_alerts`, one row per integration, firing
   alert (key) and service, with `incident_id`, `suppressed` and the start
   the tool reported (`reported_start`); a row is deleted when its alert
   clears, so the table holds only firing alerts (tools with a key per
@@ -711,30 +745,47 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   deleting at that moment – it would be dismissed with it, or the request
   would fail on the foreign key; the next candidate, else a new incident,
   is taken. While a maintenance of the service is in progress the alert is
-  suppressed instead. A firing alert with a row (repeat) updates title and
-  impact; if its incident was resolved by an editor or deleted, it stays
-  detached ("dismissed") until it clears, unless the tool reports a start
-  more than a minute after the stored one (`newOccurrence`: the alert
-  started again without the status page hearing that it cleared, e.g.
-  Alertmanager without `send_resolved`); then it is attached like a new
-  occurrence. A suppressed one is attached once the maintenance has ended.
-  A resolved alert clears all rows of its key (whatever the names are now).
+  suppressed instead. A firing alert with a row (repeat) updates title,
+  impact and – while attached or suppressed – the reported start (an alert
+  that flapped unseen is re-sent with its new start); if its incident was
+  resolved by an editor or deleted, it stays detached ("dismissed") until
+  it clears, unless the tool reports a start more than a minute after the
+  stored one, i.e. after the start of the occurrence the incident showed
+  (`newOccurrence`: the alert started again without the status page hearing
+  that it cleared, e.g. Alertmanager without `send_resolved`); then it is
+  attached like a new occurrence. A suppressed one is attached once the
+  maintenance has ended. A resolved alert clears all rows of its key
+  (whatever the names are now). `ClearIntegrationAlert` does the same for an
+  administrator (*Clear* on the integration page, `POST
+  /admin/monitoring/{id}/alerts/clear`): the remedy for a recovery the tool
+  did not send or the status page did not receive; its updates say that an
+  administrator cleared the alert.
   At the end (`finish`) each changed incident is brought in line: the impact
   on each service with firing alerts = their worst impact (a service without
   firing alerts keeps its impact, one an editor removed is not added again),
   one update per incident and request (source = the integration's name;
-  readers see "<name> (monitoring)"), resolution when no attached alert
-  fires. An open incident is locked first (`UPDATE … WHERE status <>
-  resolved`), so that an editor's resolution at the same moment is not
-  undone. People's incidents are never touched.
-* **E-mails**: with notify on, `IncidentCreated` when monitoring opens an
-  incident and `IncidentUpdated` when it resolves one; not for the updates
-  in between.
+  readers see "<name> (monitoring)"; alerts with one title are listed once
+  with their number, at most ten lines, so that a storm of alerts does not
+  make huge updates and e-mails), resolution when no attached alert fires.
+  An open incident is locked first (`UPDATE … WHERE status <> resolved`), so
+  that an editor's resolution at the same moment is not undone. People's
+  incidents are never touched. The title of a new incident names the
+  service unless the alert's title names it in whole words (`namesWords`:
+  "AD" is not in "Load average").
+* **E-mails** (`IncidentNotice`, sent with `Notifier.IncidentUpdateNotice`,
+  which renders that very update, so that an opening e-mail shows the
+  opening even if a request resolved the incident before it was queued):
+  the integration that opens an incident decides – with notify on, its
+  opening is e-mailed, and its resolution by monitoring
+  (`incidents.automatic_notify`), whichever integration's alert clears
+  last; an incident opened without e-mails is resolved without one. Opened
+  and resolved in one run: one e-mail, about the resolution. Not for the
+  updates in between.
 * **Worker** (`Handler.Run`, every minute): `ReleaseSuppressedAlerts` opens
   the incidents of suppressed alerts that still fire once no maintenance of
   their service is in progress (not for paused integrations; it first counts
   them without a writing transaction), sends the e-mails and records them in
-  the request logs.
+  the request logs (internal records, see Endpoint).
 
 ### Adding a monitoring tool
 
@@ -770,11 +821,12 @@ the defaults), `/admin/services`, `/admin/groups` (`POST /admin/groups/names`
 looks up the names of all groups in Entra ID), `/admin/users` (`POST
 /admin/users/{id}/delete` removes a user who is not provisioned),
 `/admin/notifications`, `/admin/monitoring` (`/new`; `/{id}`, `POST
-/admin/monitoring/{id}/url` – a new webhook URL, shown once – and `POST
+/admin/monitoring/{id}/url` – a new webhook URL, shown once –, `POST
+/admin/monitoring/{id}/alerts/clear` – clear a firing alert – and `POST
 /admin/monitoring/{id}/delete`).
 Monitoring tools: `POST /hooks/{token}`, or `POST /hooks` with
 `Authorization: Bearer <token>`, outside the session, CSRF and setup
-redirect.
+redirect (503 in setup mode).
 Provisioning: `/scim/v2/…` (`Users`, `Groups`, `ServiceProviderConfig`,
 `ResourceTypes`, `Schemas`) with the bearer token, outside the session, CSRF
 and setup redirect.

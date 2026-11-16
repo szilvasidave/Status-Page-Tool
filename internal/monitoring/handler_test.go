@@ -28,17 +28,15 @@ type fakeNotifier struct {
 	calls []string
 }
 
-func (n *fakeNotifier) IncidentCreated(_ context.Context, id int64) (int, error) {
+// IncidentUpdateNotice records "created <incident>" or "updated <incident>".
+func (n *fakeNotifier) IncidentUpdateNotice(_ context.Context, id, _ int64, created bool) (int, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.calls = append(n.calls, "created "+strconv.FormatInt(id, 10))
-	return 1, nil
-}
-
-func (n *fakeNotifier) IncidentUpdated(_ context.Context, id int64, _ []int64) (int, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.calls = append(n.calls, "updated "+strconv.FormatInt(id, 10))
+	what := "updated "
+	if created {
+		what = "created "
+	}
+	n.calls = append(n.calls, what+strconv.FormatInt(id, 10))
 	return 1, nil
 }
 

@@ -278,7 +278,7 @@ func TestMonitoringEndToEnd(t *testing.T) {
 	mustContain(t, e.get("/").Body, "VPN gateway slow")
 	mustContain(t, e.get("/incidents/1").Body, "Detected by monitoring", "Monitoring reports a problem: “VPN gateway slow”.<br><br>Latency above 2 s",
 		"by Prometheus (monitoring)")
-	mustContain(t, e.get("/manage").Body, `title="Opened by monitoring; resolved when its alerts clear">Monitoring</span>`)
+	mustContain(t, e.get("/manage").Body, `title="Opened by monitoring">Monitoring</span>`)
 	mustContain(t, e.get("/manage/incidents/1").Body, "This incident was opened by monitoring and is resolved automatically",
 		"<li>VPN gateway slow – VPN, Degraded performance, firing since")
 	mustContain(t, e.get("/admin/monitoring/1").Body, `<span class="badge event-changed">Incidents changed</span>`,

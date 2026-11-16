@@ -29,8 +29,10 @@ type manageIncidentData struct {
 	Update      manageIncidentForm
 	RenameTitle string
 	RenameError string
-	// Alerts are the firing alerts of an incident that monitoring opened.
-	Alerts []store.IntegrationAlert
+	// Alerts are the firing alerts of an incident that monitoring opened
+	// (the first manageIncidentAlerts of them); MoreAlerts counts the rest.
+	Alerts     []store.IntegrationAlert
+	MoreAlerts int
 }
 
 // manageRenderIncident renders the incident management page; for an
@@ -43,9 +45,16 @@ func (s *Server) manageRenderIncident(w http.ResponseWriter, r *http.Request, st
 			return
 		}
 		d.Alerts = alerts
+		if len(alerts) > manageIncidentAlerts {
+			d.Alerts, d.MoreAlerts = alerts[:manageIncidentAlerts], len(alerts)-manageIncidentAlerts
+		}
 	}
 	s.renderStatus(w, r, status, "manage_incident", d.Incident.Title, d)
 }
+
+// manageIncidentAlerts is the number of firing alerts listed on the page of
+// an incident.
+const manageIncidentAlerts = 20
 
 // newManageIncidentData returns the page data with the update form prefilled
 // with the current status and impacts.

@@ -14,6 +14,9 @@
       {{- if .IsNew}}
       <option value="">Choose…</option>
       {{- end}}
+      {{- with .UnknownProvider}}
+      <option value="{{.}}"{{if eq . $.Integration.Provider}} selected{{end}}>Unknown tool “{{.}}” (read as Other tool or script)</option>
+      {{- end}}
       {{- range .Providers}}
       <option value="{{.ID}}"{{if eq .ID $.Integration.Provider}} selected{{end}}>{{.Name}}</option>
       {{- end}}
@@ -36,8 +39,8 @@
   </div>
   <div class="field">
     <label class="checkbox"><input type="checkbox" name="notify" aria-describedby="notify_help"{{if .Integration.Notify}} checked{{end}}> Send e-mail notifications</label>
-    <span class="help" id="notify_help">E-mail the groups of the affected services when monitoring opens or resolves an
-      incident (not for the updates in between).</span>
+    <span class="help" id="notify_help">E-mail the groups of the affected services when this integration's alerts open an
+      incident, and when monitoring resolves it (not for the updates in between).</span>
   </div>
 {{end}}
 
@@ -49,6 +52,7 @@
   {{- else if eq . "test"}}Test
   {{- else if eq . "paused"}}Paused
   {{- else if eq . "invalid"}}Not understood
+  {{- else if eq . "failed"}}Not applied
   {{- else}}{{.}}{{end}}
 {{- end}}
 
@@ -71,10 +75,15 @@
 </form>
 {{- else}}
 <h1>{{.Heading}}</h1>
-<p class="small muted meta-row">{{.Provider.Name}} · {{.Integration.Firing}} firing {{if eq .Integration.Firing 1}}alert{{else}}alerts{{end}} ·
+<p class="small muted meta-row">{{.ProviderName}} · {{.Integration.Firing}} firing {{if eq .Integration.Firing 1}}alert{{else}}alerts{{end}} ·
   {{with .Integration.LastEventAt}}last request <time datetime="{{isoTime .}}" title="{{fmtTime .}}">{{ago .}}</time>{{else}}no request yet{{end}}</p>
+{{- if .Errors}}
+<div class="flash flash-error" role="alert">The settings were not saved: <a href="#settings">correct the highlighted field
+  below</a>.</div>
+{{- end}}
 {{- if .SavedPaused}}
-<p class="flash flash-warning">This integration is paused: its requests are listed below but change nothing.</p>
+<p class="flash flash-warning">This integration is paused: firing alerts it receives are listed below but change nothing;
+  resolved alerts still clear.</p>
 {{- end}}
 
 <section class="card" id="webhook" aria-labelledby="webhook-title">
@@ -128,7 +137,7 @@
 <div class="card table-wrap" tabindex="0" role="region" aria-labelledby="alerts">
   <table class="table">
     <thead>
-      <tr><th scope="col">Alert</th><th scope="col">Service</th><th scope="col">Impact</th><th scope="col">Since</th><th scope="col">Incident</th></tr>
+      <tr><th scope="col">Alert</th><th scope="col">Service</th><th scope="col">Impact</th><th scope="col">Since</th><th scope="col">Incident</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
     </thead>
     <tbody>
       {{- range .Alerts}}
@@ -142,11 +151,24 @@
           {{- else if .Suppressed}}<span class="small muted">waits for the end of the maintenance</span>
           {{- else}}<span class="small muted">incident deleted</span>{{end -}}
         </td>
+        <td>
+          <form method="post" action="/admin/monitoring/{{$.Data.Integration.ID}}/alerts/clear" class="inline"
+            data-confirm="Clear the alert “{{with .Title}}{{.}}{{else}}{{.Key}}{{end}}”? The status page treats it as resolved, as if the monitoring tool had reported it: its incident is resolved when it was the last alert. If it still fires, the tool's next notification reports it again.">
+            {{template "csrf" $}}
+            <input type="hidden" name="key" value="{{.Key}}">
+            <button type="submit" class="btn-small">Clear</button>
+          </form>
+        </td>
       </tr>
       {{- end}}
     </tbody>
   </table>
 </div>
+{{- with .MoreAlerts}}
+<p class="help">… and {{.}} more firing {{if eq . 1}}alert{{else}}alerts{{end}}, not listed.</p>
+{{- end}}
+<p class="help">If the tool did not report that an alert ended (e.g. the status page could not be reached at that
+  moment), clear the alert: its incident is then resolved as if the tool had reported it.</p>
 {{- else}}
 <p class="notice">No alert of this integration is firing.</p>
 {{- end}}
@@ -186,7 +208,8 @@
   {{template "integration-fields" .}}
   <div class="field">
     <label class="checkbox"><input type="checkbox" name="paused" aria-describedby="paused_help"{{if .Integration.Paused}} checked{{end}}> Paused</label>
-    <span class="help" id="paused_help">Its requests are listed but change nothing, e.g. while the monitoring tool is reworked.</span>
+    <span class="help" id="paused_help">Its requests are listed, but firing alerts change nothing, e.g. while the monitoring tool
+      is reworked; resolved alerts still clear, so that no incident stays open.</span>
   </div>
   <div class="form-actions">
     <button type="submit" class="btn-primary">Save integration</button>
@@ -196,8 +219,8 @@
 
 <section class="danger-zone" aria-labelledby="delete-integration">
   <h2 id="delete-integration">Delete integration</h2>
-  <p class="muted">Its webhook URL stops working. The incidents it opened are kept; open ones stay open until an editor
-    resolves them.</p>
+  <p class="muted">Its webhook URL stops working and its alerts are forgotten. The incidents it opened are kept; open ones
+    stay open until an editor resolves them (or other monitoring alerts attached to them clear).</p>
   <form method="post" action="/admin/monitoring/{{.Integration.ID}}/delete" data-confirm="Delete the integration “{{.Heading}}”? Its webhook URL stops working at once.">
     {{template "csrf" $}}
     <button type="submit" class="btn-danger">Delete integration</button>

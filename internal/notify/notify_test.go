@@ -847,3 +847,37 @@ func TestSendTestEmail(t *testing.T) {
 		t.Errorf("dead server: error = %v", err)
 	}
 }
+
+// IncidentUpdateNotice renders the update it is given: the opening of an
+// incident that monitoring opened is e-mailed as such even if a request
+// resolved it before the e-mail was queued.
+func TestNotifierIncidentUpdateNotice(t *testing.T) {
+	e := newNotifyEnv(t)
+	e.startSMTP(nil)
+	ctx := context.Background()
+	id := e.incident("Mail is slow", store.ServiceImpact{ServiceID: e.mail, Impact: store.StatusMajorOutage})
+	inc, err := e.store.GetIncident(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opening := inc.Updates[0].ID
+	resolution := &store.IncidentUpdate{Status: store.IncidentResolved, Message: "Monitoring reports that it is resolved."}
+	if err := e.store.AddIncidentUpdate(ctx, id, resolution, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := e.n.IncidentUpdateNotice(ctx, id, opening, true)
+	notifyExpect(t, "IncidentUpdateNotice (opening)", got, err, 2)
+	out := e.due()
+	if out[0].Subject != "[Acme IT] Investigating: Mail is slow" || !strings.Contains(out[0].BodyText, "A new incident has been reported.") {
+		t.Errorf("opening e-mail = %q\n%s", out[0].Subject, out[0].BodyText)
+	}
+
+	e.clearOutbox()
+	got, err = e.n.IncidentUpdateNotice(ctx, id, resolution.ID, false)
+	notifyExpect(t, "IncidentUpdateNotice (resolution)", got, err, 2)
+	out = e.due()
+	if out[0].Subject != "[Acme IT] Resolved: Mail is slow" || !strings.Contains(out[0].BodyText, "Monitoring reports that it is resolved.") {
+		t.Errorf("resolution e-mail = %q\n%s", out[0].Subject, out[0].BodyText)
+	}
+}
