@@ -2,8 +2,9 @@ package monitoring
 
 // What the requests of particular monitoring tools do, through the
 // handler: Grafana's alerts for rules it cannot evaluate, Azure's activity
-// log alerts, PRTG's states, Datadog's tests and renotifications, and the
-// starts that Uptime Kuma and the generic format report.
+// log alerts, PRTG's states and acknowledged alarms, Datadog's tests and
+// renotifications, and the starts that Azure's Service Health, Uptime Kuma
+// (1.23 and 2) and the generic format report.
 
 import (
 	"fmt"
@@ -118,6 +119,34 @@ func TestToolsAzureServiceHealth(t *testing.T) {
 	})
 }
 
+// Each notice of a Service Health incident is an alert of its own, fired
+// when Azure sends it; its start is when the impact began, the same in
+// every notice. So a later notice is a repeat: once an editor resolved the
+// incident, it opens none.
+func TestToolsAzureServiceHealthUpdates(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("Azure SQL", "test-ServiceHealthAlertRule")
+		in, token := e.integration("azuremonitor", nil)
+		e.integrationCreated(in, time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+		url := Path + "/" + token
+
+		// The impact began at 18:00; Azure fired the first notice at 18:20.
+		active := strings.Replace(strings.Replace(azureServiceHealthTest, `"stage": "Resolved"`, `"stage": "Active"`, 1), `"status": "Resolved"`, `"status": "Active"`, 1)
+		active = strings.Replace(active, `"impactStartTime": "2025-04-15T18:20:36.256Z"`, `"impactStartTime": "2025-04-15T18:00:00Z"`, 1)
+		e.post(url, "application/json", newAlertID(active, 1))
+		inc := e.theOpenIncident("active")
+		equal(t, "start", inc.StartedAt.Unix(), time.Date(2025, 4, 15, 18, 0, 0, 0, time.UTC).Unix())
+		e.editorResolves(inc.ID)
+
+		// An update of the incident, fired 40 minutes later.
+		update := strings.Replace(active, `"firedDateTime": "2025-04-15T18:20:36.256Z"`, `"firedDateTime": "2025-04-15T19:00:36.256Z"`, 1)
+		e.post(url, "application/json", newAlertID(update, 2))
+		equal(t, "the editor's resolution stays", len(e.openIncidents()), 0)
+		equal(t, "e-mails", e.notifier.calls, []string{fmt.Sprintf("created %d", inc.ID)})
+		equal(t, "still firing", len(e.firingAlerts(in)), 1)
+	})
+}
+
 func TestToolsAzureResourceHealth(t *testing.T) {
 	forEachDB(t, func(t *testing.T, e *hookEnv) {
 		e.service("VPN", "test-VM")
@@ -200,6 +229,34 @@ func TestToolsPRTG(t *testing.T) {
 	})
 }
 
+// PRTG: an acknowledged alarm (Down (Acknowledged)) stays an outage. The
+// Down trigger sends nothing when it comes back up; the second trigger, for
+// Up, does. Its notifications for sensors that come up from another status
+// change nothing.
+func TestToolsPRTGAcknowledged(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN", "vpn-gw01")
+		in, token := e.integration("prtg", nil)
+		url, form := Path+"/"+token, "application/x-www-form-urlencoded"
+
+		e.post(url, form, prtgBody("Down"))
+		inc := e.theOpenIncident("down")
+		// The alarm is acknowledged: "no longer Down" with the status Down
+		// (Acknowledged).
+		e.post(url, form, prtgBody("Down (Acknowledged)"))
+		equal(t, "acknowledged: still an outage", e.theOpenIncident("acknowledged").Impact(), store.StatusMajorOutage)
+		// The sensor is up again: the Up trigger.
+		e.post(url, form, prtgBody("Up"))
+		equal(t, "resolved", len(e.openIncidents()), 0)
+		equal(t, "e-mails", e.notifier.calls, []string{fmt.Sprintf("created %d", inc.ID), fmt.Sprintf("updated %d", inc.ID)})
+
+		// The Up trigger for a sensor that comes up from Warning.
+		e.post(url, form, prtgBody("Up"))
+		equal(t, "up from warning", e.events(in)[0].Outcome, store.EventUnchanged)
+		equal(t, "nothing opened", len(e.openIncidents()), 0)
+	})
+}
+
 func TestToolsDatadog(t *testing.T) {
 	forEachDB(t, func(t *testing.T, e *hookEnv) {
 		e.service("VPN")
@@ -236,8 +293,8 @@ func TestToolsDatadog(t *testing.T) {
 	})
 }
 
-// kumaDownAt is a down notification of Uptime Kuma at the time at; important
-// is false for a resend.
+// kumaDownAt is a down notification of Uptime Kuma 2 at the time at;
+// important is false for a resend.
 func kumaDownAt(at time.Time, important bool) string {
 	body := strings.Replace(kumaPayloadJSON(0, "timeout"), `"time": "2026-11-16 10:02:00.123"`, `"time": "`+at.UTC().Format("2006-01-02 15:04:05.000")+`"`, 1)
 	if !important {
@@ -269,12 +326,59 @@ func TestToolsUptimeKumaOccurrences(t *testing.T) {
 		equal(t, "resends open nothing", len(e.openIncidents()), 0)
 
 		// The monitor came up, but the status page missed it; an hour later
-		// it goes down again: a new problem.
+		// it goes down again: a new problem. (Uptime Kuma sends the same when
+		// one of its maintenances ends with the monitor still down:
+		// MAINTENANCE → DOWN is important.)
 		second := first.Add(time.Hour)
 		e.post(url, "application/json", kumaDownAt(second, true))
 		inc2 := e.theOpenIncident("down again")
 		equal(t, "a new incident", inc2.ID != inc.ID, true)
 		equal(t, "its start", inc2.StartedAt.Unix(), second.Unix())
+	})
+}
+
+// Uptime Kuma 1.23 counts a monitor's retries from 0 again when it restarts
+// (or the monitor is saved or resumed): a monitor with retries that is
+// still down is reported down again, as important. That is no new problem:
+// an incident an editor resolved stays resolved. A monitor without retries
+// is reported down only when it goes down, so there a later outage is a
+// new one.
+func TestToolsUptimeKuma123(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN")
+		in, token := e.integration("uptimekuma", nil)
+		e.integrationCreated(in, time.Now().Add(-24*time.Hour))
+		url := Path + "/" + token
+		down := func(at time.Time, important bool, maxretries int) {
+			t.Helper()
+			e.post(url, "application/json", kuma123(kumaDownAt(at, important), maxretries))
+		}
+
+		first := time.Now().Add(-5 * time.Hour).Truncate(time.Second)
+		down(first, true, 2)
+		inc := e.theOpenIncident("down")
+		e.editorResolves(inc.ID)
+		down(first.Add(10*time.Minute), false, 2) // a resend
+		// Uptime Kuma restarts an hour later; after the monitor's retries it
+		// is reported down again.
+		down(first.Add(time.Hour), true, 2)
+		equal(t, "the editor's resolution stays", len(e.openIncidents()), 0)
+		equal(t, "e-mails", e.notifier.calls, []string{fmt.Sprintf("created %d", inc.ID)})
+
+		// The monitor comes up. Without retries it goes down again later, and
+		// once more after its up notification got lost: two new problems.
+		e.post(url, "application/json", kuma123(kumaPayloadJSON(kumaUp, "200 - OK"), 0))
+		equal(t, "up", len(e.firingAlerts(in)), 0)
+		second := first.Add(2 * time.Hour)
+		down(second, true, 0)
+		inc2 := e.theOpenIncident("down without retries")
+		equal(t, "its start", inc2.StartedAt.Unix(), second.Unix())
+		e.editorResolves(inc2.ID)
+		third := second.Add(time.Hour)
+		down(third, true, 0)
+		inc3 := e.theOpenIncident("down again")
+		equal(t, "a new incident", inc3.ID != inc2.ID, true)
+		equal(t, "its start", inc3.StartedAt.Unix(), third.Unix())
 	})
 }
 

@@ -16,15 +16,30 @@ package monitoring
 //
 // The heartbeat of a change of state is "important"; the resends of a
 // monitor that stays down ("Resend Notification if Down X times
-// consecutively") are not (server/model/monitor.js, 1.23 and 2.0). So the
+// consecutively") are not (server/model/monitor.js, 1.23 to 2.1). So the
 // time of an important down heartbeat (UTC, "YYYY-MM-DD HH:mm:ss.SSS") is
-// when the problem began, and a later outage is a new occurrence. Uptime
-// Kuma sends nothing when a monitor enters or leaves one of its own
-// maintenances.
+// when the problem began, and a later outage is a new occurrence. But
+// Uptime Kuma 1.23 counts the retries of a monitor from 0 again whenever it
+// starts the monitor (when Uptime Kuma starts, and when the monitor is
+// saved or resumed): a monitor with retries that is still down goes through
+// them again – DOWN → PENDING, not sent – and is then reported down as
+// important (PENDING → DOWN), although the problem never ended; if it comes
+// up during them (PENDING → UP), nothing is sent at all. Uptime Kuma 2
+// keeps the retries, and its heartbeats carry them ("retries"). So the
+// start is taken from the heartbeats of Uptime Kuma 2, and from those of
+// 1.23 only for monitors without retries (the monitor's "maxretries" 0).
+//
+// Uptime Kuma sends nothing when a monitor enters one of its maintenances,
+// and nothing when the monitor is up when it ends (MAINTENANCE → UP) or
+// comes up during its retries after it (PENDING → UP; the maintenance
+// resets the retries). A monitor that is still down after it is reported
+// down again, as important (MAINTENANCE → DOWN, or PENDING → DOWN after its
+// retries): a new start, as for Uptime Kuma itself.
 
 import (
 	"encoding/json"
 	"strings"
+	"time"
 )
 
 type kumaPayload struct {
@@ -34,13 +49,15 @@ type kumaPayload struct {
 		Msg       string `json:"msg"`
 		Time      text   `json:"time"`
 		Important text   `json:"important"` // true or 1
+		Retries   text   `json:"retries"`   // Uptime Kuma 2 only
 	} `json:"heartbeat"`
 	Monitor *struct {
-		ID       text   `json:"id"`
-		Name     string `json:"name"`
-		URL      string `json:"url"`
-		Hostname string `json:"hostname"`
-		Tags     []struct {
+		ID         text   `json:"id"`
+		Name       string `json:"name"`
+		URL        string `json:"url"`
+		Hostname   string `json:"hostname"`
+		MaxRetries text   `json:"maxretries"`
+		Tags       []struct {
 			Name  string `json:"name"`
 			Value text   `json:"value"`
 		} `json:"tags"`
@@ -84,9 +101,7 @@ func ParseUptimeKuma(r *Request) (*Batch, error) {
 	case kumaDown:
 		a.Firing = true
 		a.Title = m.Name + " is down"
-		if important := strings.ToLower(string(p.Heartbeat.Important)); important == "true" || important == "1" {
-			a.StartsAt = parseTime(string(p.Heartbeat.Time)) // it went down
-		}
+		a.StartsAt = kumaStart(&p)
 	case kumaUp:
 		a.Title = m.Name + " is up"
 	default:
@@ -121,4 +136,19 @@ func ParseUptimeKuma(r *Request) (*Batch, error) {
 	}
 	b.Alerts = append(b.Alerts, a)
 	return b, nil
+}
+
+// kumaStart returns when the problem of a down heartbeat began: the time of
+// an important heartbeat (the monitor went down; not a resend) of Uptime
+// Kuma 2, which carries the retries, or of 1.23 for a monitor without
+// retries. Otherwise it returns the zero time (see above).
+func kumaStart(p *kumaPayload) time.Time {
+	hb := p.Heartbeat
+	if important := strings.ToLower(string(hb.Important)); important != "true" && important != "1" {
+		return time.Time{} // a resend
+	}
+	if hb.Retries == "" && strings.TrimSpace(string(p.Monitor.MaxRetries)) != "0" {
+		return time.Time{} // Uptime Kuma 1.23, a monitor with retries
+	}
+	return parseTime(string(hb.Time))
 }

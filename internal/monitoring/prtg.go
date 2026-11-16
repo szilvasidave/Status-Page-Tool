@@ -6,16 +6,20 @@ package monitoring
 //
 //	key=%sensorid&status=%laststatus&service=%device&service=%group&title=%device: %name&message=%message
 //
-// One state trigger for Down sends the template when a sensor goes Down and
+// A state trigger for Down sends the template when a sensor goes Down and
 // when it is no longer Down, with the sensor's current status (%laststatus;
 // before PRTG 20.1.57 %status, e.g. "Down ended (now: Warning)" or "Down
-// (was: Up)"). So the status is read as the state of the sensor: Down in
-// any form – Down, Down (Partial) in a failover cluster (a partial outage),
-// Down (Acknowledged) – is a problem, and every other status (Up, Warning,
-// Unusual, Paused, Unknown, None) ends it: a sensor that leaves Down for
-// Warning sends nothing more, so Warning cannot be a problem of its own.
-// The test of a notification template sends the placeholders unfilled
-// (status %laststatus, key %sensorid): a test.
+// (was: Warning)"). So the status is read as the state of the sensor: Down
+// in any form – Down, Down (Partial) in a failover cluster (a partial
+// outage), Down (Acknowledged) – is a problem, and every other status (Up,
+// Warning, Unusual, Paused, Unknown, None) ends it: a sensor that leaves
+// Down for Warning sends nothing more, so Warning cannot be a problem of
+// its own. For PRTG an acknowledged alarm is a status of its own, so the
+// Down trigger sends nothing when it comes back up: a second state trigger
+// for Up sends the template then (and whenever a sensor comes up from
+// another status, which changes nothing). The test of a notification
+// template sends the placeholders unfilled (status %laststatus, key
+// %sensorid): a test.
 
 import (
 	"strings"

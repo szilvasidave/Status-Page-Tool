@@ -456,16 +456,51 @@ func TestParseAlertmanager(t *testing.T) {
 
 // ------------------------------------------------------------------ Uptime Kuma
 
+// kumaPayloadJSON is an important notification of Uptime Kuma 2 (2.0.2: its
+// heartbeat carries the retries) at 10:02:00.123 UTC, with the heartbeat
+// status status, for the monitor VPN gateway, which has one retry.
 func kumaPayloadJSON(status int, msg string) string {
+	retries := "0"
+	if status == kumaDown {
+		retries = "2" // its retry (PENDING), then DOWN
+	}
 	return `{
   "heartbeat": {"monitorID": 7, "status": ` + string(rune('0'+status)) + `, "msg": "` + msg + `", "time": "2026-11-16 10:02:00.123",
                 "timezone": "Europe/Berlin", "timezoneOffset": "+01:00", "localDateTime": "2026-11-16 11:02:00", "important": true,
-                "duration": 60, "retries": 0, "ping": null},
-  "monitor": {"id": 7, "name": "VPN gateway", "type": "http", "url": "https://vpn.example.com", "hostname": null, "port": null,
+                "duration": 60, "retries": ` + retries + `, "ping": null},
+  "monitor": {"id": 7, "name": "VPN gateway", "type": "http", "url": "https://vpn.example.com", "hostname": null, "port": null, "maxretries": 1,
               "pathName": "Network / VPN gateway", "tags": [{"tag_id": 1, "monitor_id": 7, "value": "VPN", "name": "statuspage_service", "color": "#059669"}]},
   "msg": "[VPN gateway] [🔴 Down] ` + msg + `"
 }`
 }
+
+// kuma123 turns a notification of kumaPayloadJSON into one of Uptime Kuma
+// 1.23, whose heartbeats carry no retries, for a monitor with maxretries
+// retries.
+func kuma123(body string, maxretries int) string {
+	body = strings.Replace(strings.Replace(body, `"retries": 0, `, ``, 1), `"retries": 2, `, ``, 1)
+	return strings.Replace(body, `"maxretries": 1,`, `"maxretries": `+strconv.Itoa(maxretries)+`,`, 1)
+}
+
+// kuma123Down is a down notification as Uptime Kuma 1.23.16 sends it
+// (heartbeat.js toJSON with the time zone of sendNotification, and
+// Monitor.toJSON without sensitive data, shortened): the heartbeat carries
+// no retries; the monitor has two.
+const kuma123Down = `{
+  "heartbeat": {"monitorID": 7, "status": 0, "time": "2026-11-16 10:02:00.123", "msg": "connect ECONNREFUSED 10.0.0.1:443",
+                "ping": null, "important": true, "duration": 60,
+                "timezone": "Europe/Berlin", "timezoneOffset": "+01:00", "localDateTime": "2026-11-16 11:02:00"},
+  "monitor": {"id": 7, "name": "VPN gateway", "description": null, "pathName": "VPN gateway", "parent": null, "childrenIDs": [],
+              "url": "https://vpn.example.com", "method": "GET", "hostname": null, "port": null, "maxretries": 2, "weight": 2000,
+              "active": true, "forceInactive": false, "type": "http", "timeout": 48, "interval": 60, "retryInterval": 60,
+              "resendInterval": 0, "keyword": null, "invertKeyword": false, "expiryNotification": false, "ignoreTls": false,
+              "upsideDown": false, "packetSize": 56, "maxredirects": 10, "accepted_statuscodes": ["200-299"],
+              "dns_resolve_type": "A", "dns_resolve_server": "1.1.1.1", "dns_last_result": null, "docker_container": "",
+              "docker_host": null, "proxyId": null, "notificationIDList": {"1": true},
+              "tags": [{"id": 1, "monitor_id": 7, "tag_id": 1, "value": "VPN", "name": "statuspage_service", "color": "#059669"}],
+              "maintenance": false, "includeSensitiveData": false},
+  "msg": "[VPN gateway] [🔴 Down] connect ECONNREFUSED 10.0.0.1:443"
+}`
 
 func TestParseUptimeKuma(t *testing.T) {
 	// The heartbeat of the change to down is important: its time (UTC) is
@@ -482,6 +517,26 @@ func TestParseUptimeKuma(t *testing.T) {
 	equal(t, "resend without a start", b.Alerts[0].StartsAt, time.Time{})
 	b = parse(t, ParseUptimeKuma, "application/json", strings.Replace(kumaPayloadJSON(0, "timeout"), `"important": true`, `"important": 1`, 1))
 	equal(t, "important as a number", b.Alerts[0].StartsAt, time.Date(2026, 11, 16, 10, 2, 0, 123e6, time.UTC))
+
+	// Uptime Kuma 1.23 counts a monitor's retries from 0 again when it
+	// restarts, so a monitor with retries that is still down is reported
+	// down again as important: no start. Without retries it is reported
+	// down only when it goes down.
+	b = parse(t, ParseUptimeKuma, "application/json", kuma123Down)
+	equal(t, "1.23 with retries", b.Alerts, []Alert{{
+		Key: "monitor:7", Firing: true, Targets: []string{"VPN", "", "VPN gateway", "", "https://vpn.example.com"},
+		Title: "VPN gateway is down", Message: "connect ECONNREFUSED 10.0.0.1:443",
+	}})
+	b = parse(t, ParseUptimeKuma, "application/json", strings.Replace(kuma123Down, `"maxretries": 2,`, `"maxretries": 0,`, 1))
+	equal(t, "1.23 without retries", b.Alerts[0].StartsAt, time.Date(2026, 11, 16, 10, 2, 0, 123e6, time.UTC))
+	b = parse(t, ParseUptimeKuma, "application/json", strings.Replace(kuma123Down, `"maxretries": 2,`, ``, 1))
+	equal(t, "neither retries nor maxretries", b.Alerts[0].StartsAt, time.Time{})
+	b = parse(t, ParseUptimeKuma, "application/json", strings.Replace(kumaPayloadJSON(0, "timeout"), `"retries": 2,`, `"retries": null,`, 1))
+	equal(t, "retries null, the monitor with a retry", b.Alerts[0].StartsAt, time.Time{})
+	b = parse(t, ParseUptimeKuma, "application/json", strings.Replace(kumaPayloadJSON(0, "timeout"), `"maxretries": 1,`, `"maxretries": 5,`, 1))
+	equal(t, "Uptime Kuma 2 keeps the retries", b.Alerts[0].StartsAt, time.Date(2026, 11, 16, 10, 2, 0, 123e6, time.UTC))
+	b = parse(t, ParseUptimeKuma, "application/json", strings.Replace(kuma123Down, `"important": true`, `"important": false`, 1))
+	equal(t, "1.23 resend", b.Alerts[0].StartsAt, time.Time{})
 	b = parse(t, ParseUptimeKuma, "application/json", kumaPayloadJSON(1, "200 - OK"))
 	equal(t, "up", b.Alerts[0].Firing, false)
 	equal(t, "up key", b.Alerts[0].Key, "monitor:7")
@@ -607,6 +662,16 @@ func TestParseAzureActivityLog(t *testing.T) {
 	equal(t, "root cause analysis: over", len(b.Alerts) == 1 && !b.Alerts[0].Firing, true)
 	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(active, `"stage": "Active",`, ``, 1))
 	equal(t, "no stage: the status", b.Alerts[0].Firing, true)
+	// The start is when the impact began, the same in every notice of the
+	// incident, not when Azure fired the notice (in the sample both are the
+	// same).
+	update := strings.Replace(strings.Replace(active, `"impactStartTime": "2025-04-15T18:20:36.256Z"`, `"impactStartTime": "2025-04-15T18:00:00Z"`, 1),
+		`"firedDateTime": "2025-04-15T18:20:36.256Z"`, `"firedDateTime": "2025-04-15T19:00:36.256Z"`, 1)
+	b = parse(t, ParseAzureMonitor, "application/json", update)
+	equal(t, "start: impactStartTime", b.Alerts[0].StartsAt, time.Date(2025, 4, 15, 18, 0, 0, 0, time.UTC))
+	// Without the monitoring service, the operation tells the kind.
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(active, `"monitoringService": "ServiceHealth"`, `"monitoringService": ""`, 1))
+	equal(t, "service health by its operation", len(b.Alerts) == 1 && b.Alerts[0].Key == "servicehealth:TEST-TTT", true)
 	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(active, `"stage": "Active"`, `"stage": "Odd"`, 1))
 	equal(t, "unknown stage", b.Notes, []string{"“test-ServiceHealthAlertRule”: stage “Odd” of the Service Health incident TEST-TTT is neither Active nor Resolved: ignored."})
 	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(active, `"trackingId": "TEST-TTT",`, ``, 1))
@@ -627,6 +692,8 @@ func TestParseAzureActivityLog(t *testing.T) {
 		Title: "test-ResourceHealthAlertRule", Message: "Rebooted by user", Severity: "critical",
 		StartsAt: time.Date(2025, 4, 15, 18, 19, 45, 304e6, time.UTC),
 	}})
+	b = parse(t, ParseAzureMonitor, "application/json", strings.Replace(azureResourceHealthTest, `"monitoringService": "Resource Health"`, `"monitoringService": ""`, 1))
+	equal(t, "resource health by its operation", len(b.Alerts) == 1 && b.Alerts[0].Key == resourceKey && b.Alerts[0].Firing, true)
 	degraded := strings.Replace(strings.Replace(azureResourceHealthTest, `"currentHealthStatus": "Unavailable"`, `"currentHealthStatus": "Degraded"`, 1),
 		`"previousHealthStatus": "Available"`, `"previousHealthStatus": "Unavailable"`, 1)
 	b = parse(t, ParseAzureMonitor, "application/json", degraded)
@@ -688,6 +755,11 @@ func TestParsePRTG(t *testing.T) {
 		"Down ended (now: Warning)": {},
 		"Down ended (now: Up)":      {},
 		"Up (was: Down)":            {},
+		// %status before 20.1.57: only the current status counts, not the
+		// one it was
+		"Down (was: Down (Partial))":     {Firing: true},
+		"Down (Partial) (was: Down)":     {Firing: true, Severity: "partial"},
+		"Down (was: Warning) ESCALATION": {Firing: true},
 	} {
 		b := parse(t, ParsePRTG, "application/x-www-form-urlencoded", prtgBody(status))
 		want.Key, want.Targets, want.Title, want.Message = "2041", []string{"vpn-gw01", "Network"}, "vpn-gw01: Ping", "Request timed out"
@@ -695,6 +767,10 @@ func TestParsePRTG(t *testing.T) {
 	}
 	b := parse(t, ParsePRTG, "application/x-www-form-urlencoded", prtgBody("Down")+"&severity=warning")
 	equal(t, "the field severity wins", b.Alerts[0].Severity, "warning")
+	// The status test (e.g. sent with curl) tests the connection.
+	b = parse(t, ParsePRTG, "application/x-www-form-urlencoded", prtgBody("test"))
+	equal(t, "status test", b.Test, true)
+	equal(t, "status test: no alert", len(b.Alerts), 0)
 
 	// The test of a notification template sends the placeholders unfilled.
 	b = parse(t, ParsePRTG, "application/x-www-form-urlencoded", "key=%sensorid&status=%laststatus&service=%device&service=%group&title=%device: %name&message=%message")
@@ -874,6 +950,28 @@ func TestProviderExamples(t *testing.T) {
 	equal(t, "generic", b.Alerts, []Alert{{Key: "service:vpn", Firing: true, Targets: []string{"VPN"}, Title: "VPN gateway unreachable"}})
 	if !strings.Contains(Lookup(Generic).Example, "-ContentType 'application/json; charset=utf-8'") {
 		t.Error("generic: PowerShell must send the charset (Windows PowerShell 5.1 encodes the body as ISO-8859-1 without it)")
+	}
+}
+
+// Facts of the tools that the setup steps must state (each was missing
+// once).
+func TestProviderSteps(t *testing.T) {
+	for id, wants := range map[string][]string{
+		// the example's curl option needs curl 7.52
+		"nagios": {"--retry-connrefused", "curl 7.52 or later"},
+		// the Down trigger sends nothing when an acknowledged alarm comes up
+		"prtg": {"“When sensor status is Up for at least … seconds, perform” the same template", "Down (Acknowledged)"},
+		// the recovery of a resource is a Resolved event
+		"azuremonitor": {"at least Active and Resolved", "Available among the current resource statuses"},
+		// 1.23 restarts the retries; leaving a maintenance while down is sent
+		"uptimekuma": {"Uptime Kuma 1.23", "Retries 0", "still down after the maintenance is reported down again"},
+	} {
+		steps := strings.Join(Lookup(id).Steps, "\n")
+		for _, want := range wants {
+			if !strings.Contains(steps, want) {
+				t.Errorf("%s: the steps should contain %q", id, want)
+			}
+		}
 	}
 }
 

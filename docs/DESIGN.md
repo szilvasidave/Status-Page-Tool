@@ -692,19 +692,30 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
     stays as it is.
   - Uptime Kuma (`uptimekuma.go`): heartbeat 0 = down, 1 = up, 2/3 =
     nothing; key = monitor id; start = the time (UTC) of an *important*
-    down heartbeat – the change of state, not a resend; without a heartbeat
-    a test or reminder.
+    down heartbeat – the change of state, not a resend – of Uptime Kuma 2
+    (its heartbeats carry `retries`), and of 1.23 only for a monitor
+    without retries (`maxretries` 0): 1.23 counts the retries from 0 again
+    whenever it starts a monitor (restart, save, resume), so a monitor
+    with retries that is still down is reported down again as important
+    (and sends no up if it recovers during them). A monitor still down when
+    an Uptime Kuma maintenance ends is reported down again (MAINTENANCE →
+    DOWN, or PENDING → DOWN after its retries): a new start; entering a
+    maintenance and coming up at its end (or during the retries after it)
+    send nothing. Without a heartbeat a test or reminder.
   - Azure Monitor (`azure.go`, common alert schema only): metric and log
     search alerts by the monitor condition Fired/Resolved, key = alertId,
     start = `firedDateTime`. Activity log alerts are stateless (always
     Fired, a new alertId per event), so the alert context decides: Service
     Health incidents (`incidentType` Incident; key = `trackingId`; stage
-    Active fires, Resolved and RCA resolve; start = `impactStartTime`;
+    Active fires, Resolved and RCA resolve; start = `impactStartTime`, the
+    same in every notice – each has a `firedDateTime` of its own;
     maintenance, information, action required and security notices are
     ignored), Resource Health (key = the resource; `currentHealthStatus`
     Unavailable = severity critical, Degraded = warning, Available
-    resolves, Unknown is ignored; start = `eventTimestamp` after
-    Available); every other activity log alert is ignored with a note.
+    resolves – the recovery is a Resolved event, so the rule must keep
+    that event status –, Unknown is ignored; start = `eventTimestamp`
+    after Available); every other activity log alert is ignored with a
+    note.
 
   Zabbix (a webhook media type script), PRTG (an HTTP action payload),
   Datadog (a webhook payload), UptimeRobot (a POST value),
@@ -725,20 +736,24 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   else is noted and ignored) is the alert's start; the Nagios example sends
   `$LASTSERVICEOK$`/`$LASTHOSTUP$`, which stay the same for a whole problem
   (also from WARNING to CRITICAL), and retries with curl within Nagios'
-  notification timeout.
+  notification timeout (`--retry-connrefused` needs curl 7.52, which the
+  steps say).
 
   A *dialect* (`dialect`: how the state, severity and test message are
   read) adapts the generic format to a tool: PRTG (`prtg.go`) reads the
   status as the sensor's current state – one trigger for Down sends it
   when the sensor goes Down and when it is no longer Down – so Down in any
   form fires (Down (Partial) a partial outage) and every other status of
-  PRTG (Up, Warning, Unusual, Paused, Unknown, None) resolves; a template
-  test (the placeholders unfilled) is a test. Datadog (`datadog.go`): the
-  transition decides whether the monitor alerts, the alert type
-  (`$ALERT_TYPE`, sent as severity) how badly (error: critical, warning:
-  warning); a Renotify counts only with the alert type error or warning (it
-  does not say which state it renotifies), and a title whose leading tags
-  in square brackets include `[TEST]` (Test Notifications) is a test.
+  PRTG (Up, Warning, Unusual, Paused, Unknown, None) resolves; a second
+  trigger for Up resolves acknowledged alarms (Down (Acknowledged) is a
+  status of its own, so the Down trigger sends nothing when they come
+  up); a template test (the placeholders unfilled) is a test. Datadog
+  (`datadog.go`): the transition decides whether the monitor alerts, the
+  alert type (`$ALERT_TYPE`, sent as severity) how badly (error: critical,
+  warning: warning); a Renotify counts only with the alert type error or
+  warning (it does not say which state it renotifies), and a title whose
+  leading tags in square brackets include `[TEST]` (Test Notifications) is
+  a test.
 * **Normalisation** (`Alert.input`): title one line, ≤ 200 characters;
   message without control characters, ≤ 2000; key > 200 characters replaced
   by its SHA-256; at most 10 targets, each ≤ 200 characters; at most 1000
