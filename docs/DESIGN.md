@@ -663,8 +663,13 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   summary; 503 with `Retry-After` when it could not be applied in time
   (waiting behind other alerts, `defaultApplyTimeout` 5 minutes), 500 for an
   error. The body is decoded to UTF-8 first (`toUTF8`: the charset of the
-  Content-Type if it is Windows-1252 or a subset, else Windows-1252 if it is
-  not valid UTF-8 – Windows PowerShell 5.1 sends that without saying so).
+  Content-Type if it is Windows-1252 or a subset; without a charset,
+  Windows-1252 if it is not valid UTF-8 – Windows PowerShell 5.1 sends that
+  without saying so; otherwise as it is). The answer may come after the
+  server's `WriteTimeout` of a minute (`internal/app`): the handler extends
+  its write deadline by `http.ResponseController` (the request log's
+  `statusRecorder` unwraps), so that a request that waited for its turn
+  still gets its answer.
   Once read, the alerts are applied, the e-mails queued and the request
   recorded with a context that the tool cannot cancel by hanging up (tools
   such as Uptime Kuma do not send a notification twice). Each request of a
@@ -674,8 +679,9 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   note when it was longer, as valid UTF-8 without NUL characters); the
   latest 50 per integration are kept and shown on its page. Records the
   status page writes itself (`IntegrationEvent.Internal`: alerts released
-  after maintenance, alerts an administrator cleared) have no body and do
-  not set the integration's last request time. In setup mode `/hooks`
+  after maintenance, alerts an administrator cleared – unchanged if that
+  changed no incident) have no body, count toward the 50 and do not set the
+  integration's last request time. In setup mode `/hooks`
   answers 503 (`monitoring.ServeUnavailable`) instead of redirecting to
   `/setup`, which tools that follow redirects would take for a delivery.
 * **Providers** (`providers.go`): ID (stored, never changed), name, `Parse`,
@@ -688,7 +694,10 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
     labels; start = `startsAt`. Grafana's test alert TestAlert/Grafana is a
     test; its alerts DatasourceError and DatasourceNoData (alert name
     replaced, the rule's name in the label `rulename`, the rule's labels
-    kept – sent when it cannot evaluate a rule) are ignored with a note.
+    kept – sent when it cannot evaluate a rule) are ignored with a note:
+    usually only the monitoring is broken. A rule whose query fails, or
+    returns no data, because the service itself is down must use the error
+    and no data handling Alerting instead, which the steps say.
     The example adds the webhook to existing receivers, so the routing
     stays as it is.
   - Uptime Kuma (`uptimekuma.go`): heartbeat 0 = down, 1 = up, 2/3 =
@@ -725,7 +734,8 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   `service` (text or list, tried in order), `status`, `key` (default
   `service:<first service>`), `title`, `message`, `severity`, `impact`,
   `started` (keys in any case; synonyms in `genericNames`, e.g. summary,
-  description, priority, id, state, startsAt, started_at), or the same as
+  description, priority, id, state, statuspage_impact, startsAt,
+  started_at), or the same as
   form fields (parsed
   leniently: an unescaped `%` stays) and query parameters. JSON is
   recognised by the body (`{`, `[`), not the content type, because PRTG
@@ -760,7 +770,9 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
 * **Normalisation** (`Alert.input`): title one line, ≤ 200 characters;
   message without control characters, ≤ 2000; key > 200 characters replaced
   by its SHA-256; at most 10 targets, each ≤ 200 characters; at most 1000
-  alerts per request. Values of a request quoted in notes and parse errors
+  alerts per request (`MaxAlerts`; the others are counted in
+  `Batch.Unread`, and the first line of the answer and of the request log
+  says so). Values of a request quoted in notes and parse errors
   (status words, impacts, names) are one line of ≤ 80 characters (`echo`).
   A start counts only if it is the start of the problem and stays the same
   in every repeat of it, else every repeat would look like a new problem
@@ -785,7 +797,11 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   Deleting an incident, a service or an integration takes the same turn and
   lock (`inMonitoringTx`): their cascades change alert rows, and a request
   that holds an alert row and then locks the incident would otherwise
-  deadlock with them on PostgreSQL. A run asks once per service whether
+  deadlock with them on PostgreSQL. `DeleteService` checks in that
+  transaction, with the service's row locked first (`FOR UPDATE` on
+  PostgreSQL), that no open incident and no maintenance that has not ended
+  affects the service (`ServiceInUseError`), so that neither a request nor
+  an editor gives it an incident between the check and the deletion. A run asks once per service whether
   maintenance is in progress and which incident is open, locks each
   incident once, and writes the rows of an alert with few statements (one
   `INSERT` of all its new rows, one `UPDATE` of all its repeats), so that a
@@ -825,9 +841,11 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   on each service with firing alerts = their worst impact (a service without
   firing alerts keeps its impact, one an editor removed is not added again),
   one update per incident and request (source = the integration's name;
-  readers see "<name> (monitoring)"; alerts with one title are listed once
-  with their number, at most ten lines, so that a storm of alerts does not
-  make huge updates and e-mails), resolution when no attached alert fires.
+  editors see it as "by <name> (monitoring)", readers see no author; alerts
+  with one title are listed once with their number – several without a
+  title as "N alerts without a title" –, at most ten lines, so that a storm
+  of alerts does not make huge updates and e-mails), resolution when no
+  attached alert fires.
   An open incident is locked first (`UPDATE … WHERE status <> resolved`), so
   that an editor's resolution at the same moment is not undone. People's
   incidents are never touched. The title of a new incident names the
@@ -852,14 +870,17 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
 
 1. If the tool can send a request body of the admin's choice, it needs no
    code: add a `Provider` to `providers` in
-   `internal/monitoring/providers.go` with `Parse: ParseGeneric`, the setup
-   steps and the body as `Example`, and add the body, with the tool's
-   variables filled in, to `TestProviderExamples`. Send `started` only with
-   a variable that the tool documents as the start of the problem and that
-   stays the same in repeated notifications of it. If the tool's status
-   words or its test message need rules of their own, write a small
-   dialect (`ParseXxx` calling `parseGeneric`, like `prtg.go` and
-   `datadog.go`).
+   `internal/monitoring/providers.go` with its `ID` (see 3), `Name`,
+   `Parse: ParseGeneric`, `Service` (which values of an alert name the
+   service, in the order they are tried; shown on the integration page),
+   the setup `Steps` and the body as `Example` with its heading
+   `ExampleLabel` (`TestProviders` checks these), and add the body, with
+   the tool's variables filled in, to `TestProviderExamples`. Send
+   `started` only with a variable that the tool documents as the start of
+   the problem and that stays the same in repeated notifications of it. If
+   the tool's status words or its test message need rules of their own,
+   write a small dialect (`ParseXxx` calling `parseGeneric`, like `prtg.go`
+   and `datadog.go`) and set `Parse: ParseXxx`.
 2. Otherwise write `ParseXxx(*Request) (*Batch, error)` in a file of its own:
    one `Alert` per alert with a stable `Key`, `Firing`, the `Targets` that
    may name the service (most specific first), `Title`, `Message`,
@@ -870,7 +891,9 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
    (quoting the request's values with `echo`), and return a `ParseError`
    with a hint for requests that cannot be read. Test it with a request the
    tool really sends (the vendor's documented samples, verbatim, where
-   there are any).
+   there are any). Then add a `Provider` as in 1 with `Parse: ParseXxx`
+   (its `Example` and `ExampleLabel`, if any, show the tool's
+   configuration): without it the tool cannot be chosen.
 3. Never change or remove a provider ID: integrations store it.
 
 ## URL map

@@ -21,7 +21,9 @@ package monitoring
 // an alert DatasourceError or DatasourceNoData instead, with the rule's
 // labels and annotations and the rule's name as label rulename (Grafana's
 // pkg/services/ngalert/state/compat.go): only the monitoring is broken, not
-// necessarily the service, so these alerts are ignored.
+// necessarily the service, so these alerts are ignored. A rule whose query
+// fails because the service itself is down must use the error handling
+// Alerting instead (the setup steps say so): it then sends its own alert.
 
 import (
 	"encoding/json"
@@ -75,7 +77,7 @@ func ParseAlertmanager(r *Request) (*Batch, error) {
 		return b, nil
 	}
 	if len(alerts) > MaxAlerts {
-		b.Notes = append(b.Notes, fmt.Sprintf("Only the first %d of %d alerts were read.", MaxAlerts, len(alerts)))
+		b.Unread = len(alerts) - MaxAlerts
 		alerts = alerts[:MaxAlerts]
 	}
 	for i, am := range alerts {

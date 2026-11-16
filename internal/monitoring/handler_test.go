@@ -313,6 +313,10 @@ func TestHandlerRejects(t *testing.T) {
 		}
 		r = e.post(Path+"/"+token, "application/json", `{"service": "VPN", "status": "test"}`)
 		equal(t, "old token", r.status, http.StatusUnauthorized)
+		// The page never shows a URL again: the advice must not say so.
+		if !strings.Contains(r.body.Error, "generate a new one in Admin → Monitoring") || strings.Contains(r.body.Error, "Copy") {
+			t.Fatalf("old token: %q", r.body.Error)
+		}
 	})
 }
 

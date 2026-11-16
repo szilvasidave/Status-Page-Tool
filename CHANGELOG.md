@@ -37,7 +37,9 @@ for the setup.
   tool's routing stays as it is.
 - Each tool's alerts are read as the tool means them: its test messages
   are listed as tests; Grafana's alerts about rules it cannot evaluate
-  (DatasourceError, DatasourceNoData) change nothing; of Azure's activity
+  (DatasourceError, DatasourceNoData) change nothing (the instructions say
+  how a rule whose query fails because the service is down reports the
+  outage instead); of Azure's activity
   log alerts, which Azure never ends, Service Health incidents and Resource
   Health alerts open and resolve incidents by their stage and health, and
   the others change nothing; PRTG's status is the sensor's current state,
@@ -45,17 +47,17 @@ for the setup.
 - If an editor resolves an automatic incident while its alerts still fire,
   they open no new incident until they have ended – unless the tool reports
   that the problem started again: Alertmanager, Grafana, Azure Monitor,
-  Uptime Kuma, the Nagios example and any tool that sends the generic
-  format's optional `started`.
+  Uptime Kuma (1.23 only for monitors without retries), the Nagios example
+  and any tool that sends the generic format's optional `started`.
 - Services get **names in monitoring tools**: alerts that name a service by
   its name or one of these names affect it (e.g. a monitor, a host, a label
   value). Several services can share a name.
 - The integration page shows the instructions for the tool, its firing
-  alerts and its latest 50 requests with what they did, e.g. which names an
-  alert gave that no service has. The webhook URL is shown only once; its
-  token is stored as a hash and never logged.
-- Incidents opened by monitoring are marked on the Manage page and on the
-  incident page.
+  alerts and its request log (the latest 50 entries) with what each request
+  did, e.g. which names an alert gave that no service has. The webhook URL
+  is shown only once; its token is stored as a hash and never logged.
+- Incidents opened by monitoring are marked on the Manage page
+  (*Automatic*) and on the incident page.
 
 ## 1.1.0 – 2026-11-14
 

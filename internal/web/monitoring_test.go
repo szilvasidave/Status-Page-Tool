@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/szilvasidave/status-page-tool/internal/config"
 	"github.com/szilvasidave/status-page-tool/internal/groupnames"
@@ -278,7 +279,8 @@ func TestMonitoringEndToEnd(t *testing.T) {
 	mustContain(t, e.get("/").Body, "VPN gateway slow")
 	mustContain(t, e.get("/incidents/1").Body, "Detected by monitoring", "Monitoring reports a problem: “VPN gateway slow”.<br><br>Latency above 2 s",
 		"by Prometheus (monitoring)")
-	mustContain(t, e.get("/manage").Body, `title="Opened by monitoring">Monitoring</span>`)
+	// Marked by a word that is no status ("Monitoring" is one).
+	mustContain(t, e.get("/manage").Body, `title="Opened by monitoring">Automatic</span>`)
 	mustContain(t, e.get("/manage/incidents/1").Body, "This incident was opened by monitoring and is resolved automatically",
 		"<li>VPN gateway slow – VPN, Degraded performance, firing since")
 	mustContain(t, e.get("/admin/monitoring/1").Body, `<span class="badge event-changed">Incidents changed</span>`,
@@ -331,6 +333,49 @@ func TestMonitoringServiceFormNames(t *testing.T) {
 		t.Fatalf("long name: %d", r.Status)
 	}
 	mustContain(t, r.Body, "A name is too long (at most 200 characters each).")
+}
+
+// The answer to a webhook request reaches the tool after the server's
+// WriteTimeout (a minute in internal/app) through the whole stack: the
+// request log passes the writer's deadline on (statusRecorder.Unwrap).
+func TestMonitoringWebhookAfterWriteTimeout(t *testing.T) {
+	base := newTestEnv(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := &config.Config{Listen: ":0", DBDriver: config.DriverSQLite, DBDSN: "statuspage.db", SecretKey: config.NewSecretKey()}
+	h, err := NewHandler(Deps{Config: cfg, DataDir: base.DataDir, Store: base.Store, Auth: base.Auth,
+		Notifier: notify.New(base.Store, log), GroupNames: groupnames.New(base.Store, log), Version: "test", Log: log, SetupToken: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	srv.Config.ReadTimeout, srv.Config.WriteTimeout = 100*time.Millisecond, 100*time.Millisecond
+	srv.Start()
+	t.Cleanup(srv.Close)
+	e := &testEnv{t: t, DataDir: base.DataDir, Store: base.Store, Auth: base.Auth, Server: srv, Client: base.Client}
+	if err := e.Store.CreateService(context.Background(), &store.Service{Name: "VPN"}); err != nil {
+		t.Fatal(err)
+	}
+	_, hook := monIntegration(t, e, monitoring.Generic, false)
+
+	// A writer (another request of monitoring) keeps the request waiting
+	// beyond the WriteTimeout.
+	tx, err := e.Store.DB().DB.BeginTx(context.Background(), nil) // BEGIN IMMEDIATE
+	if err != nil {
+		t.Fatal(err)
+	}
+	timer := time.AfterFunc(400*time.Millisecond, func() { _ = tx.Rollback() })
+	defer timer.Stop()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+hook, strings.NewReader(`{"service": "VPN", "status": "down"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("no answer: %v", err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK || !strings.Contains(string(b), "opened incident #1 of VPN") {
+		t.Fatalf("got %d %s (%v)", resp.StatusCode, b, err)
+	}
 }
 
 // The webhook passes the middleware without cookies or CSRF token, also

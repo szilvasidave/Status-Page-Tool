@@ -199,7 +199,7 @@ The wizard then signs you in as the local administrator and continues with
     [Services and notifications](#services-and-notifications)).
   - Administrators can also delete incidents and maintenance windows that
     were created by mistake.
-  - Incidents that monitoring tools opened are marked *Monitoring* and are
+  - Incidents that monitoring tools opened are marked *Automatic* and are
     resolved when their alerts clear (see
     [Monitoring integrations](#monitoring-integrations)).
 - **Your account** (click your name in the header) shows your role, your
@@ -1042,8 +1042,8 @@ curl or PowerShell (e.g. a System Center Operations Manager command channel).
 
 The integration can give all its alerts one impact instead (*Impact of a
 firing alert*). An impact that the alert gives itself wins over both: the
-label, tag or custom property `statuspage_impact`, or the field `impact` of
-the generic format – `degraded`, `partial_outage` or `major_outage`.
+label, tag or custom property `statuspage_impact` (in the generic format
+also the field `impact`) – `degraded`, `partial_outage` or `major_outage`.
 
 ### The generic format
 
@@ -1064,16 +1064,17 @@ form fields or URL query parameters):
 | Field | Meaning |
 |-------|---------|
 | `service` | required: the service's name or one of its names in monitoring tools; a list of names is tried in order |
-| `status` | required: a problem (`firing`, `problem`, `down`, `critical`, `error`, `warning`, `triggered`, …) or its end (`resolved`, `ok`, `up`, `recovered`, …); `test` only tests the connection. Unknown words (e.g. `unknown`, `pending`) change nothing. |
-| `key` | identifies the alert, so that its end clears it; default: the service. Send one when a service has several checks. |
+| `status` | required: a problem (`firing`, `problem`, `down`, `critical`, `error`, `warning`, `triggered`, …) or its end (`resolved`, `ok`, `up`, `recovered`, …); `test` only tests the connection. Only the first word counts (`Down -> Up` is a problem), or the one after `now:` (PRTG's `Down ended (now: Up)`). Unknown words (e.g. `unknown`, `pending`) change nothing. |
+| `key` | identifies the alert, so that its end clears it; default: the first name in `service` (upper and lower case do not matter). Send one when a service has several checks, or when a problem and its end may name the service differently. |
 | `title`, `message` | the text of the incident (`summary` and `description` are understood too) |
 | `severity` | e.g. `critical`, `error`, `warning`, `P2`, `Sev1` (see the table above) |
-| `impact` | `degraded`, `partial_outage` or `major_outage`: sets the impact directly |
+| `impact` | `degraded`, `partial_outage` or `major_outage`: sets the impact directly (`statuspage_impact` is understood too) |
 | `started` | optional: when the problem began – RFC 3339 (`2026-11-16T10:02:00Z`), `YYYY-MM-DD HH:MM:SS` (UTC, or with a zone such as `+01:00` right after the seconds), or Unix seconds or milliseconds (`startsAt`, `starts_at`, `startedAt` and `started_at` are understood too). Send it only if it stays the same in every repeat of a problem, e.g. the time of the first failed check: if an editor resolves the incident of a problem that still fires, a problem that starts again later then opens a new incident (without `started` only after its end has been sent). |
 
-Several alerts are sent as a JSON list or as `{"alerts": [ … ]}`. The answer
-is JSON with what the request did (`{"status": "ok", "alerts": 1,
-"summary": [ … ]}`); 400 means the request could not be read (the reason is
+Several alerts are sent as a JSON list or as `{"alerts": [ … ]}`, at most
+1000 per request (the others are ignored; the first line of the summary says
+so). The answer is JSON with what the request did (`{"status": "ok",
+"alerts": 1, "summary": [ … ]}`, `alerts` counting the alerts read); 400 means the request could not be read (the reason is
 in `error`), 401 an unknown or replaced URL, 413 a body larger than 1 MB,
 and 503 that the status page could not apply it now (too busy, or in setup
 mode): send it again later (*Retry-After* says when).
@@ -1089,7 +1090,9 @@ Invoke-RestMethod -Method Post -Uri 'https://status.example.com/hooks/<token>' -
 ```
 
 Keep `charset=utf-8`: without it, Windows PowerShell 5.1 sends the body in
-ISO-8859-1, and names with accents (*Könyvelés*) do not match.
+ISO-8859-1. The status page reads that, but letters that ISO-8859-1 lacks
+are replaced (*ő* by *o*, others by *?*), so names with them
+(*Bérszámfejtő*) do not match.
 
 To support another monitoring tool in the status page itself, see
 [docs/DESIGN.md](docs/DESIGN.md#monitoring-integrations): tools that can send
@@ -1405,8 +1408,9 @@ statuspage local-login status -data /var/lib/statuspage
   have leaked. If tools in the cloud (Datadog, UptimeRobot, Azure Monitor)
   must reach the status page from the internet, publish only `/hooks` and
   the paths below `/hooks/` (e.g. a reverse proxy rule), like the
-  provisioning endpoint. The latest 50 requests of each integration are kept
-  with up to 8 KB of their body for troubleshooting; administrators see them.
+  provisioning endpoint. The latest 50 entries of each integration's request
+  log are kept, with up to 8 KB of each request's body for troubleshooting;
+  administrators see them.
 - **App registration.** Its client secret allows what the app registration
   may do with Microsoft Graph: send e-mail (Mail.Send, or RBAC for
   Applications) and, for group names, read all groups and their members

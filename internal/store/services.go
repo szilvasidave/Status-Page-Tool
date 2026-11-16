@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -182,14 +183,66 @@ func (s *Store) UpdateService(ctx context.Context, svc *Service) error {
 	return err
 }
 
-// DeleteService deletes a service (and its incident/maintenance links).
-// Returns ErrNotFound for an unknown service.
+// ServiceInUseError is returned by DeleteService while an open incident or
+// a maintenance that has not ended affects the service: deleting it would
+// leave the incident without the service, so that it could not be resolved
+// properly (nor by its alerts).
+type ServiceInUseError struct {
+	Incident    string // the title of the open incident, or ""
+	Maintenance string // else the title of the maintenance
+}
+
+func (e *ServiceInUseError) Error() string {
+	if e.Incident != "" {
+		return fmt.Sprintf("the open incident %q affects the service", e.Incident)
+	}
+	return fmt.Sprintf("the maintenance %q affects the service", e.Maintenance)
+}
+
+// DeleteService deletes a service (and its links to resolved incidents, to
+// maintenances and to groups). Returns ErrNotFound for an unknown service,
+// and a *ServiceInUseError while an open incident or a maintenance that has
+// not ended affects it.
 func (s *Store) DeleteService(ctx context.Context, id int64) error {
-	// In the monitoring turn: the cascade deletes alerts (see DeleteIncident).
+	// In the monitoring turn: the cascade deletes alerts (see
+	// DeleteIncident), and no request of a monitoring tool opens an incident
+	// of the service between the check and the deletion.
 	err := s.inMonitoringTx(ctx, func(tx *db.Tx) error {
+		// The service's row first: on PostgreSQL an editor's new incident
+		// or maintenance of it then either is seen by the check or waits
+		// for the deletion (and fails); SQLite runs one writing
+		// transaction at a time.
+		lock := `SELECT id FROM services WHERE id = ?`
+		if s.db.IsPostgres() {
+			lock += ` FOR UPDATE`
+		}
+		var found int64
+		if err := notFound(tx.QueryRowContext(ctx, lock, id).Scan(&found)); err != nil {
+			return err
+		}
+		var title string
+		err := tx.QueryRowContext(ctx,
+			`SELECT i.title FROM incidents i JOIN incident_services x ON x.incident_id = i.id
+			 WHERE x.service_id = ? AND i.status <> ? ORDER BY i.started_at DESC, i.id DESC LIMIT 1`,
+			id, string(IncidentResolved)).Scan(&title)
+		if err == nil {
+			return &ServiceInUseError{Incident: title}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		err = tx.QueryRowContext(ctx,
+			`SELECT m.title FROM maintenances m JOIN maintenance_services x ON x.maintenance_id = m.id
+			 WHERE x.service_id = ? AND m.cancelled = ? AND m.ends_at > ? ORDER BY m.starts_at, m.id LIMIT 1`,
+			id, false, nowTime().Unix()).Scan(&title)
+		if err == nil {
+			return &ServiceInUseError{Maintenance: title}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		return affected(tx.ExecContext(ctx, `DELETE FROM services WHERE id = ?`, id))
 	})
-	if err != nil && !errors.Is(err, ErrNotFound) {
+	var inUse *ServiceInUseError
+	if err != nil && !errors.Is(err, ErrNotFound) && !errors.As(err, &inUse) {
 		return fmt.Errorf("delete service %d: %w", id, err)
 	}
 	return err

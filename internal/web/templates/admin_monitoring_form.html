@@ -34,13 +34,15 @@
     </select>
     <span class="help" id="impact_help">By severity: critical (also Disaster, High, Sev0, P1) is a major outage, error (Average,
       Sev1, P2) a partial outage, warning and lower degraded performance; an alert without a severity is a major outage. An
-      alert can also give its impact itself (statuspage_impact).</span>
+      alert can also give its impact itself: degraded, partial_outage or major_outage in its label, tag or custom property
+      statuspage_impact (in the generic format also the field impact).</span>
     {{template "field-error" .Errors.impact}}
   </div>
   <div class="field">
     <label class="checkbox"><input type="checkbox" name="notify" aria-describedby="notify_help"{{if .Integration.Notify}} checked{{end}}> Send e-mail notifications</label>
     <span class="help" id="notify_help">E-mail the groups of the affected services when this integration's alerts open an
-      incident, and when monitoring resolves it (not for the updates in between).</span>
+      incident, and when monitoring resolves it (not for the updates in between). A change applies to the incidents
+      opened afterwards.</span>
   </div>
 {{end}}
 
@@ -176,7 +178,8 @@
 
 <section aria-labelledby="requests">
 <h2 id="requests">Latest requests</h2>
-<p class="help">The latest {{.EventsLimit}} requests of the monitoring tool and what they did.</p>
+<p class="help">The latest {{.EventsLimit}} requests of the monitoring tool and what they did, with the status page's
+  own entries (alerts released after maintenance or cleared by an administrator).</p>
 {{- if .Events}}
 <ul class="card card-list">
   {{- range .Events}}

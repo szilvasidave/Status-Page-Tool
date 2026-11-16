@@ -2,6 +2,8 @@ package monitoring
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,6 +105,106 @@ func TestHandlerBusy(t *testing.T) {
 		time.Sleep(1200 * time.Millisecond)
 		if n := len(e.openIncidents()); n != 0 {
 			t.Fatalf("%d incidents opened by a request answered 503", n)
+		}
+	})
+}
+
+// The answer reaches the tool even after the server's WriteTimeout (a
+// minute in internal/app), which a request that waits for its turn can
+// outlast: the busy answer (503 with Retry-After) and a late success, over
+// HTTP/1.1 and HTTP/2.
+func TestHandlerAnswersAfterWriteTimeout(t *testing.T) {
+	for _, h2 := range []bool{false, true} {
+		t.Run(map[bool]string{false: "http1", true: "http2"}[h2], func(t *testing.T) {
+			forEachDB(t, func(t *testing.T, e *hookEnv) {
+				e.service("VPN")
+				_, token := e.integration(Generic, nil)
+				mux := http.NewServeMux()
+				mux.Handle(Path+"/", e.handler)
+				srv := httptest.NewUnstartedServer(mux)
+				srv.Config.ReadTimeout, srv.Config.WriteTimeout = 100*time.Millisecond, 100*time.Millisecond
+				srv.EnableHTTP2 = h2
+				srv.StartTLS()
+				defer srv.Close()
+				post := func(body string, hold time.Duration) (*http.Response, []byte) {
+					t.Helper()
+					release := e.holdMonitoring()
+					timer := time.AfterFunc(hold, release)
+					defer func() { timer.Stop(); release() }() // PostgreSQL answers 503 before hold
+					resp, err := srv.Client().Post(srv.URL+Path+"/"+token, "application/json", strings.NewReader(body))
+					if err != nil {
+						t.Fatalf("no answer: %v", err)
+					}
+					defer resp.Body.Close()
+					b, err := io.ReadAll(resp.Body)
+					if err != nil {
+						t.Fatalf("answer cut off: %v", err)
+					}
+					if (resp.ProtoMajor == 2) != h2 {
+						t.Fatalf("protocol %s", resp.Proto)
+					}
+					return resp, b
+				}
+
+				e.handler.applyTimeout = 300 * time.Millisecond
+				resp, b := post(`{"key": "a", "service": "VPN", "status": "down"}`, time.Second)
+				if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") == "" {
+					t.Fatalf("busy: got %d %s (Retry-After %q)", resp.StatusCode, b, resp.Header.Get("Retry-After"))
+				}
+
+				e.handler.applyTimeout = 10 * time.Second
+				resp, b = post(`{"key": "a", "service": "VPN", "status": "down"}`, 500*time.Millisecond)
+				if resp.StatusCode != http.StatusOK || !strings.Contains(string(b), "opened incident #1 of VPN") {
+					t.Fatalf("late: got %d %s", resp.StatusCode, b)
+				}
+			})
+		})
+	}
+}
+
+// Alerts beyond MaxAlerts are ignored, and the answer and the request log
+// say so first, before the lines of the alerts read (which are cut off).
+func TestHandlerTooManyAlerts(t *testing.T) {
+	forEachDB(t, func(t *testing.T, e *hookEnv) {
+		e.service("VPN")
+		in, token := e.integration(Generic, nil)
+		var b strings.Builder
+		b.WriteString("[")
+		for i := range MaxAlerts {
+			fmt.Fprintf(&b, `{"key": "h%d", "service": "Host %d", "status": "up"},`, i, i)
+		}
+		b.WriteString(`{"service": "VPN", "status": "down"}]`)
+		want := fmt.Sprintf("Only the first %d of %d alerts were read: the others were ignored (send at most %d per request).", MaxAlerts, MaxAlerts+1, MaxAlerts)
+		r := e.post("/hooks/"+token, "application/json", b.String())
+		if r.status != http.StatusOK || r.body.Alerts != MaxAlerts || len(r.body.Summary) == 0 || r.body.Summary[0] != want {
+			t.Fatalf("got %d, %d alerts, %q", r.status, r.body.Alerts, r.body.Summary[:min(2, len(r.body.Summary))])
+		}
+		if ev := e.events(in)[0]; !strings.HasPrefix(ev.Summary, want+"\n") {
+			t.Fatalf("request log: %.200s", ev.Summary)
+		}
+		if n := len(e.openIncidents()); n != 0 {
+			t.Fatalf("%d incidents opened by an alert that was not read", n)
+		}
+
+		// Alertmanager (and Grafana), paused: also first.
+		am, amToken := e.integration("alertmanager", func(in *store.Integration) { in.Paused = true })
+		b.Reset()
+		b.WriteString(`{"version": "4", "status": "firing", "alerts": [`)
+		for i := range MaxAlerts + 2 {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"status": "resolved", "labels": {"alertname": "Down", "instance": "h%d"}}`, i)
+		}
+		b.WriteString(`]}`)
+		want = fmt.Sprintf("Only the first %d of %d alerts were read: the others were ignored (send at most %d per request).", MaxAlerts, MaxAlerts+2, MaxAlerts)
+		r = e.post("/hooks/"+amToken, "application/json", b.String())
+		if r.status != http.StatusOK || len(r.body.Summary) < 2 || r.body.Summary[1] != want ||
+			!strings.HasPrefix(r.body.Summary[0], "The integration is paused") {
+			t.Fatalf("got %d, %q", r.status, r.body.Summary[:min(2, len(r.body.Summary))])
+		}
+		if ev := e.events(am)[0]; !strings.Contains(ev.Summary, "\n"+want+"\n") {
+			t.Fatalf("request log: %.300s", ev.Summary)
 		}
 	})
 }
@@ -258,6 +360,20 @@ func TestHandlerClear(t *testing.T) {
 		}
 		if _, err := e.handler.Clear(ctx, in, "gw", "Ada Admin"); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("clearing again: %v", err)
+		}
+
+		// An alert whose incident an editor resolved: no incident changes.
+		e.post("/hooks/"+token, "application/json", `{"key": "gw", "service": "VPN", "status": "down", "title": "VPN gateway down"}`)
+		if err := e.store.AddIncidentUpdate(ctx, 2, &store.IncidentUpdate{Status: store.IncidentResolved, Message: "ok"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		lines, err = e.handler.Clear(ctx, in, "gw", "Ada Admin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = "“VPN gateway down” (cleared by Ada Admin): cleared for VPN (no open incident)."
+		if ev := e.events(in)[0]; len(lines) != 1 || lines[0] != want || ev.Summary != want || ev.Outcome != store.EventUnchanged {
+			t.Fatalf("lines %q, record %+v", lines, ev)
 		}
 	})
 }

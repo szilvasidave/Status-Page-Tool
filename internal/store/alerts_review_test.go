@@ -130,6 +130,28 @@ func TestApplyAlertsUpdateTexts(t *testing.T) {
 	})
 }
 
+// Several alerts without a title (the generic format's title is optional)
+// are counted in the plural.
+func TestApplyAlertsUntitledTexts(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		mustService(t, s, "VPN", "", 0)
+		in := mustIntegration(t, s, "Script", false)
+		apply(t, s, in, firing("u1", "VPN", "", StatusMajorOutage), firing("u2", "VPN", "", StatusMajorOutage))
+		equal(t, "opened", mustIncident(t, s, 1).Updates[0].Message, "Monitoring reports problems: 2 alerts without a title.")
+		apply(t, s, in, firing("u3", "VPN", "", StatusMajorOutage), firing("u4", "VPN", "", StatusMajorOutage),
+			firing("c", "VPN", "Check", StatusMajorOutage))
+		equal(t, "joined", mustIncident(t, s, 1).Updates[0].Message,
+			"Monitoring reports more problems:\n- 2 alerts without a title\n- “Check”")
+		apply(t, s, in, resolved("u1"), resolved("u2"))
+		equal(t, "cleared", mustIncident(t, s, 1).Updates[0].Message,
+			"Monitoring reports that 2 alerts without a title are resolved; 3 alerts are still firing.")
+		apply(t, s, in, resolved("c"))
+		apply(t, s, in, resolved("u3"), resolved("u4"))
+		equal(t, "resolved", mustIncident(t, s, 1).Updates[0].Message,
+			"Resolved: monitoring reports that 2 alerts without a title are resolved.")
+	})
+}
+
 func TestAutomaticIncidentTitleWords(t *testing.T) {
 	for _, tc := range []struct{ service, alert, want string }{
 		{"AD", "Load average is too high", "AD: Load average is too high"},
@@ -237,6 +259,11 @@ func TestDeletesWaitForMonitoring(t *testing.T) {
 			vpn := mustService(t, s, "VPN", "", 0)
 			in := mustIntegration(t, s, "Prometheus", false)
 			apply(t, s, in, firing("a", "VPN", "Down", StatusMajorOutage))
+			if tc.name == "service" {
+				// An open incident keeps the service (DeleteService); its
+				// alert stays, dismissed, after an editor resolved it.
+				check(t, s.AddIncidentUpdate(ctx, 1, &IncidentUpdate{Status: IncidentResolved, Message: "ok"}, nil))
+			}
 
 			// A request of another instance, halfway: it holds the monitoring
 			// lock and the row of the repeated alert a.
@@ -270,6 +297,70 @@ func TestDeletesWaitForMonitoring(t *testing.T) {
 				t.Fatal("the deletion did not finish")
 			}
 		})
+	}
+}
+
+// DeleteService checks in its own transaction, in the monitoring turn,
+// that no open incident affects the service: an incident opened while the
+// deletion waited for its turn keeps the service, instead of being left
+// without services (and without alerts that could resolve it).
+func TestDeleteServiceChecksInItsTurn(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		vpn := mustService(t, s, "VPN", "", 0)
+		s.monitoring <- struct{}{} // a request of a monitoring tool is applied
+		done := make(chan error, 1)
+		go func() { done <- s.DeleteService(ctx, vpn.ID) }()
+		time.Sleep(50 * time.Millisecond)
+		// The request opens an incident of the service (as CreateIncident
+		// does, without the turn) and ends.
+		inc := &Incident{Title: "VPN down", Status: IncidentInvestigating, Services: []ServiceImpact{{ServiceID: vpn.ID, Impact: StatusMajorOutage}}}
+		check(t, s.CreateIncident(ctx, inc, &IncidentUpdate{Message: "x"}))
+		<-s.monitoring
+		var inUse *ServiceInUseError
+		if err := <-done; !errors.As(err, &inUse) || inUse.Incident != "VPN down" {
+			t.Fatalf("got %v, want the open incident", err)
+		}
+		got, err := s.GetIncident(ctx, inc.ID)
+		check(t, err)
+		equal(t, "the incident's services", len(got.Services), 1)
+	})
+}
+
+// On PostgreSQL an editor's incident that is being created when the
+// service is deleted is seen by the check: the deletion waits for it.
+func TestDeleteServiceWaitsForNewIncident(t *testing.T) {
+	dsn := os.Getenv("STATUSPAGE_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("STATUSPAGE_TEST_PG_DSN not set (SQLite runs one writing transaction at a time)")
+	}
+	s := openPostgres(t, dsn)
+	vpn := mustService(t, s, "VPN", "", 0)
+	editor, err := s.db.DB.BeginTx(ctx, nil)
+	check(t, err)
+	defer editor.Rollback()
+	var id int64
+	now := time.Now().Unix()
+	check(t, editor.QueryRowContext(ctx, s.db.Rebind(`INSERT INTO incidents (title, status, started_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?) RETURNING id`), "VPN slow", string(IncidentInvestigating), now, now, now).Scan(&id))
+	if _, err := editor.ExecContext(ctx, s.db.Rebind(`INSERT INTO incident_services (incident_id, service_id, impact) VALUES (?, ?, ?)`),
+		id, vpn.ID, string(StatusDegraded)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.DeleteService(ctx, vpn.ID) }()
+	waitForLockWaiter(t, s)
+	check(t, editor.Commit())
+	var inUse *ServiceInUseError
+	select {
+	case err := <-done:
+		if !errors.As(err, &inUse) || inUse.Incident != "VPN slow" {
+			t.Fatalf("got %v, want the open incident", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the deletion did not finish")
+	}
+	if _, err := s.GetService(ctx, vpn.ID); err != nil {
+		t.Fatalf("the service: %v", err)
 	}
 }
 

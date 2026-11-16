@@ -137,7 +137,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Warn("monitoring request rejected: unknown webhook token", "ip", auth.ClientIP(r))
 		w.Header().Set("WWW-Authenticate", `Bearer realm="Status Page monitoring"`)
 		writeJSON(w, http.StatusUnauthorized, response{Status: "error",
-			Error: "This webhook URL is not valid: it was replaced, or its integration deleted. Copy the current URL from Admin → Monitoring of the status page."})
+			Error: "This webhook URL is not valid: it was replaced, or its integration deleted. Enter the integration's current URL in the tool; if you no longer have it, generate a new one in Admin → Monitoring of the status page (it is shown only once), or add the integration again."})
 		return
 	}
 
@@ -180,6 +180,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, response{Status: "error", Error: msg})
 		return
 	}
+	if b.Unread > 0 {
+		// First, so that the lines of the alerts read do not crowd it out.
+		b.Notes = append([]string{fmt.Sprintf("Only the first %d of %d alerts were read: the others were ignored (send at most %d per request).",
+			MaxAlerts, MaxAlerts+b.Unread, MaxAlerts)}, b.Notes...)
+	}
 	if b.Test {
 		lines := capLines(append([]string{"Test message received: the connection works. Nothing was changed."}, b.Notes...))
 		h.record(ctx, in, store.EventTest, lines, payload)
@@ -215,7 +220,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// From here on the tool may hang up: what it sent is applied, its
-	// e-mails queued and the request recorded anyway.
+	// e-mails queued and the request recorded anyway. The answer may come
+	// after the server's WriteTimeout (a minute, internal/app): the request
+	// may wait for its turn until applyTimeout, and recording it and
+	// queueing its e-mails take 30 seconds at most.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(h.applyTimeout + time.Minute))
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.applyTimeout)
 	defer cancel()
 	res, err := h.store.ApplyAlerts(actx, in, inputs)
@@ -240,7 +249,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if in.Paused && outcome != store.EventChanged {
 		outcome = store.EventPaused
 	}
-	lines = capLines(append(append(head, lines...), b.Notes...))
+	notes := b.Notes
+	if b.Unread > 0 {
+		head, notes = append(head, notes[0]), notes[1:]
+	}
+	lines = capLines(append(append(head, lines...), notes...))
 	if len(lines) == 0 {
 		lines = []string{"The request contained no alerts."}
 	}
@@ -526,13 +539,17 @@ func (h *Handler) Clear(ctx context.Context, in *store.Integration, key, by stri
 	defer cancel()
 	h.notify(ctx, res.Notices)
 	var lines []string
+	outcome := store.EventUnchanged // e.g. its incident was resolved by an editor
 	for _, ar := range res.Alerts {
 		for _, sr := range ar.Services {
 			lines = append(lines, alertName(ar.Alert)+" (cleared by "+by+"): "+describe(sr))
+			if sr.Action == store.AlertCleared || sr.Action == store.AlertResolved {
+				outcome = store.EventChanged
+			}
 		}
 	}
 	lines = capLines(lines)
-	h.addEvent(ctx, in, &store.IntegrationEvent{Outcome: store.EventChanged, Summary: strings.Join(lines, "\n"), Internal: true})
+	h.addEvent(ctx, in, &store.IntegrationEvent{Outcome: outcome, Summary: strings.Join(lines, "\n"), Internal: true})
 	h.log.Info("monitoring: alert cleared by an administrator", "integration", in.Name, "by", by)
 	return lines, nil
 }

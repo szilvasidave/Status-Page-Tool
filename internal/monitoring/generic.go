@@ -17,8 +17,8 @@ package monitoring
 // Optional: started, when the problem began (see parseTime), so that a
 // problem that starts again can be told from a repeat of one an editor
 // dismissed. Tools may send synonyms (genericNames: id, summary,
-// description, priority, state, services, startsAt); a field's own name
-// wins over a synonym.
+// description, priority, state, services, statuspage_impact, startsAt); a
+// field's own name wins over a synonym.
 //
 // PRTG and Datadog send the generic format with rules of their own for the
 // status and the test message: a dialect (prtg.go, datadog.go).
@@ -43,7 +43,7 @@ var genericNames = map[string][]string{
 	"title":    {"title", "summary"},
 	"message":  {"message", "description"},
 	"severity": {"severity", "priority"},
-	"impact":   {"impact"},
+	"impact":   {"impact", "statuspage_impact"},
 	"started":  {"started", "startsat", "starts_at", "startedat", "started_at"},
 }
 
@@ -147,7 +147,7 @@ func parseGeneric(r *Request, d dialect) (*Batch, error) {
 	}
 	b := &Batch{}
 	if len(alerts) > MaxAlerts {
-		b.Notes = append(b.Notes, fmt.Sprintf("Only the first %d of %d alerts were read.", MaxAlerts, len(alerts)))
+		b.Unread = len(alerts) - MaxAlerts
 		alerts = alerts[:MaxAlerts]
 	}
 	tests := 0

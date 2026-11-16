@@ -94,6 +94,9 @@ type Batch struct {
 	// Notes are remarks for the request log, e.g. about alerts that were
 	// skipped.
 	Notes []string
+	// Unread is the number of alerts beyond MaxAlerts, which were not read:
+	// the answer and the request log say so first.
+	Unread int
 }
 
 // ParseError is a request that a Provider cannot read; its message is shown
@@ -133,8 +136,9 @@ const (
 
 // statusWords maps the first word of a status, in lower case, to its state
 // and the severity it implies ("" if none). They cover the status texts of
-// common tools: Nagios/Icinga (OK, WARNING, CRITICAL, UNKNOWN, UP, DOWN,
-// UNREACHABLE), PRTG (Up, Down, Warning, Unusual, Paused), Datadog
+// common tools: Nagios/Icinga/Checkmk (OK, WARNING, CRITICAL, UNKNOWN, UP,
+// DOWN, UNREACHABLE; Checkmk's short forms WARN, CRIT, UNREACH), PRTG (Up,
+// Down, Warning, Unusual, Paused), Datadog
 // (Triggered, Re-Triggered, Warn, Re-Warn, Recovered, No Data, Renotify),
 // UptimeRobot (Up, Down), Zabbix scripts (problem, resolved).
 var statusWords = map[string]struct {
@@ -148,8 +152,8 @@ var statusWords = map[string]struct {
 	"re-triggered": {stateFiring, ""}, "retriggered": {stateFiring, ""}, "renotify": {stateFiring, ""},
 	"open": {stateFiring, ""}, "opened": {stateFiring, ""}, "active": {stateFiring, ""},
 	"fail": {stateFiring, ""}, "failed": {stateFiring, ""}, "failure": {stateFiring, ""},
-	"failing": {stateFiring, ""}, "unreachable": {stateFiring, ""}, "unavailable": {stateFiring, ""},
-	"outage": {stateFiring, ""}, "nok": {stateFiring, ""}, "bad": {stateFiring, ""},
+	"failing": {stateFiring, ""}, "unreachable": {stateFiring, ""}, "unreach": {stateFiring, ""},
+	"unavailable": {stateFiring, ""}, "outage": {stateFiring, ""}, "nok": {stateFiring, ""}, "bad": {stateFiring, ""},
 	"critical": {stateFiring, "critical"}, "crit": {stateFiring, "critical"},
 	"error": {stateFiring, "error"}, "err": {stateFiring, "error"},
 	"warning": {stateFiring, "warning"}, "warn": {stateFiring, "warning"}, "re-warn": {stateFiring, "warning"},

@@ -67,7 +67,14 @@ func TestParseStatus(t *testing.T) {
 		{"Re-Triggered", stateFiring, ""},
 		{"Renotify", stateFiring, ""},
 		{"UNREACHABLE", stateFiring, ""},
+		{"UNREACH", stateFiring, ""},
+		{"CRIT", stateFiring, "critical"},
 		{"problem", stateFiring, ""},
+		// Only the first word counts (README): a transition is read by its
+		// start.
+		{"Down -> Up", stateFiring, ""},
+		{"OK -> CRIT", stateResolved, ""},
+		{"not ok", stateUnknown, ""},
 		{"resolved", stateResolved, ""},
 		{"Recovered", stateResolved, ""},
 		{"OK", stateResolved, ""},
@@ -307,6 +314,19 @@ func TestParseGeneric(t *testing.T) {
 	b = parse(t, ParseGeneric, "application/json", `{"service": "VPN", "status": "down", "started": "16.11.2026 10:02"}`)
 	equal(t, "a start that is no time", b.Alerts[0].StartsAt, time.Time{})
 	equal(t, "its note", b.Notes, []string{"Start “16.11.2026 10:02” is not a time (RFC 3339, “YYYY-MM-DD HH:MM:SS” in UTC, or Unix seconds or milliseconds): ignored."})
+
+	// the impact, also by the name the other tools use (the help on the
+	// integration page names statuspage_impact)
+	for _, body := range []string{
+		`{"service": "VPN", "status": "down", "impact": "degraded"}`,
+		`{"service": "VPN", "status": "down", "statuspage_impact": "Degraded"}`,
+		`{"service": "VPN", "status": "down", "impact": "degraded", "statuspage_impact": "major_outage"}`,
+	} {
+		b = parse(t, ParseGeneric, "application/json", body)
+		equal(t, "impact "+body, b.Alerts[0].Impact, store.StatusDegraded)
+	}
+	b = parse(t, ParseGeneric, "application/x-www-form-urlencoded", "service=VPN&status=down&statuspage_impact=partial_outage")
+	equal(t, "statuspage_impact as a form field", b.Alerts[0].Impact, store.StatusPartialOutage)
 
 	// values quoted in notes and errors: one line, clipped
 	long := "no\npe " + strings.Repeat("x", 300)
@@ -964,8 +984,17 @@ func TestProviderSteps(t *testing.T) {
 		"prtg": {"“When sensor status is Up for at least … seconds, perform” the same template", "Down (Acknowledged)"},
 		// the recovery of a resource is a Resolved event
 		"azuremonitor": {"at least Active and Resolved", "Available among the current resource statuses"},
-		// 1.23 restarts the retries; leaving a maintenance while down is sent
-		"uptimekuma": {"Uptime Kuma 1.23", "Retries 0", "still down after the maintenance is reported down again"},
+		// 1.23 restarts the retries; leaving a maintenance while down is
+		// sent; after a lost up the incident stays open
+		"uptimekuma": {"Uptime Kuma 1.23", "Retries 0", "still down after the maintenance is reported down again",
+			"the incident stays open and a later outage continues it"},
+		// a rule that fails because the service is down must alert
+		"grafana": {"“Alerting” for a rule whose query fails"},
+		// a route of the status page takes alerts away from the parent's
+		// receiver
+		"alertmanager": {"no longer falls back to the receiver of the parent route"},
+		// only the first word of a status counts; the key's default
+		"generic": {"only the first word counts", "default: the first name in `service`"},
 	} {
 		steps := strings.Join(Lookup(id).Steps, "\n")
 		for _, want := range wants {

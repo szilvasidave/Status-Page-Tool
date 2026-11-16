@@ -991,10 +991,18 @@ type alertGroup struct {
 	n       int
 }
 
+// untitled names an alert without a title in updates; untitledPlural
+// names several (the alerts' keys are not public: they may hold the names
+// of hosts).
+const (
+	untitled       = "an alert without a title"
+	untitledPlural = "%d alerts without a title"
+)
+
 // alertTitle is the title of an alert as quoted in updates.
 func alertTitle(l alertLine) string {
 	if l.title == "" {
-		return "an alert without a title"
+		return untitled
 	}
 	return "“" + l.title + "”"
 }
@@ -1015,10 +1023,14 @@ func groupAlerts(lines []alertLine) []alertGroup {
 	return groups
 }
 
-// phrase names a group: “X”, or “X” (3 alerts).
+// phrase names a group: “X”, or “X” (3 alerts), or 3 alerts without a
+// title.
 func (g alertGroup) phrase() string {
-	if g.n == 1 {
+	switch {
+	case g.n == 1:
 		return g.title
+	case g.title == untitled:
+		return fmt.Sprintf(untitledPlural, g.n)
 	}
 	return fmt.Sprintf("%s (%d alerts)", g.title, g.n)
 }
