@@ -435,3 +435,137 @@ func TestApplyAlertsStartTime(t *testing.T) {
 		}
 	})
 }
+
+// An editor resolves the automatic incident of a service (the transaction
+// is still open) while a new alert of the service arrives: the alert must
+// not join the incident that is being resolved, but open a new one.
+func TestApplyAlertsEditorResolvesConcurrently(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		vpn := mustService(t, s, "VPN", "", 0)
+		in := mustIntegration(t, s, "Prometheus", true)
+		apply(t, s, in, firing("a", "VPN", "Gateway down", StatusMajorOutage))
+
+		editor, err := s.db.DB.BeginTx(ctx, nil) // like AddIncidentUpdate, not committed yet
+		check(t, err)
+		now := time.Now().Unix()
+		if _, err := editor.ExecContext(ctx, s.db.Rebind(`UPDATE incidents SET status = ?, resolved_at = ?, updated_at = ? WHERE id = ?`),
+			string(IncidentResolved), now, now, 1); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan *ApplyResult, 1)
+		go func() {
+			res, err := s.ApplyAlerts(ctx, in, []AlertInput{firing("b", "VPN", "Portal down", StatusPartialOutage)})
+			if err != nil {
+				t.Error(err)
+			}
+			done <- res
+		}()
+		time.Sleep(300 * time.Millisecond) // the request waits for the editor's transaction
+		check(t, editor.Commit())
+		res := <-done
+		if res == nil {
+			t.Fatal("no result")
+		}
+		equal(t, "a new incident", actions(res), []string{"VPN:opened:2"})
+		equal(t, "notice", res.Notices, []IncidentNotice{{IncidentID: 2, Created: true}})
+		equal(t, "VPN is down", currentStatus(t, s, vpn.ID), StatusPartialOutage)
+	})
+}
+
+// An administrator deletes the automatic incident of a service (not yet
+// committed) while a new alert of the service arrives: the request must not
+// fail, and the alert opens a new incident.
+func TestApplyAlertsEditorDeletesConcurrently(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		vpn := mustService(t, s, "VPN", "", 0)
+		in := mustIntegration(t, s, "Prometheus", false)
+		apply(t, s, in, firing("a", "VPN", "Gateway down", StatusMajorOutage))
+
+		editor, err := s.db.DB.BeginTx(ctx, nil)
+		check(t, err)
+		if _, err := editor.ExecContext(ctx, s.db.Rebind(`DELETE FROM incidents WHERE id = ?`), 1); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		var res *ApplyResult
+		go func() {
+			var err error
+			res, err = s.ApplyAlerts(ctx, in, []AlertInput{firing("b", "VPN", "Portal down", StatusPartialOutage)})
+			done <- err
+		}()
+		time.Sleep(300 * time.Millisecond)
+		check(t, editor.Commit())
+		check(t, <-done)
+		equal(t, "a new incident", actions(res), []string{"VPN:opened:2"})
+		equal(t, "VPN is down", currentStatus(t, s, vpn.ID), StatusPartialOutage)
+	})
+}
+
+// A dismissed alert (its incident was resolved by an editor) opens a new
+// incident when the tool reports that it started again: tools without
+// resolved notifications (Alertmanager with send_resolved: false) would
+// otherwise never open one again.
+func TestApplyAlertsNewOccurrenceAfterDismissal(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		mustService(t, s, "VPN", "", 0)
+		mustService(t, s, "Mail", "", 0)
+		in := mustIntegration(t, s, "Prometheus", false)
+		in.CreatedAt = time.Now().Add(-24 * time.Hour)
+		first := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+
+		a := firing("a", "VPN", "Gateway down", StatusMajorOutage)
+		a.StartedAt = first
+		apply(t, s, in, a)
+		check(t, s.AddIncidentUpdate(ctx, 1, &IncidentUpdate{Status: IncidentResolved, Message: "Fixed."}, nil))
+
+		// the same occurrence (same start, or a few seconds off): dismissed
+		res := apply(t, s, in, a)
+		equal(t, "same start", actions(res), []string{"VPN:dismissed:1"})
+		a.StartedAt = first.Add(30 * time.Second)
+		res = apply(t, s, in, a)
+		equal(t, "nearly the same start", actions(res), []string{"VPN:dismissed:1"})
+
+		// started again later: a new incident, starting then
+		again := time.Now().Add(-10 * time.Minute).Truncate(time.Second)
+		a.StartedAt = again
+		res = apply(t, s, in, a)
+		equal(t, "new occurrence", actions(res), []string{"VPN:opened:2"})
+		equal(t, "its start", mustIncident(t, s, 2).StartedAt, again.UTC())
+
+		// without a start time the tool cannot tell: dismissed
+		b := firing("b", "Mail", "SMTP down", StatusMajorOutage)
+		apply(t, s, in, b)
+		check(t, s.AddIncidentUpdate(ctx, 3, &IncidentUpdate{Status: IncidentResolved, Message: "Fixed."}, nil))
+		res = apply(t, s, in, b)
+		equal(t, "no start", actions(res), []string{"Mail:dismissed:3"})
+
+		// a deleted incident: the same
+		check(t, s.DeleteIncident(ctx, 2))
+		a.StartedAt = again
+		res = apply(t, s, in, a)
+		equal(t, "deleted, same start", actions(res), []string{"VPN:dismissed:0"})
+		a.StartedAt = time.Now().Truncate(time.Second)
+		res = apply(t, s, in, a)
+		equal(t, "deleted, started again", actions(res), []string{"VPN:opened:4"})
+	})
+}
+
+// The rows of alerts that cleared are deleted, so that tools with a key per
+// occurrence (Azure Monitor, Zabbix) do not fill the table.
+func TestApplyAlertsRowsDeleted(t *testing.T) {
+	forEachDB(t, func(t *testing.T, s *Store) {
+		mustService(t, s, "VPN", "", 0)
+		in := mustIntegration(t, s, "Azure", false)
+		for i := range 5 {
+			key := "/subscriptions/x/alerts/" + strconv.Itoa(i)
+			apply(t, s, in, firing(key, "VPN", "Down", StatusMajorOutage))
+			apply(t, s, in, resolved(key))
+		}
+		var n int
+		check(t, s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM integration_alerts`).Scan(&n))
+		equal(t, "rows", n, 0)
+		open, err := s.ListOpenIncidents(ctx)
+		check(t, err)
+		equal(t, "all resolved", len(open), 0)
+	})
+}

@@ -450,3 +450,37 @@ func TestProviderExamples(t *testing.T) {
 	b = parse(t, ParseGeneric, "application/json", `{"service": "VPN", "status": "down", "title": "VPN gateway unreachable"}`)
 	equal(t, "generic", b.Alerts, []Alert{{Key: "service:vpn", Firing: true, Targets: []string{"VPN"}, Title: "VPN gateway unreachable"}})
 }
+
+func TestRedactPath(t *testing.T) {
+	for in, want := range map[string]string{
+		"/hooks/secret":        "/hooks/…",
+		"/hooks":               "/hooks",
+		"/hooks/":              "/hooks/…",
+		"//hooks/secret":       "//hooks/…",
+		"/HOOKS/secret":        "/HOOKS/…",
+		"/prefix/hooks/secret": "/prefix/hooks/…",
+		"/hooks;x/secret":      "/hooks;x/…",
+		"/hooks/secret/more":   "/hooks/…",
+		"/admin/monitoring/1":  "/admin/monitoring/1",
+		"/":                    "/",
+		"":                     "",
+		"/static/app.js":       "/static/app.js",
+	} {
+		if got := RedactPath(in); got != want {
+			t.Errorf("RedactPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCapLines(t *testing.T) {
+	lines := make([]string, maxSummaryLines+50)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	got := capLines(lines)
+	equal(t, "count", len(got), maxSummaryLines)
+	equal(t, "last", got[len(got)-1], "… and 51 more lines.")
+	equal(t, "short", capLines([]string{"a", "b"}), []string{"a", "b"})
+	full := make([]string, maxSummaryLines)
+	equal(t, "exactly the limit", len(capLines(full)), maxSummaryLines)
+}

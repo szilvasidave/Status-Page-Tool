@@ -642,15 +642,20 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   like `/scim/`, the auth middleware passes it untouched (no session, cookie
   or CSRF check) and the setup redirect lets it through; the request log of
   the web server and the panic log show `/hooks/…` instead of the token
-  (`monitoring.RedactPath`). POST only (405 with `Allow: POST`); unknown
+  (`monitoring.RedactPath`: everything after a path segment starting with
+  `hooks`, in any case, so also `//hooks/<token>`, `/HOOKS/<token>` or a
+  proxy prefix). POST only (405 with `Allow: POST`); unknown
   token 401 (logged with the client address, never the token); body ≤ 1 MiB
   (413); a request that cannot be read 400 with the reason; everything that
   was read 200 – also when an alert names no service or the integration is
   paused, so that tools do not retry it – with a JSON summary. Each request of
   a known integration is recorded (`integration_events`: outcome changed,
-  unchanged, unmatched, test, paused or invalid, one summary line per alert,
-  the first 8 KB of the body); the latest 50 per integration are kept and
-  shown on its page.
+  unchanged, unmatched, test, paused or invalid, a summary line per alert
+  and service – at most 100 lines –, the first 8 KB of the body, as valid
+  UTF-8 without NUL characters); the latest 50 per integration are kept
+  and shown on its page. The e-mails and the record of a request whose
+  alerts were applied use a context that the tool cannot cancel by hanging
+  up.
 * **Providers** (`providers.go`): ID (stored, never changed), name, `Parse`,
   which values name the service, setup steps and an example (`{url}` is
   replaced by the webhook URL on the page, or by a placeholder once it has
@@ -690,18 +695,30 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
 * **What alerts change** (`store.ApplyAlerts`, one transaction per request;
   on PostgreSQL after the advisory lock `monitoringLockID`, so that two
   requests cannot both open an incident for a service; SQLite serialises
-  writers). State: `integration_alerts`, one row per integration, alert key
-  and service, with `firing`, `incident_id` and `suppressed`. A firing alert
-  that was not firing (new occurrence) is attached to the newest open
+  writers). State: `integration_alerts`, one row per integration, firing
+  alert (key) and service, with `incident_id`, `suppressed` and the start
+  the tool reported (`reported_start`); a row is deleted when its alert
+  clears, so the table holds only firing alerts (tools with a key per
+  occurrence, such as Azure Monitor and Zabbix, do not fill it). A firing
+  alert without a row (new occurrence) is attached to the newest open
   automatic incident that affects the service (`incidents.automatic`), else
   it opens one (status investigating, title `AutomaticIncidentTitle`: the
   alert's title, prefixed with the service unless it names it; start = the
   alert's start, not in the future and not before the integration existed).
-  While a maintenance of the service is in progress it is suppressed instead.
-  A firing alert that was firing (repeat) updates title and impact; if its
-  incident was resolved by an editor or deleted, it stays detached until it
-  clears (a suppressed one is attached once the maintenance has ended). A
-  resolved alert clears all rows of its key (whatever the names are now).
+  The incident to join is locked first (`openIncidentOf`: `UPDATE … WHERE
+  status <> resolved`, then the service is checked again), so that on
+  PostgreSQL an alert never joins an incident that an editor is resolving or
+  deleting at that moment – it would be dismissed with it, or the request
+  would fail on the foreign key; the next candidate, else a new incident,
+  is taken. While a maintenance of the service is in progress the alert is
+  suppressed instead. A firing alert with a row (repeat) updates title and
+  impact; if its incident was resolved by an editor or deleted, it stays
+  detached ("dismissed") until it clears, unless the tool reports a start
+  more than a minute after the stored one (`newOccurrence`: the alert
+  started again without the status page hearing that it cleared, e.g.
+  Alertmanager without `send_resolved`); then it is attached like a new
+  occurrence. A suppressed one is attached once the maintenance has ended.
+  A resolved alert clears all rows of its key (whatever the names are now).
   At the end (`finish`) each changed incident is brought in line: the impact
   on each service with firing alerts = their worst impact (a service without
   firing alerts keeps its impact, one an editor removed is not added again),

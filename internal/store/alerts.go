@@ -3,24 +3,26 @@ package store
 // What the alerts of monitoring tools change (package monitoring reads them
 // from the tools' requests).
 //
-// An alert affects the services it names (MatchServices). Each alert and
-// service has a row in integration_alerts: the alert's state as the tool
-// last reported it, and the incident it is attached to. The incidents are
-// brought in line with these rows at the end of every request (finish):
+// An alert affects the services it names (MatchServices). Each firing alert
+// has a row in integration_alerts per service it affects, with the incident
+// it is attached to; the row is deleted when the alert clears. The incidents
+// are brought in line with these rows at the end of every request (finish):
 //
-//   - A firing alert that was not firing before is attached to the newest
-//     open automatic incident that affects the service, or opens a new
-//     automatic incident for it. While maintenance of the service is in
+//   - A firing alert without a row (a new occurrence) is attached to the
+//     newest open automatic incident that affects the service, or opens a
+//     new automatic incident for it. While maintenance of the service is in
 //     progress it is suppressed instead: ReleaseSuppressedAlerts attaches it
 //     once the maintenance has ended, if it still fires.
 //   - The impact of an automatic incident on a service is the worst impact
 //     of the alerts that fire for it there.
-//   - When the last firing alert of an incident resolves, the incident is
+//   - When the last firing alert of an incident clears, the incident is
 //     resolved.
-//   - A firing alert that was firing before (a repeat, e.g. after
-//     Alertmanager's repeat_interval) only updates its title and impact.
-//     If an editor resolved or deleted its incident meanwhile, it stays
-//     detached until it resolves; its next occurrence opens a new incident.
+//   - A firing alert that has a row (a repeat, e.g. after Alertmanager's
+//     repeat_interval) only updates its title and impact. If an editor
+//     resolved or deleted its incident meanwhile, it stays detached
+//     ("dismissed") until it clears – unless the tool reports that it
+//     started again later (newOccurrence), e.g. Alertmanager without
+//     send_resolved: then it is a new occurrence.
 //
 // Automation never touches incidents that people opened. It changes the
 // automatic ones by posting updates (source: the integration's name),
@@ -170,8 +172,8 @@ func (s *Store) ReleaseSuppressedAlerts(ctx context.Context) (*ApplyResult, erro
 	// Most of the time nothing waits: check that without a writing
 	// transaction.
 	var waiting int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM integration_alerts WHERE firing = ? AND suppressed = ?`,
-		true, true).Scan(&waiting); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM integration_alerts WHERE suppressed = ?`,
+		true).Scan(&waiting); err != nil {
 		return nil, fmt.Errorf("release alerts after maintenance: %w", err)
 	}
 	if waiting == 0 {
@@ -199,8 +201,8 @@ func (s *Store) ReleaseSuppressedAlerts(ctx context.Context) (*ApplyResult, erro
 			return h, err
 		}, `SELECT a.integration_id, a.alert_key, a.service_id, a.title, a.impact, ig.name, ig.notify
 		    FROM integration_alerts a JOIN integrations ig ON ig.id = a.integration_id
-		    WHERE a.firing = ? AND a.suppressed = ? AND ig.paused = ?
-		    ORDER BY a.started_at, a.integration_id, a.alert_key, a.service_id`, true, true, false)
+		    WHERE a.suppressed = ? AND ig.paused = ?
+		    ORDER BY a.started_at, a.integration_id, a.alert_key, a.service_id`, true, false)
 		if err != nil {
 			return err
 		}
@@ -310,10 +312,10 @@ func (r *alertRun) touch(incidentID int64, in *Integration) *incidentChange {
 
 // alertRow is a row of integration_alerts.
 type alertRow struct {
-	incidentID int64 // 0: NULL
-	firing     bool
-	suppressed bool
-	title      string
+	incidentID    int64 // 0: NULL
+	suppressed    bool
+	title         string
+	reportedStart sql.NullInt64
 }
 
 // startTime is when the incident of a new alert starts: when the tool says
@@ -330,6 +332,23 @@ func (r *alertRun) startTime(in *Integration, a *AlertInput) time.Time {
 	return truncate(t)
 }
 
+// reportedStart is the start of an alert as the tool reported it, for
+// integration_alerts.reported_start (NULL if unknown).
+func reportedStart(a *AlertInput) any {
+	if a.StartedAt.IsZero() {
+		return nil
+	}
+	return a.StartedAt.Unix()
+}
+
+// newOccurrence reports whether a firing alert that has a row started again:
+// the tool reports a start more than a minute after the stored one. Tools
+// that report starts (Alertmanager, Grafana, Azure Monitor) keep the start
+// of an alert while it fires.
+func newOccurrence(row alertRow, a *AlertInput) bool {
+	return row.reportedStart.Valid && !a.StartedAt.IsZero() && a.StartedAt.Unix() > row.reportedStart.Int64+60
+}
+
 // fire applies a firing alert to one service it names.
 func (r *alertRun) fire(in *Integration, a *AlertInput, serviceID int64) (AlertServiceResult, error) {
 	res := AlertServiceResult{ServiceID: serviceID, ServiceName: r.names[serviceID]}
@@ -337,26 +356,25 @@ func (r *alertRun) fire(in *Integration, a *AlertInput, serviceID int64) (AlertS
 	if !ValidImpact(impact) {
 		impact = StatusMajorOutage
 	}
-	var row alertRow
-	var incident sql.NullInt64
+	var (
+		row      alertRow
+		incident sql.NullInt64
+	)
 	err := r.tx.QueryRowContext(r.ctx,
-		`SELECT incident_id, firing, suppressed, title FROM integration_alerts WHERE integration_id = ? AND alert_key = ? AND service_id = ?`,
-		in.ID, a.Key, serviceID).Scan(&incident, &row.firing, &row.suppressed, &row.title)
+		`SELECT incident_id, suppressed, title, reported_start FROM integration_alerts WHERE integration_id = ? AND alert_key = ? AND service_id = ?`,
+		in.ID, a.Key, serviceID).Scan(&incident, &row.suppressed, &row.title, &row.reportedStart)
 	if err = notFound(err); err != nil && !errors.Is(err, ErrNotFound) {
 		return res, err
 	}
 	row.incidentID = incident.Int64
 
-	if errors.Is(err, ErrNotFound) || !row.firing {
+	if errors.Is(err, ErrNotFound) {
 		// A new occurrence of the alert.
 		started := r.startTime(in, a)
 		if _, err := r.tx.ExecContext(r.ctx,
-			`INSERT INTO integration_alerts (integration_id, alert_key, service_id, incident_id, firing, suppressed, impact, title, started_at, updated_at)
-			 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT (integration_id, alert_key, service_id) DO UPDATE SET
-			   incident_id = NULL, firing = excluded.firing, suppressed = excluded.suppressed, impact = excluded.impact,
-			   title = excluded.title, started_at = excluded.started_at, updated_at = excluded.updated_at`,
-			in.ID, a.Key, serviceID, true, false, string(impact), a.Title, started.Unix(), r.now.Unix()); err != nil {
+			`INSERT INTO integration_alerts (integration_id, alert_key, service_id, incident_id, suppressed, impact, title, reported_start, started_at, updated_at)
+			 VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+			in.ID, a.Key, serviceID, false, string(impact), a.Title, reportedStart(a), started.Unix(), r.now.Unix()); err != nil {
 			return res, err
 		}
 		res.Action, res.IncidentID, err = r.attach(in, a, serviceID, started)
@@ -375,27 +393,36 @@ func (r *alertRun) fire(in *Integration, a *AlertInput, serviceID int64) (AlertS
 		return res, err
 	}
 	switch {
-	case row.incidentID != 0:
-		res.IncidentID = row.incidentID
-		open, err := r.incidentOpen(row.incidentID)
-		if err != nil {
-			return res, err
-		}
-		if !open {
-			res.Action = AlertDismissed // resolved by an editor
-			return res, nil
-		}
-		r.touch(row.incidentID, in).services[serviceID] = true // the impact may have changed
-		res.Action = AlertRepeated
 	case row.suppressed:
 		// Fired during maintenance: attach it now if the maintenance has
 		// ended. The incident starts now, not during the maintenance.
 		res.Action, res.IncidentID, err = r.attach(in, a, serviceID, r.now)
 		return res, err
-	default:
-		res.Action = AlertDismissed // its incident was deleted
+	case row.incidentID != 0:
+		open, err := r.incidentOpen(row.incidentID)
+		if err != nil {
+			return res, err
+		}
+		if open {
+			r.touch(row.incidentID, in).services[serviceID] = true // the impact may have changed
+			res.Action, res.IncidentID = AlertRepeated, row.incidentID
+			return res, nil
+		}
 	}
-	return res, nil
+	// Its incident was resolved by an editor, or deleted: dismissed, unless
+	// the alert started again.
+	if !newOccurrence(row, a) {
+		res.Action, res.IncidentID = AlertDismissed, row.incidentID
+		return res, nil
+	}
+	started := r.startTime(in, a)
+	if _, err := r.tx.ExecContext(r.ctx,
+		`UPDATE integration_alerts SET incident_id = NULL, reported_start = ?, started_at = ? WHERE integration_id = ? AND alert_key = ? AND service_id = ?`,
+		reportedStart(a), started.Unix(), in.ID, a.Key, serviceID); err != nil {
+		return res, err
+	}
+	res.Action, res.IncidentID, err = r.attach(in, a, serviceID, started)
+	return res, err
 }
 
 // attach attaches a firing alert (its row exists) of a service to the open
@@ -414,12 +441,11 @@ func (r *alertRun) attach(in *Integration, a *AlertInput, serviceID int64, start
 		return AlertSuppressed, 0, err
 	}
 	action := AlertJoined
-	var incidentID int64
-	err = r.tx.QueryRowContext(r.ctx,
-		`SELECT i.id FROM incidents i JOIN incident_services x ON x.incident_id = i.id
-		 WHERE x.service_id = ? AND i.automatic = ? AND i.status <> ? ORDER BY i.id DESC LIMIT 1`,
-		serviceID, true, string(IncidentResolved)).Scan(&incidentID)
-	if err = notFound(err); errors.Is(err, ErrNotFound) {
+	incidentID, err := r.openIncidentOf(serviceID)
+	if err != nil {
+		return "", 0, err
+	}
+	if incidentID == 0 {
 		action = AlertOpened
 		impact := a.Impact
 		if !ValidImpact(impact) {
@@ -434,12 +460,10 @@ func (r *alertRun) attach(in *Integration, a *AlertInput, serviceID int64, start
 			_, err = r.tx.ExecContext(r.ctx, `INSERT INTO incident_services (incident_id, service_id, impact) VALUES (?, ?, ?)`,
 				incidentID, serviceID, string(impact))
 		}
-		if err == nil {
-			r.touch(incidentID, in).created = true
+		if err != nil {
+			return "", 0, err
 		}
-	}
-	if err != nil {
-		return "", 0, err
+		r.touch(incidentID, in).created = true
 	}
 	ch := r.touch(incidentID, in)
 	ch.problems = addLine(ch.problems, alertLine{key: a.Key, title: a.Title, message: a.Message})
@@ -450,7 +474,51 @@ func (r *alertRun) attach(in *Integration, a *AlertInput, serviceID int64, start
 	return action, incidentID, err
 }
 
-// clear applies a resolved alert: every service its firing alert affects.
+// openIncidentOf returns the newest open automatic incident that affects the
+// service (0 if there is none), locked for this transaction. On PostgreSQL
+// the lock waits for an editor who is resolving or deleting that incident
+// at this moment; it is then no longer open and the next one is looked for,
+// so that an alert never joins an incident that is being resolved (it would
+// be dismissed with it) or deleted (the request would fail).
+func (r *alertRun) openIncidentOf(serviceID int64) (int64, error) {
+	const tries = 3
+	for range tries {
+		var id int64
+		err := r.tx.QueryRowContext(r.ctx,
+			`SELECT i.id FROM incidents i JOIN incident_services x ON x.incident_id = i.id
+			 WHERE x.service_id = ? AND i.automatic = ? AND i.status <> ? ORDER BY i.id DESC LIMIT 1`,
+			serviceID, true, string(IncidentResolved)).Scan(&id)
+		if err = notFound(err); errors.Is(err, ErrNotFound) {
+			return 0, nil
+		} else if err != nil {
+			return 0, err
+		}
+		// The lock; then check again what the editor may have changed
+		// before it was granted (status, affected services).
+		res, err := r.tx.ExecContext(r.ctx, `UPDATE incidents SET updated_at = updated_at WHERE id = ? AND status <> ?`,
+			id, string(IncidentResolved))
+		if err != nil {
+			return 0, err
+		}
+		if k, err := res.RowsAffected(); err != nil {
+			return 0, err
+		} else if k == 0 {
+			continue
+		}
+		var n int
+		if err := r.tx.QueryRowContext(r.ctx, `SELECT COUNT(*) FROM incident_services WHERE incident_id = ? AND service_id = ?`,
+			id, serviceID).Scan(&n); err != nil {
+			return 0, err
+		}
+		if n > 0 {
+			return id, nil
+		}
+	}
+	return 0, nil // the candidates kept changing: open a new incident
+}
+
+// clear applies a resolved alert: it deletes the rows of the alert (every
+// service it affects) and notes the change of their open incidents.
 func (r *alertRun) clear(in *Integration, a *AlertInput) ([]AlertServiceResult, error) {
 	type firingRow struct {
 		serviceID int64
@@ -464,18 +532,16 @@ func (r *alertRun) clear(in *Integration, a *AlertInput) ([]AlertServiceResult, 
 		err := sc.Scan(&f.serviceID, &incident, &f.row.title)
 		f.row.incidentID = incident.Int64
 		return f, err
-	}, `SELECT service_id, incident_id, title FROM integration_alerts WHERE integration_id = ? AND alert_key = ? AND firing = ?
-	    ORDER BY service_id`, in.ID, a.Key, true)
-	if err != nil {
+	}, `SELECT service_id, incident_id, title FROM integration_alerts WHERE integration_id = ? AND alert_key = ?
+	    ORDER BY service_id`, in.ID, a.Key)
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	if _, err := r.tx.ExecContext(r.ctx, `DELETE FROM integration_alerts WHERE integration_id = ? AND alert_key = ?`, in.ID, a.Key); err != nil {
 		return nil, err
 	}
 	var out []AlertServiceResult
 	for _, f := range rows {
-		if _, err := r.tx.ExecContext(r.ctx,
-			`UPDATE integration_alerts SET firing = ?, suppressed = ?, updated_at = ? WHERE integration_id = ? AND alert_key = ? AND service_id = ?`,
-			false, false, r.now.Unix(), in.ID, a.Key, f.serviceID); err != nil {
-			return nil, err
-		}
 		res := AlertServiceResult{ServiceID: f.serviceID, ServiceName: r.names[f.serviceID], Action: AlertEnded, IncidentID: f.row.incidentID}
 		if f.row.incidentID != 0 {
 			open, err := r.incidentOpen(f.row.incidentID)
@@ -546,8 +612,8 @@ func (r *alertRun) finish() error {
 			return err
 		}
 		var firing int
-		if err := r.tx.QueryRowContext(r.ctx, `SELECT COUNT(*) FROM integration_alerts WHERE incident_id = ? AND firing = ?`,
-			id, true).Scan(&firing); err != nil {
+		if err := r.tx.QueryRowContext(r.ctx, `SELECT COUNT(*) FROM integration_alerts WHERE incident_id = ?`,
+			id).Scan(&firing); err != nil {
 			return err
 		}
 		var updates []*IncidentUpdate
@@ -609,7 +675,7 @@ func (r *alertRun) reconcileImpacts(incidentID int64, ch *incidentChange) (lines
 			var v string
 			err := sc.Scan(&v)
 			return Status(v), err
-		}, `SELECT impact FROM integration_alerts WHERE incident_id = ? AND service_id = ? AND firing = ?`, incidentID, sid, true)
+		}, `SELECT impact FROM integration_alerts WHERE incident_id = ? AND service_id = ?`, incidentID, sid)
 		if err != nil {
 			return nil, false, err
 		}

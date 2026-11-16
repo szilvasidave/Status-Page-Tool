@@ -407,7 +407,7 @@ func (s *Server) badRequest(w http.ResponseWriter, r *http.Request, msg string) 
 }
 
 func (s *Server) serverError(w http.ResponseWriter, r *http.Request, err error) {
-	s.Log.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	s.Log.Error("request failed", "method", r.Method, "path", monitoring.RedactPath(r.URL.Path), "err", err)
 	s.errorPage(w, r, http.StatusInternalServerError, "Something went wrong", "An unexpected error occurred. Please try again; if the problem persists check the server log.")
 }
 

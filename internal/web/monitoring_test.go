@@ -369,7 +369,18 @@ func TestMonitoringWebhookMiddleware(t *testing.T) {
 		t.Fatalf("unknown token: %d %v", status, body)
 	}
 
+	// Paths that the routes do not take as a webhook do not log the token
+	// either (the middleware refuses them as cross-site requests).
 	token := strings.TrimPrefix(hook, monitoring.Path+"/")
+	for _, odd := range []string{"//hooks/" + token, "/HOOKS/" + token, "/prefix/hooks/" + token} {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+odd, strings.NewReader("service=VPN&status=down"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
 	logs := logBuf.String()
 	if strings.Contains(logs, token) || strings.Contains(logs, "unknown-token") {
 		t.Fatalf("a token was logged:\n%s", logs)

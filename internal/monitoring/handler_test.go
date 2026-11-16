@@ -361,7 +361,8 @@ func TestURLAndPaths(t *testing.T) {
 	equal(t, "base URL", URL(r, "https://status.example.com/", "abc"), "https://status.example.com/hooks/abc")
 	equal(t, "without token", URL(r, "https://status.example.com", ""), "https://status.example.com/hooks")
 	equal(t, "redacted", RedactPath("/hooks/secret-token"), "/hooks/…")
-	equal(t, "not a hook", RedactPath("/hooksx/a"), "/hooksx/a")
+	equal(t, "any segment starting with hooks", RedactPath("/hooksx/a"), "/hooksx/…")
+	equal(t, "not a hook", RedactPath("/admin/a"), "/admin/a")
 	equal(t, "IsPath", []bool{IsPath("/hooks"), IsPath("/hooks/x"), IsPath("/hooksx"), IsPath("/admin")}, []bool{true, true, false, false})
 
 	token, hash := NewToken()

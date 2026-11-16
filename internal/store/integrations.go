@@ -24,8 +24,13 @@ const KeepIntegrationEvents = 50
 // AddIntegrationEvent stores.
 const MaxEventPayload = 8 << 10
 
+// maxEventSummary is the number of bytes of a summary that
+// AddIntegrationEvent stores (package monitoring shortens it to fewer lines
+// first).
+const maxEventSummary = 32 << 10
+
 const integrationCols = `ig.id, ig.name, ig.provider, ig.impact, ig.notify, ig.paused, ig.token_created_at, ig.last_event_at, ig.created_at,
-	(SELECT COUNT(*) FROM integration_alerts fa WHERE fa.integration_id = ig.id AND fa.firing = ?)`
+	(SELECT COUNT(*) FROM integration_alerts fa WHERE fa.integration_id = ig.id)`
 
 func scanIntegration(sc scanner) (Integration, error) {
 	var (
@@ -124,7 +129,7 @@ func (s *Store) DeleteIntegration(ctx context.Context, id int64) error {
 // GetIntegration returns an integration (Firing filled) or ErrNotFound.
 func (s *Store) GetIntegration(ctx context.Context, id int64) (*Integration, error) {
 	in, err := scanIntegration(s.db.QueryRowContext(ctx,
-		`SELECT `+integrationCols+` FROM integrations ig WHERE ig.id = ?`, true, id))
+		`SELECT `+integrationCols+` FROM integrations ig WHERE ig.id = ?`, id))
 	if err != nil {
 		if err = notFound(err); errors.Is(err, ErrNotFound) {
 			return nil, err
@@ -141,7 +146,7 @@ func (s *Store) IntegrationByTokenHash(ctx context.Context, tokenHash string) (*
 		return nil, ErrNotFound
 	}
 	in, err := scanIntegration(s.db.QueryRowContext(ctx,
-		`SELECT `+integrationCols+` FROM integrations ig WHERE ig.token_hash = ?`, true, tokenHash))
+		`SELECT `+integrationCols+` FROM integrations ig WHERE ig.token_hash = ?`, tokenHash))
 	if err != nil {
 		if err = notFound(err); errors.Is(err, ErrNotFound) {
 			return nil, err
@@ -154,7 +159,7 @@ func (s *Store) IntegrationByTokenHash(ctx context.Context, tokenHash string) (*
 // ListIntegrations returns all integrations by name (Firing filled).
 func (s *Store) ListIntegrations(ctx context.Context) ([]Integration, error) {
 	ins, err := queryAll(ctx, s.db, scanIntegration,
-		`SELECT `+integrationCols+` FROM integrations ig ORDER BY LOWER(ig.name), ig.id`, true)
+		`SELECT `+integrationCols+` FROM integrations ig ORDER BY LOWER(ig.name), ig.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list integrations: %w", err)
 	}
@@ -171,6 +176,7 @@ func (s *Store) AddIntegrationEvent(ctx context.Context, ev *IntegrationEvent) e
 	}
 	ev.ReceivedAt = truncate(ev.ReceivedAt)
 	ev.Payload = truncateUTF8(ev.Payload, MaxEventPayload)
+	ev.Summary = truncateUTF8(ev.Summary, maxEventSummary)
 	err := s.db.InTx(ctx, func(tx *db.Tx) error {
 		err := tx.QueryRowContext(ctx,
 			`INSERT INTO integration_events (integration_id, received_at, outcome, summary, payload) VALUES (?, ?, ?, ?, ?) RETURNING id`,
@@ -244,8 +250,8 @@ func scanIntegrationAlert(sc scanner) (IntegrationAlert, error) {
 // first.
 func (s *Store) ListIntegrationAlerts(ctx context.Context, integrationID int64) ([]IntegrationAlert, error) {
 	as, err := queryAll(ctx, s.db, scanIntegrationAlert,
-		`SELECT `+integrationAlertCols+integrationAlertFrom+`WHERE a.integration_id = ? AND a.firing = ?
-		 ORDER BY a.started_at, LOWER(sv.name), a.alert_key`, integrationID, true)
+		`SELECT `+integrationAlertCols+integrationAlertFrom+`WHERE a.integration_id = ?
+		 ORDER BY a.started_at, LOWER(sv.name), a.alert_key`, integrationID)
 	if err != nil {
 		return nil, fmt.Errorf("list alerts of integration %d: %w", integrationID, err)
 	}
@@ -256,8 +262,8 @@ func (s *Store) ListIntegrationAlerts(ctx context.Context, integrationID int64) 
 // oldest first.
 func (s *Store) ListIncidentAlerts(ctx context.Context, incidentID int64) ([]IntegrationAlert, error) {
 	as, err := queryAll(ctx, s.db, scanIntegrationAlert,
-		`SELECT `+integrationAlertCols+integrationAlertFrom+`WHERE a.incident_id = ? AND a.firing = ?
-		 ORDER BY a.started_at, LOWER(ig.name), a.alert_key`, incidentID, true)
+		`SELECT `+integrationAlertCols+integrationAlertFrom+`WHERE a.incident_id = ?
+		 ORDER BY a.started_at, LOWER(ig.name), a.alert_key`, incidentID)
 	if err != nil {
 		return nil, fmt.Errorf("list alerts of incident %d: %w", incidentID, err)
 	}

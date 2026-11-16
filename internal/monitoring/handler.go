@@ -60,11 +60,17 @@ func New(st *store.Store, n Notifier, log *slog.Logger) *Handler {
 // IsPath reports whether p is the path of a webhook URL (Path or below).
 func IsPath(p string) bool { return p == Path || strings.HasPrefix(p, Path+"/") }
 
-// RedactPath returns p with the token of a webhook URL replaced by "…", for
-// logs.
+// RedactPath returns p for logs, with everything after a path segment that
+// starts with "hooks" (in any case) replaced by "…": a webhook token never
+// reaches a log, also not from a path that the routes do not take as a
+// webhook, e.g. //hooks/<token>, /HOOKS/<token> or /prefix/hooks/<token>
+// behind a misconfigured proxy.
 func RedactPath(p string) string {
-	if strings.HasPrefix(p, Path+"/") {
-		return Path + "/…"
+	segments := strings.Split(p, "/")
+	for i, seg := range segments[:max(len(segments)-1, 0)] {
+		if strings.HasPrefix(strings.ToLower(seg), "hooks") {
+			return strings.Join(segments[:i+1], "/") + "/…"
+		}
 	}
 	return p
 }
@@ -164,12 +170,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case b.Test:
-		lines := append([]string{"Test message received: the connection works. Nothing was changed."}, b.Notes...)
+		lines := capLines(append([]string{"Test message received: the connection works. Nothing was changed."}, b.Notes...))
 		h.record(ctx, in, store.EventTest, lines, payload)
 		writeJSON(w, http.StatusOK, response{Status: "test", Summary: lines})
 		return
 	case in.Paused:
-		lines := append([]string{fmt.Sprintf("The integration is paused: %s received, nothing was changed.", plural(len(b.Alerts), "alert"))}, b.Notes...)
+		lines := capLines(append([]string{fmt.Sprintf("The integration is paused: %s received, nothing was changed.", plural(len(b.Alerts), "alert"))}, b.Notes...))
 		h.record(ctx, in, store.EventPaused, lines, payload)
 		writeJSON(w, http.StatusOK, response{Status: "paused", Alerts: len(b.Alerts), Summary: lines})
 		return
@@ -191,13 +197,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	h.notify(ctx, res.Notices)
 	outcome, lines := summarize(res)
-	lines = append(lines, b.Notes...)
+	lines = capLines(append(lines, b.Notes...))
 	if len(lines) == 0 {
 		lines = []string{"The request contained no alerts."}
 	}
 	h.record(ctx, in, outcome, lines, payload)
 	h.log.Info("monitoring alerts received", "integration", in.Name, "alerts", len(inputs), "outcome", outcome)
 	writeJSON(w, http.StatusOK, response{Status: "ok", Alerts: len(inputs), Summary: lines})
+}
+
+// maxSummaryLines is the number of lines of a request's summary that are
+// kept (in the request log and the answer).
+const maxSummaryLines = 100
+
+// capLines returns at most maxSummaryLines lines, the last one saying how
+// many were left out.
+func capLines(lines []string) []string {
+	if len(lines) <= maxSummaryLines {
+		return lines
+	}
+	return append(lines[:maxSummaryLines-1:maxSummaryLines-1], fmt.Sprintf("… and %d more lines.", len(lines)-(maxSummaryLines-1)))
 }
 
 // tokenOf returns the token of a request: the last part of the path
@@ -390,7 +409,7 @@ func (h *Handler) release(ctx context.Context) {
 		}
 	}
 	for _, id := range order {
-		h.record(ctx, &store.Integration{ID: id}, store.EventChanged, byIntegration[id], "")
+		h.record(ctx, &store.Integration{ID: id}, store.EventChanged, capLines(byIntegration[id]), "")
 	}
 	h.log.Info("monitoring: alerts that fired during maintenance opened incidents", "alerts", len(res.Alerts))
 }

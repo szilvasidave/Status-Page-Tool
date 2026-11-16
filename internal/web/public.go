@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/szilvasidave/status-page-tool/internal/monitoring"
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
 
@@ -342,7 +343,7 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	cur, err := s.loadPublicStatus(r.Context(), now)
 	if err != nil {
-		s.Log.Error("request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+		s.Log.Error("request failed", "method", r.Method, "path", monitoring.RedactPath(r.URL.Path), "err", err)
 		publicJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		return
 	}

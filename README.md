@@ -982,7 +982,10 @@ curl or PowerShell (e.g. a System Center Operations Manager command channel).
 - **Editors** can post updates to an automatic incident, rename and resolve
   it like any other. If an editor resolves it – or an administrator deletes
   it – while its alerts still fire, they do not reopen it; when they fire
-  again later, they open a new incident.
+  again later, they open a new incident. Tools that report when an alert
+  started (Alertmanager, Grafana, Azure Monitor) also open a new incident
+  for an alert that starts again without having cleared in between, e.g.
+  with `send_resolved: false`.
 - A **paused** integration lists its requests but changes nothing. Deleting
   an integration stops its webhook URL; the incidents it opened stay (open
   ones until an editor resolves them).

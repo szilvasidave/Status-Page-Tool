@@ -219,16 +219,19 @@ ALTER TABLE users ADD COLUMN app_roles TEXT NOT NULL DEFAULT '';
 	//     notify                    e-mail about the incidents it opens and
 	//                               resolves
 	//     paused                    requests are recorded but change nothing
-	//   integration_alerts          the alerts of an integration, one row per
-	//                               service an alert names
+	//   integration_alerts          the firing alerts of an integration, one
+	//                               row per service an alert names; a row is
+	//                               deleted when its alert clears
 	//     alert_key                 identifies the alert within the integration
 	//     incident_id               the incident it opened or joined (NULL:
 	//                               none: suppressed, or the incident was
 	//                               deleted)
-	//     firing                    the latest state reported by the tool
 	//     suppressed                it fired while maintenance of its service
 	//                               was in progress: it opens an incident when
 	//                               the maintenance ends, if it still fires
+	//     reported_start            when the problem began according to the
+	//                               tool (NULL: unknown); a later one is a new
+	//                               occurrence of the alert
 	//   integration_events          the latest requests of each integration and
 	//                               what they changed, for administrators
 	//   services.monitor_names      other names of the service in monitoring
@@ -257,10 +260,10 @@ CREATE TABLE integration_alerts (
 	alert_key      TEXT NOT NULL,
 	service_id     BIGINT NOT NULL REFERENCES services (id) ON DELETE CASCADE,
 	incident_id    BIGINT REFERENCES incidents (id) ON DELETE SET NULL,
-	firing         {{BOOL}} NOT NULL,
 	suppressed     {{BOOL}} NOT NULL DEFAULT {{FALSE}},
 	impact         TEXT NOT NULL,
 	title          TEXT NOT NULL DEFAULT '',
+	reported_start BIGINT,
 	started_at     BIGINT NOT NULL,
 	updated_at     BIGINT NOT NULL,
 	PRIMARY KEY (integration_id, alert_key, service_id)
