@@ -276,7 +276,7 @@ func (s *Server) handleIntegrationClearAlert(w http.ResponseWriter, r *http.Requ
 	if in == nil {
 		return
 	}
-	back := adminIntegrationPath(in.ID) + "#alerts"
+	back := adminIntegrationPath(in.ID) // the message is at the top
 	lines, err := s.Monitoring.Clear(r.Context(), in, r.PostFormValue("key"), adminActor(r))
 	if errors.Is(err, store.ErrNotFound) {
 		s.redirectWithFlash(w, r, back, "info", "This alert is no longer firing.")

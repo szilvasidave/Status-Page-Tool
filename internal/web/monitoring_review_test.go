@@ -26,7 +26,7 @@ func TestMonitoringClearAlert(t *testing.T) {
 		`data-confirm="Clear the alert “VPN gateway down”?`)
 
 	r := e.post(page+"/alerts/clear", url.Values{"key": {"gw"}})
-	if r.Status != http.StatusSeeOther || r.Location != page+"#alerts" {
+	if r.Status != http.StatusSeeOther || r.Location != page {
 		t.Fatalf("clear: %d %s", r.Status, r.Location)
 	}
 	body := e.get(page).Body
