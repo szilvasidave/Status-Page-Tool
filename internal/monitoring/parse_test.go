@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/szilvasidave/status-page-tool/internal/store"
 )
@@ -1023,4 +1024,23 @@ func TestCapLines(t *testing.T) {
 	equal(t, "short", capLines([]string{"a", "b"}), []string{"a", "b"})
 	full := make([]string, maxSummaryLines)
 	equal(t, "exactly the limit", len(capLines(full)), maxSummaryLines)
+}
+
+// Backticks mark code in the steps and in Service (codeText on the page):
+// they come in pairs, so that no step shows the rest of a sentence as code,
+// and the code between them is short, as the page does not wrap it.
+func TestProviderTextBackticks(t *testing.T) {
+	for _, p := range Providers() {
+		for i, text := range append([]string{p.Service}, p.Steps...) {
+			parts := strings.Split(text, "`")
+			if len(parts)%2 == 0 {
+				t.Errorf("%s, text %d: unpaired backtick in %q", p.ID, i, text)
+			}
+			for j := 1; j < len(parts); j += 2 {
+				if n := utf8.RuneCountInString(parts[j]); n > 24 {
+					t.Errorf("%s, text %d: code %q has %d characters, more than fit on a phone's line (24)", p.ID, i, parts[j], n)
+				}
+			}
+		}
+	}
 }

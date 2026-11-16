@@ -679,7 +679,8 @@ Requirement 15; package `internal/monitoring`, store `integrations.go` and
   answers 503 (`monitoring.ServeUnavailable`) instead of redirecting to
   `/setup`, which tools that follow redirects would take for a delivery.
 * **Providers** (`providers.go`): ID (stored, never changed), name, `Parse`,
-  which values name the service, setup steps and an example (`{url}` is
+  which values name the service, setup steps (plain text; text between
+  backticks is shown as code, `codeText`) and an example (`{url}` is
   replaced by the webhook URL on the page, or by a placeholder once it has
   been shown). Native parsers for tools with a fixed format:
   - Prometheus Alertmanager and Grafana (`alertmanager.go`): each alert of

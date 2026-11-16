@@ -154,6 +154,29 @@ func (s *Server) location() *time.Location {
 
 func urlQueryEscape(v string) string { return url.QueryEscape(v) }
 
+// codeText escapes s and shows the text between backticks in it as code,
+// kept on one line (an option such as --retry-connrefused is not broken at
+// its hyphens; TestProviderTextBackticks keeps such code short enough for a
+// phone). An unpaired backtick is shown as it is.
+func codeText(s string) template.HTML {
+	parts := strings.Split(s, "`")
+	if len(parts)%2 == 0 { // an odd number of backticks: the last one is text
+		parts[len(parts)-2] += "`" + parts[len(parts)-1]
+		parts = parts[:len(parts)-1]
+	}
+	var b strings.Builder
+	for i, part := range parts {
+		if i%2 == 1 {
+			b.WriteString(`<code class="token">`)
+			b.WriteString(template.HTMLEscapeString(part))
+			b.WriteString(`</code>`)
+		} else {
+			b.WriteString(template.HTMLEscapeString(part))
+		}
+	}
+	return template.HTML(b.String())
+}
+
 // ------------------------------------------------------------------ template funcs
 
 func (s *Server) funcs() template.FuncMap {
@@ -198,6 +221,9 @@ func (s *Server) funcs() template.FuncMap {
 		},
 		// tz returns the display time zone name.
 		"tz": func() string { return s.location().String() },
+		// codeText renders plain text in which text between backticks is
+		// code (the setup steps of the monitoring tools).
+		"codeText": codeText,
 		// nl2br escapes text and converts newlines to <br>.
 		"nl2br": func(text string) template.HTML {
 			esc := template.HTMLEscapeString(text)

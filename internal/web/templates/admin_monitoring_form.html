@@ -118,7 +118,7 @@
       <summary>Instructions</summary>
       <ol>
         {{- range .Provider.Steps}}
-        <li>{{.}}</li>
+        <li>{{codeText .}}</li>
         {{- end}}
       </ol>
       {{- with .Example}}
@@ -126,7 +126,7 @@
       <pre class="code-block">{{.}}</pre>
       {{- end}}
     </details>
-    <p class="help">An alert's service is found by {{.Provider.Service}}, compared with the names of the services and their
+    <p class="help">An alert's service is found by {{codeText .Provider.Service}}, compared with the names of the services and their
       <a href="/admin/services">names in monitoring tools</a> (upper and lower case do not matter).</p>
   </div>
 </section>

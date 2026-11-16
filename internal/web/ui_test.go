@@ -146,7 +146,7 @@ func TestUIAccountEmailNotice(t *testing.T) {
 
 // Every class used in a template is styled in style.css, and style.css has
 // no rules for classes that no template uses (generated classes such as
-// status-<status> excepted).
+// status-<status>, and token of codeText, excepted).
 func TestUIStylesheetVocabulary(t *testing.T) {
 	css, err := fs.ReadFile(assets, "static/style.css")
 	if err != nil {
@@ -180,7 +180,7 @@ func TestUIStylesheetVocabulary(t *testing.T) {
 			}
 		}
 	}
-	generated := regexp.MustCompile(`^(status|incident|maintenance|notif|flash|event)-|^nodata$`)
+	generated := regexp.MustCompile(`^(status|incident|maintenance|notif|flash|event)-|^(nodata|token)$`)
 	for c := range defined {
 		if !used[c] && !generated.MatchString(c) {
 			t.Errorf("style.css styles class %q that no template uses", c)

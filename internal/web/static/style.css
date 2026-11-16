@@ -3,7 +3,7 @@
  * Component vocabulary (use these classes in templates):
  *   layout:     .container .main .toolbar (h1 + actions) .grid-2 .row .spacer .grow (input in a .row)
  *               .narrow (form-wide block) .lead (intro below the h1) .meta-row (badges below the h1)
- *   text:       .muted .small .mono .nowrap .visually-hidden
+ *   text:       .muted .small .mono .nowrap .visually-hidden code.token (a name in running text, kept on one line)
  *   navigation: .subnav (admin sections, rendered by layout.html) .back-link (above the h1)
  *   cards:      .card .card-header .card-body .card-footer .card-list (ul)
  *               .entry > .entry-head (.entry-title + badges) + p   (item of a .card-list)
@@ -187,6 +187,8 @@ p:last-child { margin-bottom: 0; }
 ul, ol { padding-left: 1.4em; }
 code, .mono { font-family: var(--mono); font-size: .88em; }
 code { background: var(--surface-2); border: 1px solid var(--border); padding: .08em .35em; border-radius: 5px; word-break: break-all; }
+/* a name or an option in running text (at most 24 characters): on one line */
+code.token { white-space: nowrap; word-break: normal; }
 dl { margin: 0 0 1em; }
 dd { margin: 0; }
 img, svg { max-width: 100%; }
